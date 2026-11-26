@@ -839,9 +839,11 @@ class AutomationOwner:
         restorer: Callable[[], AbstractContextManager[RestoreStep]] | None = None,
         subscription_shadow: bool = False,
         media_probe: MediaProbe | None = None,
+        cover_directory: Path | None = None,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
+        self._cover_directory: Path | None = cover_directory
         self._admits: bool = not subscription_shadow
         self._media_probe: MediaProbe | None = media_probe
         self._check_retries: dict[str, float] = {}
@@ -968,6 +970,8 @@ class AutomationOwner:
         self._series_requested: set[int] = set()
         self._recognized: dict[tuple[str, int], int | None] = {}
         self._recognition_requested: set[tuple[str, int]] = set()
+        self._covers: set[int] = set()
+        self._covers_requested: set[int] = set()
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
@@ -1969,6 +1973,7 @@ class AutomationOwner:
                 for group in library
                 if not group.available and any(item.identity is not None for item in group.files)
             ],
+            "covers": sorted(self._covers),
             "deletions": [
                 {
                     "operation_id": item.operation_id,
@@ -8526,6 +8531,7 @@ class AutomationOwner:
     def _publish_state(self) -> None:
         self._request_recognition()
         self._request_series()
+        self._request_covers()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
     def _named(self, sets: tuple[LibrarySet, ...]) -> tuple[LibrarySet, ...]:
@@ -8582,14 +8588,75 @@ class AutomationOwner:
         if any(value is not None for value in found.values()):
             self._publish_state()
 
+    def _known_entries(self) -> frozenset[int]:
+        return library_entries(self._state) | {value for value in self._recognized.values() if value is not None}
+
+    def _request_covers(self) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        directory: Path | None = self._cover_directory
+        if acquisition is None or directory is None or self._shutting_down:
+            return
+        wanted: frozenset[int] = self._known_entries() - self._covers - self._covers_requested
+        if not wanted:
+            return
+        self._covers_requested.update(wanted)
+        self._active_io += 1
+        self._pool.submit(self._read_covers, acquisition, directory, tuple(sorted(wanted)))
+
+    def _read_covers(self, acquisition: AcquisitionService, directory: Path, anilist_ids: tuple[int, ...]) -> None:
+        stored: set[int] = set()
+        failures: dict[str, int] = {}
+        skipped: int = 0
+        try:
+            stored |= acquisition.stored_covers(directory) & set(anilist_ids)
+            missing: list[int] = [anilist_id for anilist_id in anilist_ids if anilist_id not in stored]
+            urls: dict[int, str] = {}
+            if missing and not self._shutting_down:
+                with acquisition.episode_requests():
+                    urls = acquisition.cover_urls(missing)
+            for anilist_id in missing:
+                if self._shutting_down:
+                    break
+                url: str | None = urls.get(anilist_id)
+                skipped += url is None
+                if url is not None and self._save_cover(acquisition, directory, anilist_id, url, failures):
+                    stored.add(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
+        finally:
+            logger.info(
+                "Library covers read",
+                provider="anilist",
+                requested=len(anilist_ids),
+                stored=len(stored),
+                skipped=skipped,
+                failed=sum(failures.values()),
+                error_classes=sorted(failures),
+            )
+            self._queue.put(lambda: self._record_covers(stored))
+
+    @staticmethod
+    def _save_cover(
+        acquisition: AcquisitionService, directory: Path, anilist_id: int, url: str, failures: dict[str, int]
+    ) -> bool:
+        try:
+            acquisition.save_cover(anilist_id, url, directory)
+        except (AniShiftError, OSError, ValueError) as error:
+            failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
+            return False
+        return True
+
+    def _record_covers(self, stored: set[int]) -> None:
+        self._active_io -= 1
+        self._covers |= stored
+        if stored:
+            self._publish_state()
+
     def _request_series(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None or self._shutting_down:
             return
-        entries: frozenset[int] = library_entries(self._state) | {
-            value for value in self._recognized.values() if value is not None
-        }
-        wanted: frozenset[int] = entries - self._series.keys() - self._series_requested
+        wanted: frozenset[int] = self._known_entries() - self._series.keys() - self._series_requested
         if not wanted:
             return
         self._series_requested.update(wanted)

@@ -126,6 +126,10 @@ class _TitleCatalog:
         self.searched: list[str] = []
         self.franchised: list[int] = []
         self.library_reads: list[list[int]] = []
+        self.covers: dict[int, str] = {}
+        self.files: dict[str, bytes] = {}
+        self.cover_reads: list[list[int]] = []
+        self.downloads: list[str] = []
         self.scheduled: list[int] = []
         self.schedule_fails: bool = False
 
@@ -155,6 +159,14 @@ class _TitleCatalog:
             {key: node for graph in graphs for key, node in graph.nodes.items()},
             frozenset(key for graph in graphs for key in graph.queried),
         )
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        self.cover_reads.append(sorted(anilist_ids))
+        return {key: url for key, url in self.covers.items() if key in anilist_ids}
+
+    def cover(self, url: str) -> bytes:
+        self.downloads.append(url)
+        return self.files[url]
 
 
 class _EpisodeCatalog:

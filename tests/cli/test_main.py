@@ -21,6 +21,7 @@ from anishift.cli import interactive as interactive_package
 from anishift.cli import watch as cli_watch
 from anishift.config.workspace import ENV_WORKSPACE_ROOT, WorkspaceRootNotResolvedError
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
+from anishift.paths import covers_dir
 from anishift.platform import autostart, qbittorrent_config
 from anishift.platform.autostart import AutostartStatus, AutostartUnsupportedError
 from anishift.platform.local_control import ControlError
@@ -261,8 +262,9 @@ def test_watch_runs_the_daemon_on_the_composed_service(monkeypatch: pytest.Monke
     service: AppService = cast("AppService", object())
     seen: list[tuple[object, Path]] = []
 
-    def daemon(passed: AppService, *, state_dir: Path, enable_tray: bool) -> int:
+    def daemon(passed: AppService, *, state_dir: Path, enable_tray: bool, cover_dir: Path) -> int:
         assert enable_tray
+        assert cover_dir == covers_dir()
         seen.append((passed, state_dir))
         return 3
 
@@ -301,7 +303,7 @@ def test_watch_says_it_is_watching_before_the_loop_blocks(monkeypatch: pytest.Mo
     monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: cast("AppService", object()))
     monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
     monkeypatch.setattr(cli_watch, "watch_status", lambda _dir: cli_watch.WatchStatus(running=False, pid=None))
-    monkeypatch.setattr(cli_watch, "run_resident", lambda service, *, state_dir, enable_tray: 0)
+    monkeypatch.setattr(cli_watch, "run_resident", lambda service, *, state_dir, enable_tray, cover_dir: 0)
 
     result: Result = CliRunner().invoke(cli_main.app, ["watch"])
 

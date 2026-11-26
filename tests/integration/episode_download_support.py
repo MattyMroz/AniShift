@@ -289,6 +289,12 @@ class Catalog:
             {key: node for graph in graphs for key, node in graph.nodes.items()}, frozenset(anilist_ids)
         )
 
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        return {}
+
+    def cover(self, url: str) -> bytes:
+        raise AssertionError(url)
+
     def mapping(self, anilist_id: int) -> AniZipMapping:
         return AniZipMapping(
             500,

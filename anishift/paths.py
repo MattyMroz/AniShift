@@ -129,6 +129,11 @@ def elevenreader_dir() -> Path:
     return config_dir() / "elevenreader"
 
 
+def covers_dir() -> Path:
+    """Return the cache of AniList cover images of Library and subscription titles."""
+    return config_dir() / "covers"
+
+
 def torrent_profile_dir() -> Path:
     """Return the private torrent client's configuration and resume-data root."""
     return config_dir() / "qbittorrent"

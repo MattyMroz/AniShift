@@ -181,6 +181,12 @@ class _Season:
             {key: node for graph in graphs for key, node in graph.nodes.items()}, frozenset(anilist_ids)
         )
 
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        return {}
+
+    def cover(self, url: str) -> bytes:
+        raise AssertionError(url)
+
     def mapping(self, anilist_id: int) -> AniZipMapping:
         if self.down or anilist_id in self.broken:
             raise TitleCatalogError(context=ErrorContext(code=ErrorCode.EPISODE_CATALOG_FAILED, message="down"))

@@ -2,15 +2,28 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Collection
 from dataclasses import replace
+from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Final
 
 import pytest
+from PIL import Image
 from test_acquisition import _S1, _episode_service, _slime_titles, _TitleCatalog
-from test_automation import _TIMEOUT_S, _completed_library, _owner, _real_service, _request, _serving
+from test_automation import (
+    _INSTANCE,
+    _TIMEOUT_S,
+    _completed_library,
+    _owner,
+    _real_service,
+    _request,
+    _serving,
+)
 from test_episode_selection import _fixture_graph
 
+from anishift.application.acquisition import AcquisitionService
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import (
     AcquisitionConfirmation,
@@ -534,6 +547,135 @@ def test_recognized_set_joins_its_series(tmp_path: Path) -> None:
         key=str,
     )
     assert titles.library_reads == [[_S1]]
+
+
+_COVER_A: Final[str] = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx101280.jpg"
+_COVER_B: Final[str] = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx106509.jpg"
+
+
+def _png() -> bytes:
+    buffer: BytesIO = BytesIO()
+    Image.new("RGB", (46, 64), (20, 90, 200)).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _cover_owner(tmp_path: Path, titles: _TitleCatalog) -> tuple[AutomationOwner, Path]:
+    _, store, state = _completed_library(tmp_path)
+    store.save(
+        replace(
+            state,
+            acquisitions=(_downloaded("set-01", _S1, 4),),
+            subscriptions=(_followed(_SLIME_OAD, "That Time I Got Reincarnated as a Slime OAD"),),
+        )
+    )
+    titles.covers = {_S1: _COVER_A, _SLIME_OAD: _COVER_B}
+    titles.files = {_COVER_A: _png(), _COVER_B: _png()}
+    covers: Path = tmp_path / "config" / "covers"
+    owner: AutomationOwner = AutomationOwner(
+        _real_service(tmp_path, acquisition=_episode_service(tmp_path, titles)),
+        store,
+        instance_id=_INSTANCE,
+        clock=lambda: datetime(2026, 10, 11, 9, 0, tzinfo=UTC),
+        cover_directory=covers,
+    )
+    return owner, covers
+
+
+def _cached(owner: AutomationOwner, expected: list[int]) -> list[int]:
+    deadline: float = time.monotonic() + _TIMEOUT_S
+    covers: object = None
+    while time.monotonic() < deadline:
+        covers = owner.handle(_request("status")).result["covers"]
+        if covers == expected:
+            break
+        time.sleep(0.01)
+    assert isinstance(covers, list)
+    return covers
+
+
+@pytest.mark.integration
+def test_owner_fetches_only_missing_covers_once(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    covers.mkdir(parents=True)
+    (covers / f"{_SLIME_OAD}.jpg").write_bytes(_png())
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        cached: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+        assert owner.handle(_request("library_refresh")).ok
+        owner.handle(_request("status"))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert cached == [_S1, _SLIME_OAD]
+    assert titles.cover_reads == [[_S1]]
+    assert titles.downloads == [_COVER_A]
+    assert sorted(item.name for item in covers.iterdir()) == [f"{_S1}.jpg", f"{_SLIME_OAD}.jpg"]
+
+
+@pytest.mark.integration
+def test_owner_reads_existing_covers_at_start(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    covers.mkdir(parents=True)
+    for anilist_id in (_S1, _SLIME_OAD):
+        (covers / f"{anilist_id}.jpg").write_bytes(_png())
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        cached: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert cached == [_S1, _SLIME_OAD]
+    assert titles.cover_reads == []
+    assert titles.downloads == []
+
+
+@pytest.mark.integration
+def test_snapshot_lists_cached_covers(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    titles.files = {}
+    owner, covers = _cover_owner(tmp_path, titles)
+    titles.files = {_COVER_A: _png(), _COVER_B: b"<html>broken</html>"}
+    thread: threading.Thread = _serving(owner)
+    try:
+        before: object = owner.handle(_request("status")).result["covers"]
+        assert owner.handle(_request("library_refresh")).ok
+        cached: list[int] = _cached(owner, [_S1])
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert before == []
+    assert cached == [_S1]
+    assert [item.name for item in covers.iterdir()] == [f"{_S1}.jpg"]
+
+
+class _StoppingTitles(_TitleCatalog):
+    def __init__(self) -> None:
+        super().__init__(graphs=_slime_titles().graphs)
+        self.owner: AutomationOwner | None = None
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        assert self.owner is not None
+        self.owner._shutting_down = True
+        return super().cover_urls(anilist_ids)
+
+
+@pytest.mark.unit
+def test_cover_fetch_stops_when_shutting_down(tmp_path: Path) -> None:
+    titles: _StoppingTitles = _StoppingTitles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    titles.owner = owner
+    acquisition: AcquisitionService | None = owner._service.acquisition
+    assert acquisition is not None
+
+    owner._read_covers(acquisition, covers, (_S1, _SLIME_OAD))
+
+    assert titles.cover_reads == [[_S1, _SLIME_OAD]]
+    assert titles.downloads == []
+    assert not covers.exists()
 
 
 def _named_rows(owner: AutomationOwner, count: int) -> list[dict[str, object]]:

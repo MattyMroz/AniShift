@@ -12,7 +12,7 @@ import pytest
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.episode_selection import FranchiseGraph, LibraryGraph, franchise_traversal
 from anishift.errors import ErrorCode, ExecutionError
-from anishift.services.catalog.anilist import ANILIST_URL, AniListCatalog
+from anishift.services.catalog.anilist import ANILIST_URL, MAX_COVER_BYTES, AniListCatalog
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.types import EpisodeAiring, PrequelEntry, SeasonAiring, TitleCandidate, TitleStatus
 
@@ -671,3 +671,115 @@ def test_prequel_episodes_marks_an_entry_whose_title_names_a_cour() -> None:
 
     assert entries == (PrequelEntry(episodes=12, cour=True), PrequelEntry(episodes=12, cour=False))
     assert offset == 24
+
+
+_ONE_PIECE_COVER: Final[str] = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21-ELSYx3yMPcKM.jpg"
+
+
+def _covers_page() -> dict[str, Any]:
+    return _page(
+        [
+            {
+                "id": 21,
+                "title": {"romaji": "ONE PIECE", "english": "ONE PIECE"},
+                "coverImage": {
+                    "extraLarge": _ONE_PIECE_COVER,
+                    "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx21-ELSYx3yMPcKM.jpg",
+                    "medium": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/small/bx21-ELSYx3yMPcKM.jpg",
+                    "color": "#e49335",
+                },
+            },
+            {
+                "id": 1535,
+                "coverImage": {
+                    "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1535.jpg",
+                    "color": None,
+                },
+            },
+            {"id": 16498, "coverImage": None},
+            {"id": 30, "coverImage": {"extraLarge": None}},
+        ]
+    )
+
+
+@pytest.mark.unit
+def test_cover_urls_read_extra_large_by_id() -> None:
+    sent: list[dict[str, Any]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=_covers_page())
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        urls: dict[int, str] = AniListCatalog(http).cover_urls((1535, 21, 999999999))
+
+    assert urls[21] == _ONE_PIECE_COVER
+    assert urls[1535].endswith("/bx1535.jpg")
+    assert sent[0]["variables"] == {"ids": [21, 1535, 999999999]}
+    assert "coverImage { extraLarge }" in sent[0]["query"]
+
+
+@pytest.mark.unit
+def test_missing_or_null_cover_is_skipped() -> None:
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=_covers_page()))) as http:
+        urls: dict[int, str] = AniListCatalog(http).cover_urls((16498, 30, 999999999))
+
+    assert 16498 not in urls
+    assert 30 not in urls
+    assert 999999999 not in urls
+
+
+def _cover_client(response: httpx.Response, seen: list[httpx.Request]) -> httpx.Client:
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return response
+
+    return httpx.Client(transport=httpx.MockTransport(respond))
+
+
+@pytest.mark.unit
+def test_cover_downloads_the_file_from_the_cdn() -> None:
+    seen: list[httpx.Request] = []
+    with _cover_client(httpx.Response(200, content=b"jpeg"), seen) as http:
+        assert AniListCatalog(http).cover(_ONE_PIECE_COVER) == b"jpeg"
+    assert [str(item.url) for item in seen] == [_ONE_PIECE_COVER]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/file/anilistcdn/media/anime/cover/large/bx21.jpg",
+        "https://s4.anilist.co.example.com/bx21.jpg",
+    ],
+)
+def test_cover_refuses_another_host(url: str) -> None:
+    seen: list[httpx.Request] = []
+    with _cover_client(httpx.Response(200, content=b"jpeg"), seen) as http, pytest.raises(TitleCatalogError):
+        AniListCatalog(http).cover(url)
+    assert seen == []
+
+
+@pytest.mark.unit
+def test_cover_refuses_plain_http() -> None:
+    seen: list[httpx.Request] = []
+    with _cover_client(httpx.Response(200, content=b"jpeg"), seen) as http, pytest.raises(TitleCatalogError):
+        AniListCatalog(http).cover(_ONE_PIECE_COVER.replace("https://", "http://"))
+    assert seen == []
+
+
+@pytest.mark.unit
+def test_cover_refuses_a_redirect() -> None:
+    seen: list[httpx.Request] = []
+    moved: httpx.Response = httpx.Response(301, headers={"Location": "https://example.com/other.jpg"})
+    with _cover_client(moved, seen) as http, pytest.raises(TitleCatalogError):
+        AniListCatalog(http).cover(_ONE_PIECE_COVER)
+    assert len(seen) == 1
+
+
+@pytest.mark.unit
+def test_cover_refuses_more_than_two_megabytes() -> None:
+    seen: list[httpx.Request] = []
+    large: httpx.Response = httpx.Response(200, content=b"x" * (MAX_COVER_BYTES + 1))
+    with _cover_client(large, seen) as http, pytest.raises(TitleCatalogError):
+        AniListCatalog(http).cover(_ONE_PIECE_COVER)

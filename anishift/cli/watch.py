@@ -300,8 +300,9 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
     on_ready: Callable[[], None] | None = None,
     enable_tray: bool = False,
     scan_interval_s: float = SCAN_INTERVAL_S,
+    cover_dir: Path | None = None,
 ) -> int:
-    """Own the automation of *state_dir* until a shutdown command ends the process."""
+    """Own the automation of *state_dir* until a shutdown command ends the process, caching covers in *cover_dir*."""
     from anishift.application import (  # noqa: PLC0415 - keep the owner off the Typer import path
         WATCH_STATE_FILE_NAME,
         AutomationOwner,
@@ -342,6 +343,7 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
             restorer=restore_session,
             subscription_shadow=service.current_settings().subscription_shadow,
             media_probe=service.media_probe,
+            cover_directory=cover_dir,
         )
         endpoint: str = control_endpoint(state_dir)
         clear_endpoint(endpoint)

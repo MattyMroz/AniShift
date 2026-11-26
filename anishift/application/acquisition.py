@@ -227,6 +227,14 @@ class TitleCatalog(Protocol):
         """Return the anime relation graphs of many entries read in shared requests."""
         ...
 
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        """Return the cover image address of each entry the catalog knows."""
+        ...
+
+    def cover(self, url: str) -> bytes:
+        """Return the bytes of one cover image from the catalog's own file host."""
+        ...
+
 
 class EpisodeCatalog(Protocol):
     """Episode mapping of one catalog entry."""
@@ -858,6 +866,23 @@ class AcquisitionService:
     def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
         """Read the relation graphs of the Library entries in shared catalog requests."""
         return self._titles().library_graph(anilist_ids)
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        """Read the cover image addresses of the Library and subscription entries."""
+        return self._titles().cover_urls(anilist_ids)
+
+    def save_cover(self, anilist_id: int, url: str, directory: Path) -> Path:
+        """Download one cover through the catalog and store it as the JPEG file of its entry."""
+        from anishift.services.catalog.covers import store_cover  # noqa: PLC0415
+
+        return store_cover(self._titles().cover(url), directory, anilist_id)
+
+    @staticmethod
+    def stored_covers(directory: Path) -> frozenset[int]:
+        """Return the entries whose covers are already cached in *directory*."""
+        from anishift.services.catalog.covers import stored_covers  # noqa: PLC0415
+
+        return stored_covers(directory)
 
     def _franchise_graph(self, anilist_id: int, cancel: CancellationToken | None = None) -> FranchiseGraph:
         now: float = self._clock()

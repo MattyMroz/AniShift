@@ -15,6 +15,9 @@ the code:
   (the signed-in session, restricted to the current account) and the last
   session check in `session.json` (`signed_in`, `checked_at` and the account cleanup still owed:
   `restore` with the previous voice and speed, `delete_document`; never a read id or token).
+- `covers/` caches the AniList cover images of Library and subscription titles,
+  one `<anilist_id>.jpg` per entry, written by the resident and shown in the panel.
+  Deleting a file only makes the resident download it again.
 
 `ANISHIFT_CONFIG_DIR` replaces this directory entirely, so a test or a second
 account can keep its own preferences and watch state elsewhere.

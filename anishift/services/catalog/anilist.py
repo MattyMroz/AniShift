@@ -102,6 +102,18 @@ _MAX_FRANCHISE_REQUESTS: Final[int] = 4
 _PAGE_SIZE: Final[int] = 50
 """Largest number of entries one GraphQL page returns."""
 
+_COVERS_QUERY: Final[str] = (
+    f"query ($ids: [Int]) {{ Page(perPage: {_PAGE_SIZE}) {{ media(id_in: $ids, type: ANIME) {{"
+    " id coverImage { extraLarge } } } }"
+)
+"""Request of the extra-large cover address of up to fifty entries."""
+
+COVER_HOST: Final[str] = "s4.anilist.co"
+"""Only host a cover file is downloaded from."""
+
+MAX_COVER_BYTES: Final[int] = 2 * 1024 * 1024
+"""Largest cover file accepted from the CDN."""
+
 _FRANCHISE_FIELDS: Final[str] = (
     "id type format status episodes countryOfOrigin seasonYear startDate { year month day }"
     " title { romaji english native }"
@@ -218,6 +230,29 @@ class AniListCatalog:
         )
         return LibraryGraph(nodes, queried)
 
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        """Return the extra-large cover address of each entry AniList knows, fifty entries per request."""
+        wanted: list[int] = sorted(set(anilist_ids))
+        urls: dict[int, str] = {}
+        for page in batched(wanted, _PAGE_SIZE, strict=False):
+            urls.update(_cover_page(self._post(_COVERS_QUERY, {"ids": list(page)})))
+        logger.info("Cover addresses read", provider="anilist", requested=len(wanted), found=len(urls))
+        return urls
+
+    def cover(self, url: str) -> bytes:
+        """Download one cover file from the AniList CDN over HTTPS, without redirects, up to two megabytes."""
+        try:
+            address: httpx.URL = httpx.URL(url)
+        except httpx.InvalidURL as error:
+            raise _catalog_error(_CatalogFailure.REJECTED) from error
+        if address.scheme != "https" or address.host != COVER_HOST:
+            raise _catalog_error(_CatalogFailure.REJECTED)
+        try:
+            with self._http.stream("GET", address, follow_redirects=False, timeout=self._timeout_s) as response:
+                return _cover_body(response)
+        except httpx.HTTPError as error:
+            raise _catalog_error(_CatalogFailure.UNREACHABLE) from error
+
     def airing_schedule(self, anilist_id: int) -> SeasonAiring:
         """Read all available episode dates for that season without inventing missing history."""
         episodes: dict[int, EpisodeAiring] = {}
@@ -302,6 +337,35 @@ def parse_franchise_page(
     all_queried: frozenset[int] = queried | (previous.queried if previous else frozenset())
     _, _, missing = franchise_traversal(root_id, nodes, all_queried)
     return FranchiseGraph(root_id, nodes, all_queried, not missing)
+
+
+def _cover_page(data: Mapping[str, Any]) -> dict[int, str]:
+    page: object = data.get("Page")
+    media: object = page.get("media") if isinstance(page, Mapping) else None
+    if not isinstance(media, list):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    urls: dict[int, str] = {}
+    for node in media:
+        image: object = node.get("coverImage") if isinstance(node, Mapping) else None
+        url: object = image.get("extraLarge") if isinstance(image, Mapping) else None
+        identifier: object = node.get("id") if isinstance(node, Mapping) else None
+        if isinstance(identifier, int) and not isinstance(identifier, bool) and isinstance(url, str) and url:
+            urls[identifier] = url
+    return urls
+
+
+def _cover_body(response: httpx.Response) -> bytes:
+    if response.status_code != HTTPStatus.OK:
+        raise _catalog_error(_CatalogFailure.REJECTED)
+    declared: str | None = response.headers.get("Content-Length")
+    if declared is not None and declared.isdecimal() and int(declared) > MAX_COVER_BYTES:
+        raise _catalog_error(_CatalogFailure.REJECTED)
+    body: bytearray = bytearray()
+    for chunk in response.iter_bytes():
+        body.extend(chunk)
+        if len(body) > MAX_COVER_BYTES:
+            raise _catalog_error(_CatalogFailure.REJECTED)
+    return bytes(body)
 
 
 def _merge_page(data: object, nodes: dict[int, JsonObject]) -> None:
