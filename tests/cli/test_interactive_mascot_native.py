@@ -36,7 +36,6 @@ from anishift.cli.interactive.prompts import (
     resolve_auto_geometry,
     resolve_home_geometry,
 )
-from anishift.cli.interactive.raster import Slot
 from anishift.cli.interactive.settings import SettingsController
 
 
@@ -330,17 +329,6 @@ def test_terminal_construction_never_encodes_animation(monkeypatch: pytest.Monke
         renderer = TerminalRenderer(lambda _columns, _rows: Text(), lambda _key: None)
 
     assert renderer.native_mascot_size is None
-
-
-def test_exit_erases_the_mascot_without_resetting_the_terminal() -> None:
-    writes: list[str] = []
-    renderer = _renderer_with(_image(), writes)
-    renderer._drawn = (Slot(2, 3, 18, 10), "frame")
-
-    renderer.exit()
-
-    assert writes == ["\x1b[2J"]
-    assert renderer._drawn is None
 
 
 def test_running_the_renderer_leaves_the_terminal_untouched() -> None:

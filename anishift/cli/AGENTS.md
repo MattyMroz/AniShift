@@ -233,9 +233,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   różnicy. Spacje, które zakrywał poprzedni obraz, dostają w następnej klatce styl `class:raster-release`, więc
   Prompt Toolkit je nadpisuje (pisanie znaku kasuje piksele komórki). Styl liczony jako treść daje tylko kolor
   (`fg:ansidefault`): Prompt Toolkit przycina końcowe spacje ze stylem bez koloru (także `bold`) przez `\x1b[K`, a
-  `\x1b[K`, `\x1b[J` i ECH nie kasują pikseli. Zmiana rozmiaru i pełne przerysowanie Prompt Toolkit
-  (`_last_screen is None`) przy narysowanym obrazie dają `reset(leave_alternate_screen=False)` + buforowane
-  `\x1b[2J` przed pełną klatką; domyślne `reset()` odsłania starą konsolę. Nie używaj `RIS` ani `\x1b[3J` — kasują
+  `\x1b[K`, `\x1b[J` i ECH nie kasują pikseli. Zmiana rozmiaru i wyjście (`is_done`) przy narysowanym obrazie
+  dają w `_drop_raster` `reset(leave_alternate_screen=False)` + buforowane `\x1b[2J`; pełne przerysowanie przy tym
+  samym rozmiarze pisze każdą komórkę slotu i nośnik, więc nie potrzebuje kasowania. Domyślne `reset()` odsłania
+  starą konsolę. Nie używaj `RIS` ani `\x1b[3J` — kasują
   historię użytkownika. Testy: `test_raster.py` z modelem ekranu `terminal_model.py` (bajty wyjścia → siatka
   komórek tekstu i pikseli, sprawdzana po każdym zapisie).
 

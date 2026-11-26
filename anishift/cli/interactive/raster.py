@@ -123,8 +123,6 @@ def _line(  # noqa: PLR0913
             _put(cells, column, _SLOT_STYLE, " ")
         if row == slot.row + slot.rows - 1:
             carrier = slot.column + slot.columns
-            if cells[carrier][1] == _WIDE_TAIL:
-                _put(cells, carrier, cells[carrier][0], " ")
             cells[carrier][0] += _CARRIER_STYLES[parity] + (_KEPT if cells[carrier][1] == " " else "")
     result: StyleAndTextTuples = []
     for column, (style, character) in enumerate(cells):

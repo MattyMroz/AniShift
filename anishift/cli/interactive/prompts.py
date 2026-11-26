@@ -328,10 +328,6 @@ class TerminalRenderer:
 
     def exit(self) -> None:
         """Finish the active interactive application."""
-        if self._drawn is not None:
-            self._application.output.write_raw(_CLEAR_SCREEN)
-            self._application.output.flush()
-            self._drawn = None
         self._application.exit()
 
     def _current_image(self) -> NativeImage | None:
@@ -352,7 +348,7 @@ class TerminalRenderer:
             image = self._current_image()
             frame = frame.copy()
             frame.plain = frame.plain.replace(NATIVE_IMAGE_ANCHOR, " ")
-        if (columns, rows) != self._terminal_size or application.renderer._last_screen is None:
+        if (columns, rows) != self._terminal_size:
             self._drop_raster()
         self._terminal_size = (columns, rows)
         drawn: tuple[Slot, str] | None = None

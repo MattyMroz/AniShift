@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -10,6 +11,10 @@ import terminal_model as model
 import test_interactive_mascot_native as mascots
 import test_library_covers as layouts
 from PIL import Image
+from prompt_toolkit.application.current import create_app_session
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.input.defaults import create_pipe_input
+from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.text import Text
 
 import anishift.cli.interactive.prompts as prompts_module
@@ -19,8 +24,9 @@ from anishift.cli.interactive.anime_view import render_anime
 from anishift.cli.interactive.app import _auto_content, _home_content, _QueueView
 from anishift.cli.interactive.covers import CoverImages, cover_box
 from anishift.cli.interactive.mascot import MascotState
-from anishift.cli.interactive.native_image import NativeImage
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
 from anishift.cli.interactive.progress import RichRunProgress
+from anishift.cli.interactive.prompts import TerminalRenderer
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 
@@ -296,3 +302,22 @@ def test_entering_a_tab_shows_each_cover_in_its_first_frame(
     assert shown is not None
     assert (shown.cell_columns, shown.cell_rows) == cover_box(model.CELL)
     assert controller.cover() is not None
+
+
+def test_exit_leaves_no_image_pixel_on_the_alternate_screen() -> None:
+    stream: StringIO = StringIO()
+    output: Vt100_Output = Vt100_Output(stream, lambda: Size(rows=model.SIZE[1], columns=model.SIZE[0]), term="xterm")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+        renderer: TerminalRenderer = TerminalRenderer(
+            lambda _columns, _rows: Text(f"\n\n   {NATIVE_IMAGE_ANCHOR}"),
+            lambda _key: renderer.exit(),
+            image_provider=lambda: model.image("cover", *_BOX),
+            use_mascot=False,
+        )
+        renderer._application.run(pre_run=lambda: pipe.send_text("x"))
+    screen: model.VtScreen = model.VtScreen(*model.SIZE)
+
+    screen.feed(stream.getvalue().partition("\x1b[?1049l")[0])
+
+    assert screen.draws == 1
+    assert not any(any(row) for row in screen.pixels)
