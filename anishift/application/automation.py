@@ -164,10 +164,12 @@ from anishift.application.library import (
     LibrarySeries,
     assigned_files,
     file_identity,
+    hand_titles,
     library_entries,
     library_series,
     name_series,
     project_library,
+    recognize,
     unrecorded_group,
     unrecorded_set,
     unrecorded_set_id,
@@ -964,6 +966,8 @@ class AutomationOwner:
         self._ready_library: tuple[LibrarySet, ...] = ()
         self._series: dict[int, LibrarySeries] = {}
         self._series_requested: set[int] = set()
+        self._recognized: dict[tuple[str, int], int | None] = {}
+        self._recognition_requested: set[tuple[str, int]] = set()
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
@@ -8520,17 +8524,72 @@ class AutomationOwner:
         )
 
     def _publish_state(self) -> None:
+        self._request_recognition()
         self._request_series()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
     def _named(self, sets: tuple[LibrarySet, ...]) -> tuple[LibrarySet, ...]:
-        return name_series(sets, self._state, self._series)
+        return name_series(sets, self._state, self._series, self._recognized)
+
+    def _request_recognition(self) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None or self._shutting_down:
+            return
+        titles: dict[tuple[str, int], str] = hand_titles(self._ready_library, self._state)
+        wanted: dict[tuple[str, int], str] = {
+            key: title for key, title in titles.items() if key not in self._recognition_requested
+        }
+        if not wanted:
+            return
+        self._recognition_requested.update(wanted)
+        self._active_io += 1
+        self._pool.submit(self._read_recognition, acquisition, wanted)
+
+    def _read_recognition(self, acquisition: AcquisitionService, wanted: dict[tuple[str, int], str]) -> None:
+        found: dict[tuple[str, int], int | None] = {}
+        failures: dict[str, int] = {}
+        try:
+            with acquisition.episode_requests():
+                for key, title in wanted.items():
+                    if self._shutting_down:
+                        break
+                    found[key] = self._recognize_title(acquisition, key, title, failures)
+        finally:
+            logger.info(
+                "Hand-added Library titles searched",
+                provider="anilist",
+                requested=len(wanted),
+                searched=len(found),
+                recognized=sum(value is not None for value in found.values()),
+                failed=sum(failures.values()),
+                error_classes=sorted(failures),
+            )
+            self._queue.put(lambda: self._record_recognition(found))
+
+    @staticmethod
+    def _recognize_title(
+        acquisition: AcquisitionService, key: tuple[str, int], title: str, failures: dict[str, int]
+    ) -> int | None:
+        try:
+            return recognize(acquisition.find_titles(title), key[0], key[1])
+        except (AniShiftError, OSError, ValueError) as error:
+            failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
+            return None
+
+    def _record_recognition(self, found: dict[tuple[str, int], int | None]) -> None:
+        self._active_io -= 1
+        self._recognized.update(found)
+        if any(value is not None for value in found.values()):
+            self._publish_state()
 
     def _request_series(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None or self._shutting_down:
             return
-        wanted: frozenset[int] = library_entries(self._state) - self._series.keys() - self._series_requested
+        entries: frozenset[int] = library_entries(self._state) | {
+            value for value in self._recognized.values() if value is not None
+        }
+        wanted: frozenset[int] = entries - self._series.keys() - self._series_requested
         if not wanted:
             return
         self._series_requested.update(wanted)

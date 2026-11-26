@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Final
 
 from natsort import os_sorted
 
+from anishift.application.acquisition import normalize_series
 from anishift.application.artifacts import SourceGroup
 from anishift.application.control import (
     AcquisitionConfirmation,
@@ -43,6 +44,7 @@ from anishift.services.torrents.names import (
 
 if TYPE_CHECKING:
     from anishift.application.subscription_targets import SubscriptionRecord
+    from anishift.services.catalog.types import TitleCandidate
     from anishift.services.torrents.types import ReleaseName
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -265,10 +267,47 @@ def _node_title(node: JsonObject) -> str:
     return str(title.get("english") or title.get("romaji") or "")
 
 
+def hand_key(item: LibrarySet) -> tuple[str, int] | None:
+    """Return the normalized title and season a hand-added set is searched by, or None for an unreadable name."""
+    label: LibraryLabel = library_label(item.name)
+    title: str = normalize_series(label.title)
+    if not title or (label.season is None and label.episode is None and label.title == item.name):
+        return None
+    return title, label.season or 1
+
+
+def hand_titles(sets: Sequence[LibrarySet], state: WatchState) -> dict[tuple[str, int], str]:
+    """Map the search key of each hand-added set to the title read from its file name."""
+    keyed: dict[str, DownloadedEpisode] = downloaded_episodes(state)
+    titles: dict[tuple[str, int], str] = {}
+    for item in sets:
+        key: tuple[str, int] | None = None if item.set_id in keyed else hand_key(item)
+        if key is not None:
+            titles.setdefault(key, library_label(item.name).title)
+    return titles
+
+
+def recognize(candidates: Sequence[TitleCandidate], title: str, season: int) -> int | None:
+    """Return the only candidate with an alias of *title* in *season*, or None when none or several match."""
+    wanted: str = normalize_series(title)
+    matches: list[int] = [
+        candidate.anilist_id
+        for candidate in candidates
+        if any(
+            normalize_series(strip_season(alias)) == wanted and (season_hint(alias) or 1) == season
+            for alias in candidate.aliases()
+        )
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def name_series(
-    sets: Sequence[LibrarySet], state: WatchState, series: Mapping[int, LibrarySeries]
+    sets: Sequence[LibrarySet],
+    state: WatchState,
+    series: Mapping[int, LibrarySeries],
+    recognized: Mapping[tuple[str, int], int | None],
 ) -> tuple[LibrarySet, ...]:
-    """Give each set AniShift downloaded its entry, series and title source, leaving other sets to their names."""
+    """Give each downloaded or recognized set its entry, series and title source, leaving others to their names."""
     episodes: dict[str, DownloadedEpisode] = downloaded_episodes(state)
     followed: dict[int, SubscriptionRecord] = {
         item.anilist_id: item for item in state.subscriptions if item.anilist_id is not None
@@ -277,7 +316,7 @@ def name_series(
     for item in sets:
         episode: DownloadedEpisode | None = episodes.get(item.set_id)
         if episode is None:
-            named.append(item)
+            named.append(_recognized_set(item, series, recognized))
             continue
         keyed: LibrarySet = replace(item, anilist_id=episode.anilist_id, title_source=TitleSource.KEY)
         known: LibrarySeries | None = series.get(episode.anilist_id)
@@ -300,6 +339,28 @@ def name_series(
             )
         )
     return tuple(named)
+
+
+def _recognized_set(
+    item: LibrarySet, series: Mapping[int, LibrarySeries], recognized: Mapping[tuple[str, int], int | None]
+) -> LibrarySet:
+    key: tuple[str, int] | None = hand_key(item)
+    anilist_id: int | None = None if key is None else recognized.get(key)
+    if anilist_id is None:
+        return item
+    found: LibrarySet = replace(item, anilist_id=anilist_id, title_source=TitleSource.RECOGNIZED)
+    known: LibrarySeries | None = series.get(anilist_id)
+    if known is None:
+        return found
+    label: LibraryLabel = library_label(item.name)
+    whole: bool = label.episode is not None and label.last is None and label.episode == int(label.episode)
+    return replace(
+        found,
+        series=known.title,
+        series_id=known.series_id,
+        season=(label.season or 1) if whole else None,
+        episode=int(label.episode) if whole and label.episode is not None else None,
+    )
 
 
 def _series_season(title: str, record: SubscriptionRecord | None, number: int) -> int | None:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
-from test_acquisition import _S1, _episode_service, _slime_titles
+from test_acquisition import _S1, _episode_service, _slime_titles, _TitleCatalog
 from test_automation import _TIMEOUT_S, _completed_library, _owner, _real_service, _request, _serving
 from test_episode_selection import _fixture_graph
 
@@ -27,9 +27,11 @@ from anishift.application.control_views import LibrarySet, TitleSource
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import AniZipMapping, JsonObject, LibraryGraph, ListedEpisode
 from anishift.application.intents import RequestOrigin
-from anishift.application.library import LibrarySeries, library_series, name_series, series_title
+from anishift.application.library import LibrarySeries, library_series, name_series, recognize, series_title
 from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.workflows import WorkflowTarget
+from anishift.errors import ErrorCode, ErrorContext
+from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
 
 _MOMENT: Final[str] = "2026-10-11T09:00:00+00:00"
 _BLUE_BOX: Final[int] = 189123
@@ -125,9 +127,13 @@ def _set(record: ReadyGroup) -> LibrarySet:
     return LibrarySet(record.set_id, record.group_id, record.stem, record.target, record.main_result, (), True)
 
 
-def _sets(state: WatchState, series: dict[int, LibrarySeries] | None = None) -> dict[str, LibrarySet]:
+def _sets(
+    state: WatchState,
+    series: dict[int, LibrarySeries] | None = None,
+    recognized: dict[tuple[str, int], int | None] | None = None,
+) -> dict[str, LibrarySet]:
     sets: tuple[LibrarySet, ...] = tuple(_set(item) for item in state.ready_groups)
-    return {item.name: item for item in name_series(sets, state, series or {})}
+    return {item.name: item for item in name_series(sets, state, series or {}, recognized or {})}
 
 
 def _named(state: WatchState, series: dict[int, LibrarySeries] | None = None) -> _Named:
@@ -383,6 +389,151 @@ def test_snapshot_library_rows_carry_entry_series_and_source(tmp_path: Path) -> 
         (_S1, _S1, "key"),
         (None, None, "name"),
     ]
+
+
+def _candidate(anilist_id: int, romaji: str, english: str | None = None) -> TitleCandidate:
+    return TitleCandidate(anilist_id, romaji, english, None, (), None, None, "TV", 12, TitleStatus.FINISHED, ())
+
+
+@pytest.mark.unit
+def test_one_alias_with_matching_title_and_season_is_recognized() -> None:
+    candidates: tuple[TitleCandidate, ...] = (
+        _candidate(1, "Ao no Hako", "Blue Box"),
+        _candidate(2, "Ao no Hako 2nd Season", "Blue Box Season 2"),
+    )
+
+    assert recognize(candidates, "Blue Box", 2) == 2
+    assert recognize(candidates, "BLUE  box", 1) == 1
+
+
+@pytest.mark.unit
+def test_two_matching_candidates_stay_from_name() -> None:
+    candidates: tuple[TitleCandidate, ...] = (_candidate(1, "Blue Box"), _candidate(2, "Blue Box", "Blue Box"))
+
+    assert recognize(candidates, "Blue Box", 1) is None
+
+
+@pytest.mark.unit
+def test_matching_title_with_another_season_stays_from_name() -> None:
+    assert recognize((_candidate(2, "Ao no Hako 2nd Season", "Blue Box Season 2"),), "Blue Box", 3) is None
+
+
+@pytest.mark.unit
+def test_seasonless_name_matches_only_a_first_season() -> None:
+    candidates: tuple[TitleCandidate, ...] = (_candidate(2, "Ao no Hako 2nd Season", "Blue Box Season 2"),)
+
+    assert recognize(candidates, "Blue Box", 1) is None
+    assert recognize((_candidate(1, "Ao no Hako", "Blue Box"),), "Blue Box", 1) == 1
+
+
+@pytest.mark.unit
+def test_recognized_hand_set_takes_its_entry_and_series() -> None:
+    stem: str = "[Grp] Ao no Hako S2 - 03 [1080p]"
+    state: WatchState = WatchState(ready_groups=(_ready("hand", stem),))
+    series: dict[int, LibrarySeries] = {2: LibrarySeries(1, "Blue Box", "Blue Box Season 2")}
+
+    named: LibrarySet = _sets(state, series, {("ao no hako", 2): 2})[stem]
+    unknown: LibrarySet = _sets(state, series, {("ao no hako", 2): None})[stem]
+
+    assert (named.anilist_id, named.series_id, named.title_source) == (2, 1, TitleSource.RECOGNIZED)
+    assert (named.series, named.season, named.episode) == ("Blue Box", 2, 3)
+    assert (unknown.anilist_id, unknown.title_source) == (None, TitleSource.NAME)
+
+
+class _Searching(_TitleCatalog):
+    def __init__(self, *, refuse: bool = False) -> None:
+        super().__init__(
+            candidates=(_candidate(_S1, "Tensei Shitara Slime Datta Ken", _SLIME),),
+            graphs=_slime_titles().graphs,
+        )
+        self.refuse: bool = refuse
+
+    def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
+        self.searched.append(text)
+        if self.refuse:
+            raise TitleCatalogError(
+                context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="AniList rejected the request")
+            )
+        return self.candidates[:limit]
+
+
+_HAND: Final[tuple[str, ...]] = (
+    "[Grp] Tensei Shitara Slime Datta Ken - 05 [1080p]",
+    "[Other] Tensei.Shitara.Slime.Datta.Ken.S01E06.1080p",
+    "[Grp] Unknown Show - 01 [1080p]",
+)
+
+
+def _hand_owner(tmp_path: Path, titles: _Searching) -> AutomationOwner:
+    _, store, _state = _completed_library(tmp_path, _HAND)
+    return _owner(_real_service(tmp_path, acquisition=_episode_service(tmp_path, titles)), store)
+
+
+def _until_recognized(owner: AutomationOwner, count: int) -> None:
+    deadline: float = time.monotonic() + _TIMEOUT_S
+    while len(owner._recognized) < count and time.monotonic() < deadline:
+        owner.handle(_request("status"))
+        time.sleep(0.01)
+    assert len(owner._recognized) == count
+
+
+@pytest.mark.integration
+def test_owner_searches_each_hand_added_title_once_per_run(tmp_path: Path) -> None:
+    titles: _Searching = _Searching()
+    owner: AutomationOwner = _hand_owner(tmp_path, titles)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        _until_recognized(owner, 2)
+        assert owner.handle(_request("library_refresh")).ok
+        owner.handle(_request("status"))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert sorted(titles.searched) == ["Tensei Shitara Slime Datta Ken", "Unknown Show"]
+
+
+@pytest.mark.integration
+def test_rate_limited_search_leaves_the_title_from_name(tmp_path: Path) -> None:
+    titles: _Searching = _Searching(refuse=True)
+    owner: AutomationOwner = _hand_owner(tmp_path, titles)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        _until_recognized(owner, 2)
+        rows: object = owner.handle(_request("status")).result["library"]
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert isinstance(rows, list)
+    assert {row["title_source"] for row in rows} == {"name"}
+    assert owner._recognized == {("tensei shitara slime datta ken", 1): None, ("unknown show", 1): None}
+
+
+@pytest.mark.integration
+def test_recognized_set_joins_its_series(tmp_path: Path) -> None:
+    titles: _Searching = _Searching()
+    owner: AutomationOwner = _hand_owner(tmp_path, titles)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        rows: list[dict[str, object]] = _named_rows(owner, 2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    named: list[tuple[object, ...]] = [
+        (row["title_source"], row["anilist_id"], row["series_id"], row["series"], row["season"], row["episode"])
+        for row in rows
+    ]
+    assert sorted(named, key=str) == sorted(
+        [
+            ("recognized", _S1, _S1, _SLIME, 1, 5),
+            ("recognized", _S1, _S1, _SLIME, 1, 6),
+            ("name", None, None, None, None, None),
+        ],
+        key=str,
+    )
+    assert titles.library_reads == [[_S1]]
 
 
 def _named_rows(owner: AutomationOwner, count: int) -> list[dict[str, object]]:
