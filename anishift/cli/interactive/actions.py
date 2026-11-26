@@ -21,6 +21,7 @@ EVERYWHERE: Final[tuple[Action, ...]] = (
     ("↑↓", "wybierz"),
     ("←→ Tab", "zakładki"),
     ("O", "automat"),
+    ("K", "okładki"),
     ("Esc", "wróć"),
 )
 """Keys working on every panel screen, listed at the end of each help."""
@@ -80,6 +81,7 @@ _DESCRIPTIONS: Final[dict[Action, str]] = {
     ("↑↓", "wybierz"): "Przesuwa kursor po liście",
     ("←→ Tab", "zakładki"): "Przełącza zakładki panelu",
     ("O", "automat"): "Włącza albo wyłącza cały automat",
+    ("K", "okładki"): "Pokazuje albo chowa okładki we wszystkich widokach",
     ("Esc", "wróć"): "Wraca poziom wyżej",
 }
 """One sentence on what each key does, shown beside it in the ? help."""

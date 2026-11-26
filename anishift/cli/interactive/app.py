@@ -100,6 +100,9 @@ _QUEUE_MARKER_ROWS: Final[int] = 2
 _CRUMB_ESCAPES: Final[int] = 4
 """Most Esc presses one breadcrumb click sends; details over a problem over the Anime release list need four."""
 
+_COVERS_SETTING: Final[str] = "show_covers"
+"""User setting the K key flips, the same one Settings edits as Okładki."""
+
 _MINIMUM_BRANDED_ROWS: Final[int] = 8
 """Minimum terminal height for a brand, gap, queue markers and progress."""
 
@@ -312,6 +315,19 @@ class _InteractiveApplication:
         if shown is None:
             shown = self._show_covers = self._service.settings_snapshot().show_covers
         return shown
+
+    def _toggle_covers(self) -> None:
+        """Flip the saved covers setting so every panel view shows or hides its covers at once."""
+        try:
+            self._service.update_setting(_COVERS_SETTING, not self._covers_shown())
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Covers setting not saved", error_class=type(problem).__name__)
+            if self._state is not None:
+                self._state.set_notice("Nie udało się zapisać ustawienia okładek")
+            return
+        with self._lock:
+            self._show_covers = None
+        self._renderer.invalidate()
 
     def _start_prewarm(self) -> None:
         """Inspect the workspace while Home is idle so Auto and Manual start at once."""
@@ -964,6 +980,7 @@ class _InteractiveApplication:
             StateResult.HOME: self._show_home,
             StateResult.SETTINGS: self._show_settings,
             StateResult.MANUAL: self._start_manual,
+            StateResult.COVERS: self._toggle_covers,
         }.get(result)
         if action is not None:
             action()

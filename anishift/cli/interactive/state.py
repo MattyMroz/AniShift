@@ -227,6 +227,7 @@ class StateResult(StrEnum):
     HOME = "home"
     SETTINGS = "settings"
     MANUAL = "manual"
+    COVERS = "covers"
 
 
 class StateController:
@@ -438,8 +439,8 @@ class StateController:
         elif key in _TAB_KEYS:
             self._help = False
             return self._list_key(key)
-        elif key.casefold() == "text:o":
-            return self._action_key("o")
+        elif key.casefold() in {"text:o", "text:k"}:
+            return self._action_key(key.casefold().removeprefix("text:"))
         elif key in _MOVE_KEYS:
             offset: int = self._help_offset
             moves: dict[str, int] = {
@@ -608,7 +609,7 @@ class StateController:
             self._selected = self._detail_selection
             if key in _TAB_KEYS:
                 return self._list_key(key)
-        elif letter in {"o", "m", "u"}:
+        elif letter in {"o", "m", "u", "k"}:
             return self._action_key(letter)
         elif key == "delete" and details is not None:
             self._details = None
@@ -762,8 +763,8 @@ class StateController:
             self._switch_tab(_tab_target(self._shown_tab(), key))
             self._invalidate()
             return StateResult.CONTINUE
-        if key.casefold() == "text:o" and not anime.accepts_text:
-            return self._action_key("o")
+        if key.casefold() in {"text:o", "text:k"} and not anime.accepts_text:
+            return self._action_key(key.casefold().removeprefix("text:"))
         result: AnimeResult = anime.handle_key(key)
         command: tuple[str, Mapping[str, object], int | None] | None = anime.take_subscription_command()
         playback: str | None = anime.take_playback()
@@ -795,6 +796,8 @@ class StateController:
         if key in navigation:
             self._view_generation += 1
             return navigation[key]
+        if key == "k":
+            return StateResult.COVERS
         if key == "h" and self._tab == _Tab.PROGRESS:
             self._active_position = self._selected
             self._selected = 0

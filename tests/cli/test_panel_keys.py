@@ -85,7 +85,7 @@ _KEYS: Final[tuple[str, ...]] = (
     "text:?",
 )
 
-_EVERYWHERE: Final[frozenset[str]] = frozenset({"text:o", "text:?"})
+_EVERYWHERE: Final[frozenset[str]] = frozenset({"text:o", "text:k", "text:?"})
 
 _PANEL: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
 
@@ -865,6 +865,43 @@ def test_question_mark_opens_and_closes_the_help_block(build: Callable[[str], _P
     assert not probe.panel._help
 
 
+@pytest.mark.parametrize("name", [*_HELP_SCREENS, *_DETAIL_SCREENS, "library_details", "history"])
+def test_k_asks_to_flip_the_covers_on_every_panel_screen(build: Callable[[str], _Probe], name: str) -> None:
+    assert [build(name).panel.handle_key(key) for key in ("text:k", "text:K")] == [StateResult.COVERS] * 2
+
+
+@pytest.mark.parametrize("name", ["subscriptions", "episodes"])
+def test_k_flips_the_covers_inside_the_help(build: Callable[[str], _Probe], name: str) -> None:
+    probe: _Probe = build(name)
+    probe.panel.handle_key("text:?")
+
+    assert probe.panel.handle_key("text:k") is StateResult.COVERS
+
+
+def test_k_typed_in_a_text_field_is_text_not_the_covers_key(build: Callable[[str], _Probe]) -> None:
+    query: _Probe = build("query")
+    library: _Probe = build("library")
+    history: _Probe = build("history")
+    library.panel.handle_key("text:/")
+    history.panel.handle_key("text:/")
+
+    results: list[StateResult] = [probe.panel.handle_key("text:k") for probe in (query, library, history)]
+
+    assert results == [StateResult.CONTINUE] * 3
+    assert query.anime._query.endswith("k")
+    assert library.panel._library_input is not None
+    assert library.panel._library_input.text.endswith("k")
+    assert history.panel._history_input is not None
+    assert history.panel._history_input.text.endswith("k")
+
+
+def test_help_lists_k_for_the_covers(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("library")
+    probe.panel.handle_key("text:?")
+
+    assert "K okładki" in " ".join(probe.panel.render(80, 40).plain.split())
+
+
 @pytest.mark.parametrize("name", _DETAIL_SCREENS)
 def test_question_mark_opens_and_closes_anime_details(build: Callable[[str], _Probe], name: str) -> None:
     probe: _Probe = build(name)
@@ -1440,6 +1477,7 @@ def test_the_help_is_a_table_of_keys_and_what_they_do() -> None:
         "  ↑↓      wybierz    Przesuwa kursor po liście",
         "  ←→ Tab  zakładki   Przełącza zakładki panelu",
         "  O       automat    Włącza albo wyłącza cały automat",
+        "  K       okładki    Pokazuje albo chowa okładki we wszystkich widokach",
         "  Esc     wróć       Wraca poziom wyżej",
     )
 

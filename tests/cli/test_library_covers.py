@@ -15,6 +15,7 @@ from anishift.cli.interactive import covers as covers_module
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.covers import CoverImages
 from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
+from anishift.cli.interactive.prompts import TerminalRenderer
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 
@@ -513,6 +514,34 @@ def test_panel_reads_the_covers_setting_again_after_settings_close() -> None:
     application._close_settings()
 
     assert (before, cached, application._covers_shown()) == (True, True, False)
+
+
+def test_k_saves_the_flipped_covers_setting_and_redraws_the_panel() -> None:
+    application: interactive_app._InteractiveApplication = object.__new__(interactive_app._InteractiveApplication)
+    preferences: SimpleNamespace = SimpleNamespace(show_covers=True)
+    saved: list[tuple[str, object]] = []
+    redraws: list[None] = []
+
+    def update_setting(setting_id: str, value: object) -> None:
+        saved.append((setting_id, value))
+        setattr(preferences, setting_id, value)
+
+    application._service = cast(
+        "AppService", SimpleNamespace(settings_snapshot=lambda: preferences, update_setting=update_setting)
+    )
+    application._state = cast(
+        "StateController", SimpleNamespace(handle_key=lambda _key: state_module.StateResult.COVERS)
+    )
+    application._renderer = cast("TerminalRenderer", SimpleNamespace(invalidate=lambda: redraws.append(None)))
+    application._lock = threading.Lock()
+    application._show_covers = None
+
+    application._handle_state_key("text:k")
+    hidden: bool = application._covers_shown()
+    application._handle_state_key("text:k")
+
+    assert saved == [("show_covers", False), ("show_covers", True)]
+    assert (hidden, application._covers_shown(), len(redraws)) == (False, True, 2)
 
 
 def test_asked_cover_jumps_the_prepared_queue(tmp_path: Path) -> None:
