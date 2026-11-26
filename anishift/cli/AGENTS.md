@@ -148,7 +148,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `target_not_waiting` odświeża stany. Czas wyniku sprawdzenia mierzy wstrzyknięty zegar (`CHECK_SHOWN_S`). Zmiana
   zakładki porzuca kontekst subskrypcji z edytorem zakresu i zaznaczeniami, nie przyjętą partię. Układ i teksty:
   `test_subscriptions_panel.py`, `test_subscription_draft.py`.
-- Przetwarzanie używa `_processing_rows` do renderu, wyboru i akcji. Wiersz zlecenia wymaga dowodu rozpoczętej,
+- Przetwarzanie używa `_processing_rows` do renderu, wyboru i akcji. Wiersz z `entry_title` ownera nazywa
+  `state_library.episode_name` jak Biblioteka („<tytuł wpisu> · SxxEyy · <tytuł odcinka>”, tytuł odcinka z
+  `_episode_info`, czytany raz na wpis po wejściu na zakładkę); bez wpisu zostaje nazwa pliku. Wiersz zlecenia wymaga dowodu rozpoczętej,
   nieterminalnej pracy (`RichRunProgress.group_active`); `accepted` może mieć wykonujące się taski, sam cache postępu
   nie wystarcza; żywe zlecenie bez taska to przygotowanie. Niepewne pobrania nie trafiają do wierszy. Hashe tylko
   ze snapshotów ownera. Nieznane fakty zostają nieznane; brak odczytu zachowuje ostatnie zweryfikowane wartości.
@@ -185,7 +187,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Okładka: slot stałego rozmiaru stoi po lewej, okładka i tabela są wyśrodkowane jako blok z odstępem
   `_COVER_GAP`, a margines od krawędzi nie spada poniżej odstępu; przy braku miejsca najpierw skraca się tytuł,
   potem znika okładka (`anime_view._layout`). Slot jest wyśrodkowany na podświetlonym wierszu (hover z
-  `FrameSelection.hovered_row`, inaczej kursor) i dokleja się do krawędzi pustego pasa wierszy (`_cover_slot`).
+  `FrameSelection.hovered_row`, inaczej kursor) i dokleja się do krawędzi pustego pasa wierszy. Tabele i lista
+  Przetwarzania (`_list_body`) dzielą jedną regułę: `beside_cover`, `cover_columns`, `place_cover`.
   `StateController.cover()` zwraca obraz tego wiersza; render woła `CoverImages.prepare` dla całej listy, wątek
   `anishift-cover` koduje brakujące, a trafienie czyta gotowy ładunek w tej samej klatce. Bez SIXEL, miejsca albo
   okładki w snapshot `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py`.

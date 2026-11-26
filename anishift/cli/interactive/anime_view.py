@@ -169,11 +169,7 @@ class _Canvas:
     def write(self, row: int, column: int, value: Text, *, selectable: bool) -> None:
         if not 0 <= row < len(self.lines) or not value.plain:
             return
-        line: Text = self.lines[row]
-        prefix: Text = line[: character_offset(line.plain, column)]
-        prefix.append_text(value if selectable else mark_inert(value))
-        prefix.append_text(line[character_offset(line.plain, column + value.cell_len) :])
-        self.lines[row] = prefix
+        self.lines[row] = _overwrite(self.lines[row], column, value if selectable else mark_inert(value))
         if selectable:
             self.regions.append((row, column, value.plain))
 
@@ -446,8 +442,12 @@ def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -
     widths, shown, cover = _layout(canvas, snapshot, spec, now, visible)
     width: int = _table_width(spec, widths, shown)
     canvas.place(width)
-    if cover:
-        _cover_slot(canvas, snapshot, width, cover)
+    if cover and snapshot.cover is not None:
+        margin, left = cover_columns(canvas.width, snapshot.cover, width)
+        highlight: int = snapshot.cursor if snapshot.highlight is None else snapshot.highlight
+        row: int = canvas.top + highlight - snapshot.offset
+        if place_cover(canvas.lines, snapshot.cover, margin, row, _footer_top(canvas, snapshot)):
+            canvas.left = left
     columns: list[tuple[int, int, int]] = []
     column: int = spec.prefix
     for position in shown:
@@ -478,11 +478,10 @@ def _table_room(canvas: _Canvas, snapshot: AnimeSnapshot) -> tuple[int, int]:
     limit: int = canvas.width - _MARGIN
     if snapshot.cover is None:
         return limit, 0
-    columns, rows = snapshot.cover
-    narrowed: int = canvas.width - columns - 3 * _COVER_GAP
-    if narrowed < _TITLE_FLOOR or canvas.top < 1 or _footer_top(canvas, snapshot) < rows:
+    narrowed: int | None = beside_cover(canvas.width, snapshot.cover)
+    if narrowed is None or canvas.top < 1 or _footer_top(canvas, snapshot) < snapshot.cover[1]:
         return limit, 0
-    return narrowed, columns
+    return narrowed, snapshot.cover[0]
 
 
 def _footer_top(canvas: _Canvas, snapshot: AnimeSnapshot) -> int:
@@ -490,25 +489,42 @@ def _footer_top(canvas: _Canvas, snapshot: AnimeSnapshot) -> int:
     return len(canvas.lines) - len(_key_lines(snapshot, canvas.width - _MARGIN)) - _footer_rows(snapshot)
 
 
-def _cover_slot(canvas: _Canvas, snapshot: AnimeSnapshot, width: int, columns: int) -> None:
-    """Center the slot and the table as one block, the slot left and vertically centered on the highlighted row."""
-    rows: int = snapshot.cover[1] if snapshot.cover is not None else 0
-    margin: int = max((canvas.width - columns - _COVER_GAP - width) // 2, _COVER_GAP)
-    highlight: int = snapshot.cursor if snapshot.highlight is None else snapshot.highlight
-    row: int = canvas.top + highlight - snapshot.offset
-    first, end = _blank_band(canvas, row, (margin, margin + columns), _footer_top(canvas, snapshot))
-    if end - first < rows:
-        return
-    canvas.left = margin + columns + _COVER_GAP
-    top: int = max(min(row - (rows - 1) // 2, end - rows), first)
-    canvas.write(top, margin, Text(NATIVE_IMAGE_ANCHOR), selectable=False)
+def beside_cover(width: int, cover: tuple[int, int]) -> int | None:
+    """Return the cells a list or table may take beside the cover slot, or None when too few are left."""
+    narrowed: int = width - cover[0] - 3 * _COVER_GAP
+    return None if narrowed < _TITLE_FLOOR else narrowed
 
 
-def _blank_band(canvas: _Canvas, row: int, cells: tuple[int, int], footer: int) -> tuple[int, int]:
+def cover_columns(width: int, cover: tuple[int, int], block: int) -> tuple[int, int]:
+    """Return the first cell of the cover slot and of the *block* beside it, the two centered as one."""
+    margin: int = max((width - cover[0] - _COVER_GAP - block) // 2, _COVER_GAP)
+    return margin, margin + cover[0] + _COVER_GAP
+
+
+def place_cover(lines: list[Text], cover: tuple[int, int], margin: int, row: int, footer: int) -> bool:
+    """Anchor the slot at cell *margin*, centered on *row* within its blank rows above *footer*, if it fits there."""
+    first, end = _blank_band(lines, row, (margin, margin + cover[0]), footer)
+    if end - first < cover[1]:
+        return False
+    top: int = max(min(row - (cover[1] - 1) // 2, end - cover[1]), first)
+    lines[top] = _overwrite(lines[top], margin, mark_inert(Text(NATIVE_IMAGE_ANCHOR)))
+    return True
+
+
+def _overwrite(line: Text, column: int, value: Text) -> Text:
+    """Return *line* with *value* written over its cells from *column*, padding a shorter line with spaces."""
+    padded: Text = line + " " * (column - line.cell_len) if line.cell_len < column else line
+    result: Text = padded[: character_offset(padded.plain, column)]
+    result.append_text(value)
+    result.append_text(padded[character_offset(padded.plain, column + value.cell_len) :])
+    return result
+
+
+def _blank_band(lines: list[Text], row: int, cells: tuple[int, int], footer: int) -> tuple[int, int]:
     """Return the first and the end row of the run of rows around *row* whose *cells* hold no text."""
 
     def blank(index: int) -> bool:
-        plain: str = canvas.lines[index].plain
+        plain: str = lines[index].plain
         return not plain[character_offset(plain, cells[0]) : character_offset(plain, cells[1])].strip()
 
     first: int = row

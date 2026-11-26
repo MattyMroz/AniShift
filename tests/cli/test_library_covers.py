@@ -325,6 +325,114 @@ def test_subscription_row_shows_its_own_cover(panel: tuple[StateController, _Cov
     assert covers.asked == [21]
 
 
+def _processing(controller: StateController, count: int) -> None:
+    controller._tab = state_module._Tab.PROGRESS
+    controller._snapshot = {
+        "covers": list(range(100, 100 + count)),
+        "materials": [
+            {
+                "material_id": f"m{index}",
+                "info_hash": f"hash{index}",
+                "stage": "download",
+                "acquisition_state": "accepted",
+                "state": "downloading",
+                "progress": 0.5,
+                "name": f"file-{index}.mkv",
+                "anilist_id": 100 + index,
+                "series": f"Show {index:02}",
+                "entry_title": f"Show {index:02}",
+                "season": 1,
+                "episode": 1,
+            }
+            for index in range(count)
+        ],
+    }
+
+
+def test_processing_slot_stands_left_of_the_rows_centered_on_the_cursor(
+    panel: tuple[StateController, _Covers],
+) -> None:
+    controller, covers = panel
+    _processing(controller, 20)
+    for _ in range(8):
+        controller.handle_key("down")
+
+    frame: str = controller.render(140, 40).plain
+    anchor: tuple[int, int] | None = _anchor(frame)
+
+    assert anchor is not None
+    assert anchor[0] + (_BOX[1] - 1) // 2 == _row_of(frame, "Show 08")
+    assert frame.splitlines()[_row_of(frame, "Show 08")].index("Show 08") > anchor[1] + _BOX[0]
+    assert controller.cover() is not None
+    assert covers.asked == [108]
+
+
+def test_processing_slot_sticks_to_the_bottom_of_the_blank_rows_on_the_last_row(
+    panel: tuple[StateController, _Covers],
+) -> None:
+    controller, _covers = panel
+    _processing(controller, 30)
+    controller.handle_key("end")
+
+    frame: str = controller.render(140, 40).plain
+    anchor: tuple[int, int] | None = _anchor(frame)
+    footer: int = next(row for row, line in enumerate(frame.splitlines()) if "historia" in line)
+
+    assert anchor is not None
+    assert anchor[0] + _BOX[1] <= footer
+    assert anchor[0] + (_BOX[1] - 1) // 2 < _row_of(frame, "Show 29")
+
+
+def test_processing_hover_moves_the_slot_and_the_cover(panel: tuple[StateController, _Covers]) -> None:
+    controller, covers = panel
+    _processing(controller, 20)
+
+    frame: str = controller.render(140, 40, hovered=10).plain
+    anchor: tuple[int, int] | None = _anchor(frame)
+
+    assert anchor is not None
+    assert anchor[0] + (_BOX[1] - 1) // 2 == _row_of(frame, "Show 10")
+    assert controller.cover() is not None
+    assert covers.asked == [110]
+
+
+def test_processing_slot_and_rows_are_centered_as_one_block(panel: tuple[StateController, _Covers]) -> None:
+    controller, covers = panel
+    _processing(controller, 3)
+
+    frame: str = controller.render(140, 40).plain
+    covers.shown_box = None
+    plain: str = controller.render(140, 40).plain
+    anchor: tuple[int, int] | None = _anchor(frame)
+    left: int = frame.splitlines()[_row_of(frame, "Show 00")].index("Show 00")
+    alone: int = plain.splitlines()[_row_of(plain, "Show 00")].index("Show 00")
+
+    assert anchor is not None
+    assert anchor[1] >= _GAP
+    assert abs(left - (alone + (_BOX[0] + _GAP) / 2)) <= 2
+
+
+def test_processing_without_a_slot_equals_the_plain_layout(
+    panel: tuple[StateController, _Covers], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, covers = panel
+    _processing(controller, 3)
+    covers.shown_box = None
+    without: str = controller.render(140, 40).plain
+    monkeypatch.setattr(controller, "_covers", None)
+
+    assert controller.render(140, 40).plain == without
+    assert _anchor(without) is None
+
+
+def test_processing_history_has_no_slot(panel: tuple[StateController, _Covers]) -> None:
+    controller, _covers = panel
+    _processing(controller, 3)
+    controller._history_open = True
+
+    assert _anchor(controller.render(140, 40).plain) is None
+
+
 def _cover_file(directory: Path, anilist_id: int) -> None:
     Image.new("RGB", (460, 636), (200, 30, 30)).save(directory / f"{anilist_id}.jpg", "JPEG")
 

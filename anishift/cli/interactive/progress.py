@@ -111,7 +111,7 @@ class _FileState:
     """Hold the complete public progress state of one input file."""
 
     label: str
-    description: str
+    phase: str
     stage_rank: int = 0
     progress_by_task: dict[str, int] = field(default_factory=dict)
     active_tasks: list[str] = field(default_factory=list)
@@ -309,12 +309,7 @@ class RichRunProgress:
         end: int = len(self._files) if limit is None else start + max(limit, 0)
         with self._lock:
             rows: tuple[_RenderRow, ...] = tuple(
-                _RenderRow(
-                    state.description if status is None else _description(state.label, status),
-                    state.completed,
-                    state.style,
-                    _elapsed(state, now),
-                )
+                _render_row(state, now, status, state.label)
                 for state in islice(self._files.values(), start, end)
                 if include_completed or not (state.terminal and state.completed == _COMPLETE)
             )
@@ -322,14 +317,22 @@ class RichRunProgress:
         return _render_rows(rows, columns, labels)
 
     def render_group(
-        self, group_id: str, columns: int, *, status: str | None = None, names: Sequence[str] = ()
+        self,
+        group_id: str,
+        columns: int,
+        *,
+        status: str | None = None,
+        label: str | None = None,
+        names: Sequence[str] = (),
     ) -> Text:
-        """Render one durable group identity through the existing stage bars."""
+        """Render one durable group through the existing stage bars, named *label* when given."""
         with self._lock:
-            identifiers: tuple[str, ...] = tuple(self._files)
-        if group_id not in identifiers:
-            return Text()
-        return self.render(columns, offset=identifiers.index(group_id), limit=1, status=status, names=names)
+            state: _FileState | None = self._files.get(group_id)
+            if state is None:
+                return Text()
+            row: _RenderRow = _render_row(state, time.monotonic(), status, label or state.label)
+            labels: Sequence[str] = names or tuple(item.label for item in self._files.values())
+        return _render_rows((row,), columns, labels)
 
     def label(self, group_id: str) -> str:
         """Return the source name shown for one group, or an empty name for an unknown group."""
@@ -402,7 +405,7 @@ class RichRunProgress:
         """Keep background publication from hiding active media work."""
         candidates: list[str] = [task_id for task_id in state.active_tasks if _stage_for(self._task_kinds.get(task_id))]
         if not candidates:
-            state.description = _description(state.label, "Przygotowanie")
+            state.phase = "Przygotowanie"
             return True
         primary: list[str] = [
             task_id for task_id in candidates if self._task_kinds[task_id] is not TaskKind.PUBLISH_ARTIFACT
@@ -416,7 +419,7 @@ class RichRunProgress:
             return False
         state.stage_rank = _STAGE_RANK[stage]
         state.completed = state.progress_by_task.get(selected, 0)
-        state.description = _description(state.label, _active_label(stage))
+        state.phase = _active_label(stage)
         state.style = None
         return True
 
@@ -442,7 +445,7 @@ class RichRunProgress:
             state.completed = max(state.completed, event.progress_percent)
         else:
             state.completed = event.progress_percent
-        state.description = _description(state.label, _active_label(stage))
+        state.phase = _active_label(stage)
         state.style = None
         return True
 
@@ -451,7 +454,7 @@ class RichRunProgress:
         stage: str | None = _stage_for(kind)
         if stage is None or _STAGE_RANK[stage] != state.stage_rank:
             return False
-        state.description = _description(state.label, _AUDIO_LABEL.get(message or "", _active_label(stage)))
+        state.phase = _AUDIO_LABEL.get(message or "", _active_label(stage))
         return True
 
     def _retry_task(self, state: _FileState, event: RunEvent) -> bool:
@@ -460,7 +463,7 @@ class RichRunProgress:
             TaskKind.TRANSLATE_SUBTITLES,
         }:
             return False
-        state.description = _description(state.label, "Ponawianie")
+        state.phase = "Ponawianie"
         state.style = "warning"
         return True
 
@@ -476,7 +479,7 @@ class RichRunProgress:
         if stage is None or _STAGE_RANK[stage] != state.stage_rank:
             return False
         state.completed = _COMPLETE
-        state.description = _description(state.label, _active_label(stage))
+        state.phase = _active_label(stage)
         state.style = None
         return True
 
@@ -485,7 +488,7 @@ class RichRunProgress:
             return False
         state.stage_rank = _STAGE_RANK["audio"]
         state.completed = percent
-        state.description = _description(state.label, _AUDIO_LABEL[phase])
+        state.phase = _AUDIO_LABEL[phase]
         state.style = None
         return True
 
@@ -494,16 +497,16 @@ class RichRunProgress:
         state.stage_rank = _STAGE_RANK["terminal"]
         _stop_timer(state)
         if task_state is TaskState.SUCCEEDED:
-            state.description = _description(state.label, "✓ Gotowe")
+            state.phase = "✓ Gotowe"
             state.completed = _COMPLETE
             state.style = None
             return
         state.completed = 0
         if task_state is TaskState.CANCELLED:
-            state.description = _description(state.label, "Anulowano")
+            state.phase = "Anulowano"
             state.style = "warning"
             return
-        state.description = _description(state.label, "Błąd")
+        state.phase = "Błąd"
         state.style = "error"
 
     def _finish_remaining(self, task_state: TaskState | None) -> bool:
@@ -516,10 +519,10 @@ class RichRunProgress:
             state.completed = 0
             _stop_timer(state)
             if task_state is TaskState.CANCELLED:
-                state.description = _description(state.label, "Anulowano")
+                state.phase = "Anulowano"
                 state.style = "warning"
             else:
-                state.description = _description(state.label, "Nie wykonano")
+                state.phase = "Nie wykonano"
                 state.style = "error"
             changed = True
         return changed
@@ -544,7 +547,17 @@ class RichRunProgress:
 
 def _new_file_state(label: str) -> _FileState:
     """Create the initial extracting row for one source label."""
-    return _FileState(label=label, description=_description(label, _active_label("extracting")))
+    return _FileState(label=label, phase=_active_label("extracting"))
+
+
+def _render_row(state: _FileState, now: float, status: str | None, label: str) -> _RenderRow:
+    """Snapshot one file under the state lock, its phase replaced by *status* when given."""
+    return _RenderRow(
+        _description(label, state.phase if status is None else status),
+        state.completed,
+        state.style,
+        _elapsed(state, now),
+    )
 
 
 def render_material_progress(  # noqa: PLR0913

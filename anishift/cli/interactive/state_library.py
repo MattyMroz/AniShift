@@ -41,6 +41,7 @@ __all__ = [
     "detail_entries",
     "detail_file",
     "details_label",
+    "episode_name",
     "episode_row",
     "episodes_actions",
     "library_row_id",
@@ -164,12 +165,8 @@ def title_row(title: LibraryTitle) -> AnimeRow:
 
 def episode_row(item: Mapping[str, object], info: EpisodeInfo) -> AnimeRow:
     """Return the `Nr · Tytuł · Emisja · Stan` row of one set, its title and date from the catalogue when keyed."""
-    anilist_id: int | None = _number(item.get("anilist_id"))
-    episode: int | None = _number(item.get("episode"))
-    known: tuple[str | None, datetime | None] | None = (
-        None if anilist_id is None or episode is None else info.get(anilist_id, {}).get(episode)
-    )
-    title: str = safe_text(item.get("name", "")) if anilist_id is None else _NO_VALUE
+    known: tuple[str | None, datetime | None] | None = _listed(item, info)
+    title: str = safe_text(item.get("name", "")) if _number(item.get("anilist_id")) is None else _NO_VALUE
     if known is not None and known[0]:
         title = safe_text(known[0])
     problem: str = LIBRARY_PROBLEMS.get(str(item.get("problem")), _PROBLEM) if item.get("available") is False else ""
@@ -181,6 +178,21 @@ def episode_row(item: Mapping[str, object], info: EpisodeInfo) -> AnimeRow:
         status=f"{RESTORING}…" if item.get("restoring") else problem or LIBRARY_READY,
         detail=problem,
     )
+
+
+def episode_name(item: Mapping[str, object], info: EpisodeInfo) -> str | None:
+    """Return `<entry title> · <Nr> · <episode title>` of a set keyed to an entry, or None without an entry title."""
+    entry_title: object = item.get("entry_title")
+    if not isinstance(entry_title, str) or not entry_title:
+        return None
+    label: LibraryLabel = _label(item)
+    known: tuple[str | None, datetime | None] | None = _listed(item, info)
+    parts: tuple[str | None, ...] = (
+        entry_title,
+        None if label.episode is None else label.episode_text,
+        None if known is None else known[0],
+    )
+    return " · ".join(safe_text(part) for part in parts if part)
 
 
 def title_entry(title: LibraryTitle) -> str:
@@ -290,6 +302,12 @@ def _grouped(key: str, title: str, sets: tuple[Mapping[str, object], ...]) -> Li
 def _newest(item: Mapping[str, object]) -> tuple[int, Decimal]:
     label: LibraryLabel = _label(item)
     return label.season or 0, label.episode or Decimal(0)
+
+
+def _listed(item: Mapping[str, object], info: EpisodeInfo) -> tuple[str | None, datetime | None] | None:
+    anilist_id: int | None = _number(item.get("anilist_id"))
+    episode: int | None = _number(item.get("episode"))
+    return None if anilist_id is None or episode is None else info.get(anilist_id, {}).get(episode)
 
 
 def _number(value: object) -> int | None:

@@ -42,9 +42,12 @@ from anishift.cli.interactive.anime_view import (
     MIN_COLUMNS,
     MIN_ROWS,
     AnimeFrame,
+    beside_cover,
+    cover_columns,
     fit,
     highlighted_row,
     overflows,
+    place_cover,
     render_anime,
     shown_rows,
 )
@@ -77,6 +80,7 @@ from anishift.cli.interactive.state_library import (
     detail_entries,
     detail_file,
     details_label,
+    episode_name,
     episode_row,
     episodes_actions,
     library_row_id,
@@ -256,6 +260,7 @@ class StateController:
         self._library_confirm: tuple[str, ...] | None = None
         self._deletion_notice: bool = False
         self._episode_info: dict[int, dict[int, tuple[str | None, datetime | None]]] = {}
+        self._episodes_asked: set[int] = set()
         self._known_sets: dict[str, Mapping[str, object]] = {}
         self._hidden: dict[str, str] = {}
         self._restoring: dict[str, PendingRestore] = {}
@@ -356,7 +361,7 @@ class StateController:
             self._positions[_Tab.FILES] = self._selected
             self._follow_cursor[self._viewport()] = True
             self._library_target = None
-            self._load_episodes(title)
+            self._load_episodes((item.get("anilist_id") for item in title.sets), title.key)
             return
 
     def show_processing(self) -> None:
@@ -672,6 +677,8 @@ class StateController:
         self._selected = self._positions.get(tab, 0)
         if tab == _Tab.ANIME and self._anime is not None:
             self._anime.reread_episode_states()
+        if tab == _Tab.PROGRESS:
+            self._load_processing_episodes()
 
     def _viewport(self) -> int:
         if self._details is not None:
@@ -767,7 +774,7 @@ class StateController:
             row: int | None = next((index for index, item in enumerate(materials) if failed_group(item) == retry), None)
             self._selected = self._selected if row is None else row
             self._follow_cursor[_Tab.PROGRESS] = True
-            self._retry_now(retry, "Materiał" if row is None else material_name(materials[row]))
+            self._retry_now(retry, "Materiał" if row is None else self._material_label(materials[row]))
         if result is AnimeResult.HOME:
             return StateResult.HOME
         if result is AnimeResult.SUBSCRIPTIONS:
@@ -822,7 +829,7 @@ class StateController:
             return
         group: str | None = failed_group(item)
         if key == "p" and group is not None:
-            self._retry_now(group, material_name(item))
+            self._retry_now(group, self._material_label(item))
             return
         toggle: tuple[str, str] | None = pause_toggle(item)
         if key == "w" and toggle is not None:
@@ -992,7 +999,7 @@ class StateController:
         self._selected = 0
         self._offsets[self._viewport()] = 0
         self._follow_cursor[self._viewport()] = True
-        self._load_episodes(title)
+        self._load_episodes((item.get("anilist_id") for item in title.sets), title.key)
 
     def _close_title(self) -> None:
         key: str | None = self._library_title
@@ -1007,21 +1014,17 @@ class StateController:
         if self._library_title is not None and self._details is None and self._open_title_view() is None:
             self._close_title()
 
-    def _load_episodes(self, title: LibraryTitle) -> None:
+    def _load_episodes(self, anilist_ids: Iterable[object], key: str | None = None) -> None:
         wanted: list[int] = sorted(
-            {
-                identifier
-                for item in title.sets
-                if isinstance(identifier := item.get("anilist_id"), int) and identifier not in self._episode_info
-            }
+            {item for item in anilist_ids if isinstance(item, int) and item not in self._episode_info}
         )
         if not wanted:
             return
         threading.Thread(
-            target=self._read_episodes, args=(title.key, wanted), name="anishift-library-episodes", daemon=True
+            target=self._read_episodes, args=(key, wanted), name="anishift-library-episodes", daemon=True
         ).start()
 
-    def _read_episodes(self, key: str, anilist_ids: list[int]) -> None:
+    def _read_episodes(self, key: str | None, anilist_ids: list[int]) -> None:
         session: ResidentSession | None = None
         found: dict[int, dict[int, tuple[str | None, datetime | None]]] = {}
         try:
@@ -1036,7 +1039,7 @@ class StateController:
             if session is not None:
                 session.close()
         with self._lock:
-            if self._library_title != key or self._stop.is_set():
+            if (key is not None and self._library_title != key) or self._stop.is_set():
                 return
             self._episode_info.update(found)
         self._invalidate()
@@ -1366,6 +1369,8 @@ class StateController:
                 self._adopt_subscriptions(listing, subscriptions)
                 self._connected = True
                 self._observe_downloads()
+                if self._tab == _Tab.PROGRESS:
+                    self._load_processing_episodes()
                 if self._notice_version < self._state_version and not self._notice_persistent:
                     self._notice = ""
                 if context != self._library_context() and self._notice_persistent and not self._deletion_notice:
@@ -1576,7 +1581,11 @@ class StateController:
             self._cover_id = shown[highlight]
 
     def _list_body(self, columns: int, rows: int) -> Text:
-        entries: Sequence[str | Text] = self._entries(max(columns - 8, 1))
+        covers: tuple[int | None, ...] = self._listed_covers()
+        cover: tuple[int, int] | None = self._cover_box(covers)
+        room: int | None = None if cover is None else beside_cover(columns, cover)
+        width: int = columns if room is None else room + 6
+        entries: Sequence[str | Text] = self._entries(max(width - 8, 1))
         selected: int = min(self._selected, max(len(entries) - 1, 0))
         if self._retry is None:
             self._selected = selected
@@ -1591,7 +1600,7 @@ class StateController:
         ]
         status: Text = _status_keys(Text(self._global_status(max(columns - 4, 1)), style="gray"))
         footer = [*footer[: max(rows - 4, 0)], status]
-        wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(entries, columns)
+        wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(entries, width)
         remaining: int = max(rows - 2 - len(footer), 1)
         heights: tuple[int, ...] = tuple(map(len, wrapped))
         start, end = visible_window(len(entries), selected, remaining + 7, heights=heights)
@@ -1603,28 +1612,62 @@ class StateController:
             start = min(self._offsets.get(viewport, 0), last)
             self._offsets[viewport] = start
             end = len(entries)
-        content: Text = Text()
         widths: list[int] = [
             line.cell_len if isinstance(line, Text) else Text(line).cell_len for lines in wrapped for line in lines
         ]
-        left: int = max((columns - 2 - max(widths, default=0)) // 2, 0)
-        for index in range(start, end):
+        block: int = max(widths, default=0) + 2
+        shown: range = range(start, end)
+        if cover is not None and room is not None and entries:
+            margin, left = cover_columns(columns, cover, block)
+            lines, firsts = self._list_lines(columns, rows, wrapped, shown, selected, footer, left)
+            highlight: int = highlighted_row(self._hovered, selected, shown)
+            if highlight in firsts and place_cover(lines, cover, margin, firsts[highlight], len(lines) - len(footer)):
+                frame: Text = Text("\n").join(lines)
+                self._place_cover(frame, covers, highlight)
+                return frame
+        centered: int = max((columns - block) // 2, 0)
+        return Text("\n").join(self._list_lines(columns, rows, wrapped, shown, selected, footer, centered)[0])
+
+    def _list_lines(  # noqa: PLR0913
+        self,
+        columns: int,
+        rows: int,
+        wrapped: tuple[tuple[str | Text, ...], ...],
+        shown: range,
+        selected: int,
+        footer: list[Text],
+        left: int,
+    ) -> tuple[list[Text], dict[int, int]]:
+        content: Text = Text()
+        remaining: int = max(rows - 2 - len(footer), 1)
+        firsts: dict[int, int] = {}
+        for index in shown:
             if remaining <= 0:
                 break
             lines: tuple[str | Text, ...] = wrapped[index][:remaining]
+            firsts[index] = sum(len(item) for item in wrapped[shown.start : index])
             append_wrapped_row(content, left, lines, index == selected, "", index=index)
             remaining -= len(lines)
-            self._page = max(index - start + 1, 1)
-        if not entries:
+            self._page = max(index - shown.start + 1, 1)
+        if not wrapped:
             content.append("\n")
             content.append_text(self._empty_line(columns))
         body: list[Text] = [self._breadcrumb(columns), *content.split("\n")]
         area: int = rows - len(footer)
         top: int = max((area - len(body)) // 2, 0)
         padding: list[Text] = [Text() for _ in range(max(area - top - len(body), 0))]
-        return Text("\n").join(
-            [*(Text() for _ in range(top)), *body, *padding, *(_centered(line, columns) for line in footer)]
-        )
+        lines_shown: list[Text] = [
+            *(Text() for _ in range(top)),
+            *body,
+            *padding,
+            *(_centered(line, columns) for line in footer),
+        ]
+        return lines_shown, {index: top + 1 + line for index, line in firsts.items()}
+
+    def _listed_covers(self) -> tuple[int | None, ...]:
+        if self._tab != _Tab.PROGRESS or self._history_open or self._retry is not None:
+            return ()
+        return self._cached_covers(item.get("anilist_id") for item in self._processing_rows())
 
     def _shown_tab(self) -> int:
         if self._tab == _Tab.ANIME and self._anime is not None and self._anime.in_subscriptions:
@@ -1906,25 +1949,20 @@ class StateController:
     def _processing_entries(self, columns: int) -> list[Text]:
         entries: list[Text] = []
         items: list[Mapping[str, object]] = self._processing_rows()
-        names: tuple[str, ...] = tuple(
-            self._runs[str(item["run_id"])][1].label(str(item["group_id"]))
-            if item.get("stage") == "processing"
-            else material_name(item)
-            for item in items
-        )
-        for item in items:
+        names: tuple[str, ...] = tuple(self._material_label(item) for item in items)
+        for item, name in zip(items, names, strict=True):
             if item.get("stage") == "processing":
                 status: str | None = (
                     "Brak połączenia" if not self._connected else ("Wstrzymane" if held(self._snapshot, item) else None)
                 )
                 line: Text = self._runs[str(item["run_id"])][1].render_group(
-                    str(item["group_id"]), columns, status=status, names=names
+                    str(item["group_id"]), columns, status=status, label=name, names=names
                 )
             else:
                 label, fraction = download_progress(item, self._snapshot, connected=self._connected)
                 timer: ObservedProgressTimer | None = self._download_timers.get(str(item.get("material_id")))
                 line = render_material_progress(
-                    material_name(item),
+                    name,
                     label,
                     fraction if fraction is not None or timer is None else timer.fraction,
                     columns,
@@ -1933,6 +1971,24 @@ class StateController:
                 )
             entries.append(line)
         return entries
+
+    def _material_label(self, item: Mapping[str, object]) -> str:
+        named: str | None = episode_name(item, self._episode_info)
+        if named is not None:
+            return named
+        run: tuple[str, RichRunProgress] | None = self._runs.get(str(item.get("run_id")))
+        if item.get("stage") == "processing" and run is not None:
+            return run[1].label(str(item.get("group_id")))
+        return material_name(item)
+
+    def _load_processing_episodes(self) -> None:
+        fresh: set[int] = {
+            identifier
+            for item in self._processing_rows()
+            if isinstance(identifier := item.get("anilist_id"), int) and identifier not in self._episodes_asked
+        }
+        self._episodes_asked |= fresh
+        self._load_episodes(fresh)
 
     def _observe_downloads(self) -> None:
         manual: set[str] = {

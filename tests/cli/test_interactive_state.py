@@ -258,6 +258,84 @@ def test_processing_toggles_one_download_with_w(
         controller._thread.join(5)
 
 
+_BLUE_BOX: Final[dict[str, object]] = {
+    "anilist_id": 7,
+    "series": "Blue Box",
+    "entry_title": "Blue Box Season 2",
+    "season": 2,
+    "episode": 2,
+}
+
+
+def test_processing_names_a_keyed_row_after_its_entry_and_episode_and_another_after_its_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
+    controller._connected = True
+    controller._episode_info = {7: {2: ("Admiration", None)}}
+    download: dict[str, object] = {
+        "material_id": "download",
+        "info_hash": "hash",
+        "stage": "download",
+        "acquisition_state": "accepted",
+        "state": "downloading",
+        "progress": 0.5,
+    }
+    view: RunProgressSnapshot = _live_snapshot(
+        "run",
+        {"local": "Blue Box - S02E03 - Kiss.mkv"},
+        (RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="local", task_id="tts-local"),),
+    )
+    controller._runs = {"run": (view.preview.preview_id, RichRunProgress.from_snapshot(view, lambda: None))}
+    controller._snapshot = {
+        "materials": [
+            {**download, **_BLUE_BOX, "name": "[Grp] Ao no Hako - 26.mkv"},
+            {**download, "material_id": "hand", "info_hash": "other", "name": "Hand.mkv"},
+            {**_live_material("local"), **_BLUE_BOX, "episode": 3},
+        ],
+        "requests": [{"request_id": "run", "state": "running"}],
+    }
+    try:
+        frame: str = controller.render(160, 40).plain
+        assert "Blue Box Season 2 · S02E02 · Admiration" in frame
+        assert "Blue Box Season 2 · S02E03" in frame
+        assert "Hand.mkv" in frame
+        assert "Ao no Hako" not in frame
+        assert "Kiss" not in frame
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def test_processing_asks_once_for_the_episode_titles_of_each_keyed_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    asked: list[list[object]] = []
+    monkeypatch.setattr(controller, "_load_episodes", lambda ids, key=None: asked.append(sorted(ids)))
+    controller._snapshot = {
+        "materials": [
+            {
+                "material_id": "download",
+                "stage": "download",
+                "acquisition_state": "accepted",
+                "name": "a.mkv",
+                **_BLUE_BOX,
+            },
+            {"material_id": "hand", "stage": "download", "acquisition_state": "accepted", "name": "Hand.mkv"},
+        ]
+    }
+    try:
+        controller.show_processing()
+        controller._switch_tab(state_module._Tab.FILES)
+        controller.show_processing()
+        assert asked == [[7], []]
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
 @pytest.mark.parametrize(
     ("state", "started", "action", "paused", "label", "hint", "command"),
     [
