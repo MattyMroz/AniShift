@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import threading
@@ -209,6 +210,8 @@ class CoverImages:
             temporary.replace(stored)
         except OSError as problem:
             logger.warning("Cover payload not stored", error_class=type(problem).__name__)
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
         return payload
 
 
