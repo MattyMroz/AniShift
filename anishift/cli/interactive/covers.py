@@ -1,11 +1,11 @@
-"""Encode cached AniList covers into native terminal images on one background thread."""
+"""Encode cached AniList covers into native terminal images ahead of use on one background thread."""
 
 from __future__ import annotations
 
 import math
 import threading
-from collections import OrderedDict
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Final
 
@@ -18,20 +18,14 @@ __all__ = ["COVER_ASPECT", "COVER_ROWS", "CoverImages", "cover_image"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-COVER_ROWS: Final[int] = 12
-"""Text rows of the cover slot, the same for every cover."""
+COVER_ROWS: Final[int] = 13
+"""Text rows of the cover slot, odd so the slot has a middle row, the same for every cover."""
 
 COVER_ASPECT: Final[float] = 0.72
 """Width to height ratio of an AniList cover, 460 x 636 pixels."""
 
-_CACHED: Final[int] = 64
-"""Most encoded covers kept in memory."""
-
 _STATIC_SECONDS: Final[float] = 1.0
 """Cycle of a cover, which has one frame."""
-
-type _Key = tuple[int, tuple[int, int]]
-"""One cover in one cell size."""
 
 
 def cover_box(cell: tuple[int, int]) -> tuple[int, int]:
@@ -55,7 +49,7 @@ def cover_image(path: Path, cell: tuple[int, int]) -> NativeImage | None:
 
 
 class CoverImages:
-    """Keep encoded covers in memory and encode the newest requested one on the thread anishift-cover."""
+    """Keep every listed cover encoded in memory, encoding missing ones on the thread anishift-cover."""
 
     def __init__(
         self,
@@ -67,8 +61,8 @@ class CoverImages:
         self._cell: Callable[[], tuple[int, int] | None] = cell
         self._directory: Callable[[], Path] = directory
         self._lock: threading.Lock = threading.Lock()
-        self._ready: OrderedDict[_Key, NativeImage | None] = OrderedDict()
-        self._wanted: _Key | None = None
+        self._ready: dict[int, NativeImage | None] = {}
+        self._queue: deque[int] = deque()
         self._wake: threading.Event = threading.Event()
         self._worker: threading.Thread | None = None
 
@@ -79,32 +73,52 @@ class CoverImages:
 
     def image(self, anilist_id: int) -> NativeImage | None:
         """Return the encoded cover, or None while it is encoded, unreadable or without SIXEL."""
-        cell: tuple[int, int] | None = self._cell()
-        if cell is None:
+        if self._cell() is None:
             return None
-        key: _Key = (anilist_id, cell)
         with self._lock:
-            if key in self._ready:
-                self._ready.move_to_end(key)
-                return self._ready[key]
-            self._wanted = key
+            if anilist_id in self._ready:
+                return self._ready[anilist_id]
+        self._request((anilist_id,), first=True)
+        return None
+
+    def prepare(self, anilist_ids: Iterable[int]) -> None:
+        """Queue the covers of a shown list, so moving the highlight finds them encoded."""
+        if self._cell() is not None:
+            self._request(anilist_ids, first=False)
+
+    def _request(self, anilist_ids: Iterable[int], *, first: bool) -> None:
+        with self._lock:
+            queued: set[int] = set(self._queue)
+            missing: list[int] = [
+                item for item in dict.fromkeys(anilist_ids) if item not in self._ready and (first or item not in queued)
+            ]
+            if not missing:
+                return
+            if first:
+                self._queue.extendleft(reversed(missing))
+            else:
+                self._queue.extend(missing)
             if self._worker is None:
                 self._worker = threading.Thread(target=self._run, name="anishift-cover", daemon=True)
                 self._worker.start()
         self._wake.set()
-        return None
 
     def _run(self) -> None:
         while self._wake.wait():
             self._wake.clear()
-            with self._lock:
-                key: _Key | None = self._wanted
-                self._wanted = None
-            if key is None or key in self._ready:
-                continue
-            encoded: NativeImage | None = cover_image(self._directory() / cover_name(key[0]), key[1])
-            with self._lock:
-                self._ready[key] = encoded
-                while len(self._ready) > _CACHED:
-                    self._ready.popitem(last=False)
-            self._invalidate()
+            while (anilist_id := self._next()) is not None:
+                cell: tuple[int, int] | None = self._cell()
+                encoded: NativeImage | None = (
+                    None if cell is None else cover_image(self._directory() / cover_name(anilist_id), cell)
+                )
+                with self._lock:
+                    self._ready[anilist_id] = encoded
+                self._invalidate()
+
+    def _next(self) -> int | None:
+        with self._lock:
+            while self._queue:
+                anilist_id: int = self._queue.popleft()
+                if anilist_id not in self._ready:
+                    return anilist_id
+            return None

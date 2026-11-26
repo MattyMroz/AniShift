@@ -108,6 +108,21 @@ def test_hovered_bands_every_line_of_a_wrapped_row_only_over_the_list() -> None:
     assert hovered(frame, None) == ()
 
 
+def test_hovered_row_names_the_list_row_the_hover_lights() -> None:
+    frame: Text = Text("NAGŁÓWEK\n")
+    append_wrapped_row(frame, 2, ("pierwsza linia", "  dalszy ciąg"), False, "", index=7)
+    append_wrapped_row(frame, 2, ("druga pozycja",), True, "", index=8)
+    selection: FrameSelection = FrameSelection()
+    selection.paint(frame, ())
+
+    selection.hover(TextPoint(2, 5))
+    wrapped: int | None = selection.hovered_row()
+    selection.hover(TextPoint(0, 2))
+
+    assert wrapped == 7
+    assert selection.hovered_row() is None
+
+
 def test_hovered_bands_only_the_tagged_tab_under_the_mouse() -> None:
     tabs: Text = Text("Anime · Subskrypcje")
     mark_target(tabs, 8, 19, Click(ClickKind.TAB, 1))

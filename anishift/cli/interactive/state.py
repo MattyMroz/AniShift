@@ -238,6 +238,7 @@ class StateController:
         self._parent: ResidentSession = session
         self._covers: CoverImages | None = covers
         self._cover_id: int | None = None
+        self._hovered: int | None = None
         self._clock: Callable[[], datetime] = clock
         self._session: ResidentSession | None = None
         self._invalidate: Callable[[], None] = invalidate
@@ -1519,10 +1520,11 @@ class StateController:
             return None
         return self._covers.image(anilist_id)
 
-    def render(self, columns: int, rows: int) -> Text:
-        """Pin heading and tabs to the top and the body's keys above the status line."""
+    def render(self, columns: int, rows: int, *, hovered: int | None = None) -> Text:
+        """Pin heading and tabs to the top and the body's keys; the cover follows the hovered row, else the cursor."""
         with self._lock:
             self._cover_id = None
+            self._hovered = hovered
             budget: int = max(rows - 1, 1)
             spaced: bool = rows >= _MINIMUM_HEADER_ROWS
             heading: list[Text] = []
@@ -1779,9 +1781,17 @@ class StateController:
         if self._follow_cursor.get(viewport, True):
             offset = max(min(offset, self._selected), self._selected - visible + 1)
         self._offsets[viewport] = offset
-        frame: AnimeFrame = render_anime(replace(snapshot, offset=offset), columns, area, self._clock().timestamp())
-        if NATIVE_IMAGE_ANCHOR in frame.text.plain and self._selected < len(shown):
-            self._cover_id = shown[self._selected]
+        hovered: int | None = self._hovered
+        highlight: int = (
+            hovered if hovered is not None and offset <= hovered < min(offset + visible, len(items)) else self._selected
+        )
+        frame: AnimeFrame = render_anime(
+            replace(snapshot, offset=offset, highlight=highlight), columns, area, self._clock().timestamp()
+        )
+        if self._covers is not None and snapshot.cover is not None:
+            self._covers.prepare(item for item in shown if item is not None)
+        if NATIVE_IMAGE_ANCHOR in frame.text.plain and highlight < len(shown):
+            self._cover_id = shown[highlight]
         lines: list[Text] = list(frame.text.split("\n"))
         if not items and frame.visible:
             lines[frame.first_row] = self._empty_line(columns)

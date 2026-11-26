@@ -1012,7 +1012,7 @@ class _InteractiveApplication:
             content = settings.render(columns, rows)
             screen = settings.view_key()
         elif mode is _ViewMode.STATE and self._state is not None:
-            content = self._state.render(columns, rows)
+            content = self._state.render(columns, rows, hovered=self._frame_selection.hovered_row())
             screen = self._state.view_key()
         else:
             content = _message_content(

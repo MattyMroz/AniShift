@@ -438,12 +438,10 @@ def _table_width(spec: _Table, widths: list[int], shown: list[int]) -> int:
 
 def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -> int:
     spec: _Table = _spec(snapshot.screen)
-    limit, cover = _table_room(canvas, snapshot)
-    widths, shown = _widths(snapshot, spec, limit, now, visible, whole=cover > 0)
+    widths, shown, cover = _layout(canvas, snapshot, spec, now, visible)
     width: int = _table_width(spec, widths, shown)
     canvas.place(width)
-    longest: int = max((Text(_values(snapshot, item, now)[spec.title]).cell_len for item in snapshot.items), default=0)
-    if cover and width <= limit and widths[spec.title] >= min(spec.floor, longest):
+    if cover:
         _cover_slot(canvas, snapshot, width, cover)
     columns: list[tuple[int, int, int]] = []
     column: int = spec.prefix
@@ -457,34 +455,64 @@ def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -
     return widths[spec.title]
 
 
+def _layout(
+    canvas: _Canvas, snapshot: AnimeSnapshot, spec: _Table, now: float, visible: int
+) -> tuple[list[int], list[int], int]:
+    """Return column widths, shown columns and cover columns: the title shortens first, then the cover goes."""
+    limit, cover = _table_room(canvas, snapshot)
+    widths, shown = _widths(snapshot, spec, limit, now, visible, whole=cover > 0)
+    longest: int = max((Text(_values(snapshot, item, now)[spec.title]).cell_len for item in snapshot.items), default=0)
+    if not cover or (_table_width(spec, widths, shown) <= limit and widths[spec.title] >= min(spec.floor, longest)):
+        return widths, shown, cover
+    widths, shown = _widths(snapshot, spec, canvas.width - _MARGIN, now, visible)
+    return widths, shown, 0
+
+
 def _table_room(canvas: _Canvas, snapshot: AnimeSnapshot) -> tuple[int, int]:
     """Return the cells a table may take and the cover slot columns left of it, 0 when the slot does not fit."""
     limit: int = canvas.width - _MARGIN
     if snapshot.cover is None:
         return limit, 0
     columns, rows = snapshot.cover
-    first, end = _cover_band(canvas, snapshot)
     narrowed: int = canvas.width - columns - 3 * _COVER_GAP
-    if narrowed < _TITLE_FLOOR or first < 0 or end - first < rows:
+    if narrowed < _TITLE_FLOOR or canvas.top < 1 or _footer_top(canvas, snapshot) < rows:
         return limit, 0
     return narrowed, columns
 
 
-def _cover_band(canvas: _Canvas, snapshot: AnimeSnapshot) -> tuple[int, int]:
-    """Return the first row and the end row of the cover slot: from the column labels to the footer."""
-    footer: int = len(canvas.lines) - len(_key_lines(snapshot, canvas.width - _MARGIN)) - _footer_rows(snapshot) - 1
-    return canvas.top - 1, footer
+def _footer_top(canvas: _Canvas, snapshot: AnimeSnapshot) -> int:
+    """Return the first row of the notices and keys pinned under a table."""
+    return len(canvas.lines) - len(_key_lines(snapshot, canvas.width - _MARGIN)) - _footer_rows(snapshot)
 
 
 def _cover_slot(canvas: _Canvas, snapshot: AnimeSnapshot, width: int, columns: int) -> None:
-    """Center the slot and the table as one block, the slot left and vertically centered on the cursor row."""
+    """Center the slot and the table as one block, the slot left and vertically centered on the highlighted row."""
     rows: int = snapshot.cover[1] if snapshot.cover is not None else 0
     margin: int = max((canvas.width - columns - _COVER_GAP - width) // 2, _COVER_GAP)
+    highlight: int = snapshot.cursor if snapshot.highlight is None else snapshot.highlight
+    row: int = canvas.top + highlight - snapshot.offset
+    first, end = _blank_band(canvas, row, (margin, margin + columns), _footer_top(canvas, snapshot))
+    if end - first < rows:
+        return
     canvas.left = margin + columns + _COVER_GAP
-    first, end = _cover_band(canvas, snapshot)
-    cursor: int = canvas.top + snapshot.cursor - snapshot.offset
-    top: int = max(min(cursor - (rows - 1) // 2, end - rows), first)
+    top: int = max(min(row - (rows - 1) // 2, end - rows), first)
     canvas.write(top, margin, Text(NATIVE_IMAGE_ANCHOR), selectable=False)
+
+
+def _blank_band(canvas: _Canvas, row: int, cells: tuple[int, int], footer: int) -> tuple[int, int]:
+    """Return the first and the end row of the run of rows around *row* whose *cells* hold no text."""
+
+    def blank(index: int) -> bool:
+        plain: str = canvas.lines[index].plain
+        return not plain[character_offset(plain, cells[0]) : character_offset(plain, cells[1])].strip()
+
+    first: int = row
+    while first > 0 and blank(first - 1):
+        first -= 1
+    end: int = row + 1
+    while end < footer and blank(end):
+        end += 1
+    return first, end
 
 
 def _pointer(*, active: bool) -> str:
@@ -593,8 +621,7 @@ def _footer(  # noqa: PLR0913
 
 def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, canvas: _Canvas, now: float, visible: int) -> str:
     spec: _Table = _spec(snapshot.screen)
-    limit, cover = _table_room(canvas, snapshot)
-    widths, shown = _widths(snapshot, spec, limit, now, visible, whole=cover > 0)
+    widths, shown, _cover = _layout(canvas, snapshot, spec, now, visible)
     values: list[str] = _values(snapshot, item, now)
     releases: bool = snapshot.screen is AnimeScreen.RELEASES
     truncated: bool = Text(item.title).cell_len > widths[spec.title]

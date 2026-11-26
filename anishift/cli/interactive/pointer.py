@@ -238,6 +238,14 @@ class FrameSelection:
         self._frame = frame
         return frame
 
+    def hovered_row(self) -> int | None:
+        """Return the index of the list row the hover lights, or None when it lights no list row."""
+        bands: tuple[tuple[int, int, int], ...] = hovered(self._frame, self._hover)
+        if not bands:
+            return None
+        row: Click | None = _line_row(self._frame.split("\n", allow_blank=True)[bands[0][0]])
+        return None if row is None else row.value
+
     def hover(self, point: TextPoint) -> bool:
         """Follow a move with no button pressed and report whether it changed the lit target."""
         before: tuple[tuple[int, int, int], ...] = hovered(self._frame, self._hover)
