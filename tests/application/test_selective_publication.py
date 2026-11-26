@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 from fakes import FakeMediaProbe, FakeTranslationService
+from loguru import logger as loguru_logger
 from test_automation import _request, _unlink_when_released
 from test_selective_lifecycle import (
     _ENTRY,
@@ -48,6 +49,7 @@ from anishift.application.control import (
     RequestState,
     WatchState,
 )
+from anishift.application.episode_commands import EpisodeReason
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import AutoPreset, ProductIntent, ProductKind
 from anishift.application.ready import ReadyMove, ReadyStore
@@ -977,17 +979,66 @@ def test_an_unavailable_catalogue_names_a_followed_series_from_its_subscription_
 
 def test_an_unknown_series_waits_for_the_catalogue_and_publishes_once_it_answers(setup: _Setup) -> None:
     setup.catalogue.down = True
-    with _running(setup) as owner:
-        _download(setup, owner)
-        _until(lambda: len(setup.catalogue.franchised) > 3)
-        waiting: EpisodePublication | None = _current(owner).assignments[0].publication
-        blocked: set[str] = _root_files(setup)
-        setup.catalogue.down = False
-        _until(lambda: _settled(owner))
+    warned: list[str] = []
+    handler: int = loguru_logger.add(
+        lambda message: warned.append(message.record["message"]),
+        filter=lambda record: record["level"].name == "WARNING" and "Episode name" in record["message"],
+    )
+    try:
+        with _running(setup) as owner:
+            _download(setup, owner)
+            _until(lambda: len(setup.catalogue.franchised) > 3)
+            waiting: EpisodePublication | None = _current(owner).assignments[0].publication
+            status: dict[str, object] = _status(owner)
+            blocked: set[str] = _root_files(setup)
+            setup.catalogue.down = False
+            _until(lambda: _settled(owner))
+    finally:
+        loguru_logger.remove(handler)
 
     assert waiting is None
+    assert (status["state"], status["reason"]) == ("downloaded", EpisodeReason.EPISODE_NAME_WAITING)
+    assert warned == ["Episode name waits for the catalogue"]
     assert blocked == set()
     assert _root_files(setup) == set(_PUBLISHED)
+
+
+def test_a_series_title_with_nothing_usable_waits_visibly_without_stopping_the_round(setup: _Setup) -> None:
+    setup.catalogue.english = "???"
+    setup.catalogue.romaji = "???"
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _status(owner)["reason"] == EpisodeReason.EPISODE_NAME_WAITING)
+        polled: int = setup.network.info_calls
+        _until(lambda: setup.network.info_calls > polled + 5)
+        problem: str | None = owner._on_owner(lambda: owner._transfers_problem)
+
+    assert problem is None
+    assert _root_files(setup) == set()
+
+
+def test_a_name_taken_again_after_an_ordinal_moves_the_set_to_the_next_ordinal(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    links: list[Path] = []
+
+    def link(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        _REAL_LINK(source, destination)
+        if Path(destination).name.startswith(WATCH_STATE_FILE_NAME):
+            return
+        links.append(Path(destination))
+        if len(links) == 1:
+            (setup.root / f"{_CORE} [2].ass").write_bytes(b"foreign")
+
+    (setup.root / _PUBLISHED[0]).write_bytes(b"foreign")
+    monkeypatch.setattr(os, "link", link)
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _settled(owner))
+
+    assert (setup.root / f"{_CORE} [3].mkv").read_bytes() == _VIDEO
+    assert (setup.root / f"{_CORE} [3].ass").read_bytes() == _SUBTITLES
+    assert not (setup.root / f"{_CORE} [2] [2].mkv").exists()
 
 
 def test_a_reserved_name_survives_a_restart_and_a_later_episode_title(

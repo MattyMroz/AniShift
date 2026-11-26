@@ -77,6 +77,7 @@ class EpisodeReason(StrEnum):
     ADMISSION_FAILED = "admission_failed"
     TRANSFER_FAILED = "transfer_failed"
     PUBLICATION_FAILED = "publication_failed"
+    EPISODE_NAME_WAITING = "episode_name_waiting"
     WAITING_PREVIOUS_TRANSFER = "waiting_previous_transfer"
     EPISODE_FILE_UNRESOLVED = "episode_file_unresolved"
     PUBLICATION_MISSING = "publication_missing"

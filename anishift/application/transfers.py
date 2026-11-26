@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -45,6 +46,7 @@ __all__ = [
     "flat_layout",
     "flat_names",
     "metadata_check",
+    "ordinal_free",
     "reserved_stem",
     "video_sidecars",
 ]
@@ -79,6 +81,9 @@ _SETTLING_STATES: Final[frozenset[str]] = frozenset(
 
 _FIRST_ORDINAL: Final[int] = 2
 """Suffix given to the first colliding set, because the free core carries no number."""
+
+_ORDINAL_TAIL: Final[re.Pattern[str]] = re.compile(r" \[\d+\]$")
+"""Collision ordinal a free core ends with."""
 
 _FAILURES_BEFORE_PROBLEM: Final[int] = 3
 """Consecutive failed inspections of one transfer before its release stops with a visible problem."""
@@ -491,6 +496,11 @@ def flat_names(files: Sequence[FileReservation], reserved: frozenset[str]) -> tu
 def _split(name: str) -> tuple[str, str]:
     path: Path = Path(name.replace("\\", "/"))
     return path.stem, path.suffix
+
+
+def ordinal_free(core: str) -> str:
+    """Return *core* without the collision ordinal a free core may end with."""
+    return _ORDINAL_TAIL.sub("", core)
 
 
 def _free_core(stem: str, taken: set[str]) -> str:

@@ -240,6 +240,7 @@ from anishift.application.transfers import (
     flat_layout,
     flat_names,
     metadata_check,
+    ordinal_free,
     reserved_stem,
     video_sidecars,
 )
@@ -845,6 +846,7 @@ class AutomationOwner:
         self._media_probe: MediaProbe | None = media_probe
         self._check_retries: dict[str, float] = {}
         self._checking: set[str] = set()
+        self._unnamed: set[str] = set()
         self._subscriptions_at: float | None = None
         self._subscription_checks: set[str] = set()
         self._subscription_requests: set[str] = set()
@@ -5412,6 +5414,8 @@ class AutomationOwner:
         if downloaded:
             if assignment.publication is not None and assignment.publication.problem is not None:
                 reason = EpisodeReason.PUBLICATION_FAILED
+            elif assignment.publication is None and assignment.admission_id in self._unnamed:
+                reason = EpisodeReason.EPISODE_NAME_WAITING
             elif assignment.source is AdmissionSource.SUBSCRIPTION and assignment.publication is None:
                 reason = EpisodeReason.SUBSCRIPTION_CHECKING
         elif not self._replacement_ready(transfer):
@@ -7020,27 +7024,49 @@ class AutomationOwner:
         )
         if assignment is None or assignment.publication is not None:
             return None
+        name, failure = self._catalogue_name(assignment)
+        core: str | None = None
+        if name is not None:
+            try:
+                core = episode_file_stem(name)
+            except ValueError:
+                failure = "unusable_series_title"
+        if self._owned(partial(self._mark_unnamed, admission_id, waiting=core is None)):
+            logger.warning("Episode name waits for the catalogue", provider="anilist", error_class=failure)
+        return core
+
+    def _catalogue_name(self, assignment: EpisodeAssignment) -> tuple[EpisodeName | None, str | None]:
+        """Return the name facts of one episode set and why the catalogue could not give them, if it could not."""
         choice: EpisodeChoice = assignment.choice
         acquisition: AcquisitionService | None = self._service.acquisition
-        name: EpisodeName | None = None
+        failure: str = "no_catalogue"
         if acquisition is not None:
             try:
                 with acquisition.episode_requests():
-                    name = acquisition.episode_name(choice.anilist_id, choice.number)
+                    name: EpisodeName = acquisition.episode_name(choice.anilist_id, choice.number)
             except (AniShiftError, OSError, ValueError) as error:
-                logger.warning(
-                    "Episode name catalogue unavailable", provider="anilist", error_class=type(error).__name__
-                )
-        if name is None:
-            title: str | None = self._owned(partial(self._followed_title, assignment))
-            if title is None:
-                logger.warning("Episode name waits for the catalogue", provider="anilist")
-                return None
-            name = target_episode_name(title, choice.number, choice.target)
-        elif name.episode.season is None or name.episode.episode is None:
-            target: ListedEpisode = target_episode_name(name.title, choice.number, choice.target).episode
-            name = replace(name, episode=replace(name.episode, season=target.season, episode=target.episode))
-        return episode_file_stem(name)
+                failure = type(error).__name__
+            else:
+                if name.episode.season is not None and name.episode.episode is not None:
+                    return name, None
+                target: ListedEpisode = target_episode_name(name.title, choice.number, choice.target).episode
+                return replace(name, episode=replace(name.episode, season=target.season, episode=target.episode)), None
+        title: str | None = self._owned(partial(self._followed_title, assignment))
+        if title is None:
+            return None, failure
+        logger.warning("Episode named without the catalogue", provider="anilist", error_class=failure)
+        return target_episode_name(title, choice.number, choice.target), failure
+
+    def _mark_unnamed(self, admission_id: str, *, waiting: bool) -> bool:
+        """Record whether one episode set waits for its name, answering whether it has just started waiting."""
+        if waiting == (admission_id in self._unnamed):
+            return False
+        if waiting:
+            self._unnamed.add(admission_id)
+        else:
+            self._unnamed.discard(admission_id)
+        self._publish_state()
+        return waiting
 
     def _followed_title(self, assignment: EpisodeAssignment) -> str | None:
         records: tuple[SubscriptionRecord, ...] = (
@@ -7319,7 +7345,7 @@ class AutomationOwner:
                 for item in _published_files(
                     tuple((item.index, item.source, item.size) for item in publication.files),
                     reserved,
-                    Path(publication.files[0].name).stem,
+                    ordinal_free(Path(publication.files[0].name).stem),
                 )
             )
             logger.info("A taken episode name was reserved again", files=len(outcome.occupied))
