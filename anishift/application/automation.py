@@ -8541,8 +8541,8 @@ class AutomationOwner:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None or self._shutting_down:
             return
-        titles: dict[tuple[str, int], str] = hand_titles(self._ready_library, self._state)
-        wanted: dict[tuple[str, int], str] = {
+        titles: dict[tuple[str, int], tuple[str, int | None]] = hand_titles(self._ready_library, self._state)
+        wanted: dict[tuple[str, int], tuple[str, int | None]] = {
             key: title for key, title in titles.items() if key not in self._recognition_requested
         }
         if not wanted:
@@ -8551,7 +8551,9 @@ class AutomationOwner:
         self._active_io += 1
         self._pool.submit(self._read_recognition, acquisition, wanted)
 
-    def _read_recognition(self, acquisition: AcquisitionService, wanted: dict[tuple[str, int], str]) -> None:
+    def _read_recognition(
+        self, acquisition: AcquisitionService, wanted: dict[tuple[str, int], tuple[str, int | None]]
+    ) -> None:
         found: dict[tuple[str, int], int | None] = {}
         failures: dict[str, int] = {}
         try:
@@ -8574,10 +8576,13 @@ class AutomationOwner:
 
     @staticmethod
     def _recognize_title(
-        acquisition: AcquisitionService, key: tuple[str, int], title: str, failures: dict[str, int]
+        acquisition: AcquisitionService,
+        key: tuple[str, int],
+        title: tuple[str, int | None],
+        failures: dict[str, int],
     ) -> int | None:
         try:
-            return recognize(acquisition.find_titles(title), key[0], key[1])
+            return recognize(acquisition.find_titles(title[0]), key[0], key[1], title[1])
         except (AniShiftError, OSError, ValueError) as error:
             failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
             return None

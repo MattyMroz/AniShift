@@ -72,6 +72,8 @@ AniList), a 71 to pliki ręczne (28 różnych tytułów z nazw plików); 23 subs
 - F-6. Kryterium pewności rozpoznania: wśród kandydatów wyszukiwania dokładnie jeden ma alias, którego
   `normalize_series(strip_season(alias))` równa się `normalize_series` tytułu z nazwy i którego sezon (`season_hint(alias)`,
   brak = 1) równa się sezonowi z nazwy (brak = 1). Zero albo więcej niż jeden taki kandydat, błąd albo 429 = `z nazwy`.
+  Konkurentem jest też kandydat, którego alias równa się tytułowi dopiero po usunięciu roku (remake „Hunter x Hunter (2011)”),
+  a kandydat o znanej liczbie odcinków mniejszej niż najwyższy numer z nazw pliku tego tytułu odpada.
   Rozpoznany zestaw ma źródło `recognized` i dalej zachowuje się jak zestaw z kluczem (seria, okładka, tytuły odcinków).
 
 ### Widok tytułów

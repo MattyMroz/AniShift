@@ -276,29 +276,38 @@ def hand_key(item: LibrarySet) -> tuple[str, int] | None:
     return title, label.season or 1
 
 
-def hand_titles(sets: Sequence[LibrarySet], state: WatchState) -> dict[tuple[str, int], str]:
-    """Map the search key of each hand-added set to the title read from its file name."""
+def hand_titles(sets: Sequence[LibrarySet], state: WatchState) -> dict[tuple[str, int], tuple[str, int | None]]:
+    """Map the search key of each hand-added set to the title from its file name and the highest episode."""
     keyed: dict[str, DownloadedEpisode] = downloaded_episodes(state)
-    titles: dict[tuple[str, int], str] = {}
+    titles: dict[tuple[str, int], tuple[str, int | None]] = {}
     for item in sets:
         key: tuple[str, int] | None = None if item.set_id in keyed else hand_key(item)
-        if key is not None:
-            titles.setdefault(key, library_label(item.name).title)
+        if key is None:
+            continue
+        label: LibraryLabel = library_label(item.name)
+        episode: int | None = None if label.episode is None else int(label.last or label.episode)
+        title, highest = titles.get(key, (label.title, None))
+        titles[key] = title, max((value for value in (highest, episode) if value is not None), default=None)
     return titles
 
 
-def recognize(candidates: Sequence[TitleCandidate], title: str, season: int) -> int | None:
-    """Return the only candidate with an alias of *title* in *season*, or None when none or several match."""
+def recognize(candidates: Sequence[TitleCandidate], title: str, season: int, episode: int | None) -> int | None:
+    """Return the only candidate named *title* in *season* holding *episode*, or None when another or a remake fits."""
     wanted: str = normalize_series(title)
-    matches: list[int] = [
-        candidate.anilist_id
-        for candidate in candidates
-        if any(
-            normalize_series(strip_season(alias)) == wanted and (season_hint(alias) or 1) == season
-            for alias in candidate.aliases()
-        )
-    ]
-    return matches[0] if len(matches) == 1 else None
+    exact: set[int] = set()
+    rivals: set[int] = set()
+    for candidate in candidates:
+        if episode is not None and candidate.episodes is not None and candidate.episodes < episode:
+            continue
+        for alias in candidate.aliases():
+            if (season_hint(alias) or 1) != season:
+                continue
+            base: str = strip_season(alias)
+            if normalize_series(base) == wanted:
+                exact.add(candidate.anilist_id)
+            if normalize_series(SERIES_YEAR.sub("", base)) == wanted:
+                rivals.add(candidate.anilist_id)
+    return next(iter(exact)) if len(exact) == 1 and rivals == exact else None
 
 
 def name_series(

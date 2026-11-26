@@ -40,7 +40,14 @@ from anishift.application.control_views import LibrarySet, TitleSource
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import AniZipMapping, JsonObject, LibraryGraph, ListedEpisode
 from anishift.application.intents import RequestOrigin
-from anishift.application.library import LibrarySeries, library_series, name_series, recognize, series_title
+from anishift.application.library import (
+    LibrarySeries,
+    hand_titles,
+    library_series,
+    name_series,
+    recognize,
+    series_title,
+)
 from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ErrorCode, ErrorContext
@@ -404,8 +411,8 @@ def test_snapshot_library_rows_carry_entry_series_and_source(tmp_path: Path) -> 
     ]
 
 
-def _candidate(anilist_id: int, romaji: str, english: str | None = None) -> TitleCandidate:
-    return TitleCandidate(anilist_id, romaji, english, None, (), None, None, "TV", 12, TitleStatus.FINISHED, ())
+def _candidate(anilist_id: int, romaji: str, english: str | None = None, *, episodes: int = 12) -> TitleCandidate:
+    return TitleCandidate(anilist_id, romaji, english, None, (), None, None, "TV", episodes, TitleStatus.FINISHED, ())
 
 
 @pytest.mark.unit
@@ -415,28 +422,61 @@ def test_one_alias_with_matching_title_and_season_is_recognized() -> None:
         _candidate(2, "Ao no Hako 2nd Season", "Blue Box Season 2"),
     )
 
-    assert recognize(candidates, "Blue Box", 2) == 2
-    assert recognize(candidates, "BLUE  box", 1) == 1
+    assert recognize(candidates, "Blue Box", 2, 3) == 2
+    assert recognize(candidates, "BLUE  box", 1, 3) == 1
+
+
+@pytest.mark.unit
+def test_a_remake_with_a_year_keeps_a_yearless_name_from_name() -> None:
+    candidates: tuple[TitleCandidate, ...] = (
+        _candidate(136, "HUNTER×HUNTER", "Hunter x Hunter"),
+        _candidate(11061, "HUNTER×HUNTER (2011)", "Hunter x Hunter (2011)"),
+    )
+
+    assert recognize(candidates, "Hunter x Hunter", 1, 5) is None
+    assert recognize(candidates[:1], "Hunter x Hunter", 1, 5) == 136
+
+
+@pytest.mark.unit
+def test_an_episode_beyond_the_entry_count_stays_from_name() -> None:
+    candidates: tuple[TitleCandidate, ...] = (
+        _candidate(113415, "Jujutsu Kaisen", episodes=24),
+        _candidate(145064, "Jujutsu Kaisen 2nd Season", episodes=23),
+    )
+
+    assert recognize(candidates, "Jujutsu Kaisen", 1, 25) is None
+    assert recognize(candidates, "Jujutsu Kaisen", 1, 24) == 113415
+
+
+@pytest.mark.unit
+def test_hand_titles_keep_the_highest_episode_of_each_title() -> None:
+    state: WatchState = WatchState(
+        ready_groups=(_ready("a", "[Grp] Jujutsu Kaisen - 25"), _ready("b", "[Grp] Jujutsu Kaisen - 03"))
+    )
+
+    titles = hand_titles(tuple(_set(item) for item in state.ready_groups), state)
+
+    assert titles == {("jujutsu kaisen", 1): ("Jujutsu Kaisen", 25)}
 
 
 @pytest.mark.unit
 def test_two_matching_candidates_stay_from_name() -> None:
     candidates: tuple[TitleCandidate, ...] = (_candidate(1, "Blue Box"), _candidate(2, "Blue Box", "Blue Box"))
 
-    assert recognize(candidates, "Blue Box", 1) is None
+    assert recognize(candidates, "Blue Box", 1, 3) is None
 
 
 @pytest.mark.unit
 def test_matching_title_with_another_season_stays_from_name() -> None:
-    assert recognize((_candidate(2, "Ao no Hako 2nd Season", "Blue Box Season 2"),), "Blue Box", 3) is None
+    assert recognize((_candidate(2, "Ao no Hako 2nd Season", "Blue Box Season 2"),), "Blue Box", 3, 3) is None
 
 
 @pytest.mark.unit
 def test_seasonless_name_matches_only_a_first_season() -> None:
     candidates: tuple[TitleCandidate, ...] = (_candidate(2, "Ao no Hako 2nd Season", "Blue Box Season 2"),)
 
-    assert recognize(candidates, "Blue Box", 1) is None
-    assert recognize((_candidate(1, "Ao no Hako", "Blue Box"),), "Blue Box", 1) == 1
+    assert recognize(candidates, "Blue Box", 1, 3) is None
+    assert recognize((_candidate(1, "Ao no Hako", "Blue Box"),), "Blue Box", 1, 3) == 1
 
 
 @pytest.mark.unit
