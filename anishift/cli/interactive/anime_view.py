@@ -278,13 +278,20 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
     canvas: _Canvas = _Canvas(width, rows)
     canvas.opens = snapshot.screen not in _TEXT_SCREENS
     span: tuple[int, int] | None = _cover_span(canvas, snapshot, now, visible)
-    start: int = _start(snapshot, keys, canvas, heading, height)
-    if span is not None and snapshot.cover is not None:
-        start = _start(snapshot, keys, canvas, heading, max(height, _CONTEXT_ROWS + snapshot.cover[1]))
-        if _footer_top(canvas, snapshot) - (start + heading - 1) < snapshot.cover[1]:
-            span = None
-            start = _start(snapshot, keys, canvas, heading, height)
-    if span is None:
+    fixed: int | None = _filled(snapshot, width, rows)[0] if snapshot.fill else None
+    if query:
+        fixed = max(min((rows - len(keys) - 1) // 2 - heading, rows - FOOTER_ROWS - height), 0)
+    start, band = cover_block(
+        rows - len(keys),
+        _CONTEXT_ROWS,
+        height - _CONTEXT_ROWS,
+        None if span is None else snapshot.cover,
+        bottom=_footer_top(canvas, snapshot),
+        ceiling=rows - FOOTER_ROWS,
+        fixed=fixed,
+    )
+    if band is None:
+        span = None
         snapshot = replace(snapshot, cover=None)
     canvas.top = start + heading
     if not query:
@@ -299,19 +306,34 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
     elif listed:
         title_width = _list(canvas, snapshot, visible)
     else:
-        title_width = _table(canvas, snapshot, visible, now)
+        title_width = _table(canvas, snapshot, visible, now, band)
     _footer(canvas, snapshot, keys, title_width, now, visible)
     return canvas.finish(visible, snapshot.selection, canvas.top)
 
 
-def _start(snapshot: AnimeSnapshot, keys: tuple[str, ...], canvas: _Canvas, heading: int, height: int) -> int:
-    """Return the row of the context line that centers a block of *height* rows above the keys."""
-    rows: int = len(canvas.lines)
-    if snapshot.fill:
-        return _filled(snapshot, canvas.width, rows)[0]
-    query: bool = snapshot.screen is AnimeScreen.QUERY
-    middle: int = (rows - len(keys) - 1) // 2 - heading if query else (rows - len(keys) - height) // 2
-    return max(min(middle, rows - FOOTER_ROWS - height), 0)
+def cover_block(  # noqa: PLR0913
+    area: int,
+    prefix: int,
+    content: int,
+    cover: tuple[int, int] | None,
+    *,
+    bottom: int,
+    ceiling: int | None = None,
+    fixed: int | None = None,
+) -> tuple[int, range | None]:
+    """Return the first row of *prefix* rows over *content* rows centered in *area*, and the slot band if it fits."""
+    if cover is not None:
+        top: int = _block_start(area, prefix + max(content, cover[1]), ceiling, fixed)
+        band: range = range(top + prefix, bottom)
+        if len(band) >= cover[1]:
+            return top, band
+    return _block_start(area, prefix + content, ceiling, fixed), None
+
+
+def _block_start(area: int, height: int, ceiling: int | None, fixed: int | None) -> int:
+    if fixed is not None:
+        return fixed
+    return max(min((area - height) // 2, (area if ceiling is None else ceiling) - height), 0)
 
 
 def _query(canvas: _Canvas, snapshot: AnimeSnapshot) -> None:
@@ -451,19 +473,17 @@ def _table_width(spec: _Table, widths: list[int], shown: list[int]) -> int:
     return spec.prefix + sum(widths[position] for position in shown) + 2 * (len(shown) - 1)
 
 
-def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -> int:
+def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float, band: range | None) -> int:
     spec: _Table = _spec(snapshot.screen)
     widths, shown, cover = _layout(canvas, snapshot, spec, now, visible)
     width: int = _table_width(spec, widths, shown)
     canvas.place(width)
-    if cover and snapshot.cover is not None:
-        margin, left = cover_columns(canvas.width, snapshot.cover, width)
+    if cover and snapshot.cover is not None and band is not None:
+        margin, canvas.left = cover_columns(canvas.width, snapshot.cover, width)
         count: int = max(len(snapshot.items[snapshot.offset : snapshot.offset + visible]), 1)
         firsts: dict[int, int] = {snapshot.offset + line: canvas.top + line for line in range(count)}
-        band: range = range(canvas.top - 1, _footer_top(canvas, snapshot))
         rows: range = range(canvas.top, canvas.top + count)
-        if place_cover(canvas.lines, snapshot.cover, margin, band, rows, firsts, snapshot.highlight):
-            canvas.left = left
+        place_cover(canvas.lines, snapshot.cover, margin, band, rows, firsts, snapshot.highlight)
     columns: list[tuple[int, int, int]] = []
     column: int = spec.prefix
     for position in shown:
@@ -536,16 +556,13 @@ def place_cover(  # noqa: PLR0913
     rows: range,
     firsts: Mapping[int, int],
     highlight: int | None,
-) -> bool:
+) -> None:
     """Anchor the slot at *margin* in *band* on the highlighted item, else *rows*, at the edge facing an undrawn one."""
-    if len(band) < cover[1]:
-        return False
     if highlight is not None:
         row: int = firsts.get(highlight, band.start - cover[1] if highlight < min(firsts, default=0) else band.stop)
         rows = range(row, row + 1)
     top: int = max(min(rows.start - (cover[1] - len(rows)) // 2, band.stop - cover[1]), band.start)
     lines[top] = _overwrite(lines[top], margin, mark_inert(Text(NATIVE_IMAGE_ANCHOR)))
-    return True
 
 
 def _overwrite(line: Text, column: int, value: Text) -> Text:

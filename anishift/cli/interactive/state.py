@@ -43,6 +43,7 @@ from anishift.cli.interactive.anime_view import (
     MIN_ROWS,
     AnimeFrame,
     beside_cover,
+    cover_block,
     cover_columns,
     fit,
     highlighted_row,
@@ -1623,15 +1624,15 @@ class StateController:
         shown: range = range(start, end)
         if cover is not None and room is not None and entries:
             margin, left = cover_columns(columns, cover, block)
-            lines, firsts, listed = self._list_lines(columns, rows, wrapped, shown, selected, footer, left, cover[1])
-            highlight: int | None = highlighted_row(self._hovered, selected, shown, covers)
-            band: range = range(listed.start, len(lines) - len(footer))
-            if place_cover(lines, cover, margin, band, listed, firsts, highlight):
+            lines, firsts, listed, band = self._list_lines(columns, rows, wrapped, shown, selected, footer, left, cover)
+            if band is not None:
+                highlight: int | None = highlighted_row(self._hovered, selected, shown, covers)
+                place_cover(lines, cover, margin, band, listed, firsts, highlight)
                 frame: Text = Text("\n").join(lines)
                 self._place_cover(frame, covers, highlight)
                 return frame
         centered: int = max((columns - block) // 2, 0)
-        return Text("\n").join(self._list_lines(columns, rows, wrapped, shown, selected, footer, centered, 0)[0])
+        return Text("\n").join(self._list_lines(columns, rows, wrapped, shown, selected, footer, centered, None)[0])
 
     def _list_lines(  # noqa: PLR0913
         self,
@@ -1642,8 +1643,8 @@ class StateController:
         selected: int,
         footer: list[Text],
         left: int,
-        slot: int,
-    ) -> tuple[list[Text], dict[int, int], range]:
+        cover: tuple[int, int] | None,
+    ) -> tuple[list[Text], dict[int, int], range, range | None]:
         content: Text = Text()
         remaining: int = max(rows - 2 - len(footer), 1)
         firsts: dict[int, int] = {}
@@ -1662,7 +1663,7 @@ class StateController:
             content.append_text(self._empty_line(columns))
         body: list[Text] = [self._breadcrumb(columns), *content.split("\n")]
         area: int = rows - len(footer)
-        top: int = max((area - max(len(body), 1 + slot)) // 2, 0)
+        top, band = cover_block(area, 1, len(body) - 1, cover, bottom=area)
         padding: list[Text] = [Text() for _ in range(max(area - top - len(body), 0))]
         lines_shown: list[Text] = [
             *(Text() for _ in range(top)),
@@ -1670,7 +1671,8 @@ class StateController:
             *padding,
             *(_centered(line, columns) for line in footer),
         ]
-        return lines_shown, {index: top + 1 + line for index, line in firsts.items()}, range(top + 1, top + 1 + drawn)
+        listed: range = range(top + 1, top + 1 + drawn)
+        return lines_shown, {index: top + 1 + line for index, line in firsts.items()}, listed, band
 
     def _listed_covers(self) -> tuple[int | None, ...]:
         if self._tab != _Tab.PROGRESS or self._history_open or self._retry is not None:
