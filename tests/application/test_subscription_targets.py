@@ -124,7 +124,6 @@ def test_a_row_names_the_earliest_unfinished_target_and_counts_the_aired_episode
         (TargetState.AWAITING_AIRING, None, "airing"),
         (TargetState.DUE, None, "searching"),
         (TargetState.DUE, Blocker.PENDING, "pending"),
-        (TargetState.DUE, Blocker.WAITING_POLISH, "polish"),
         (TargetState.DUE, Blocker.NO_ADMISSIBLE, "no_release"),
         (TargetState.DUE, Blocker.THRESHOLD, "no_release"),
         (TargetState.ATTEMPTING, None, "downloading"),

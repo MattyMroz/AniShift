@@ -1278,6 +1278,23 @@ def test_a_due_target_without_polish_waits_and_shows_the_end_of_its_wait(tmp_pat
     ]
 
 
+def test_the_list_row_waits_for_polish_like_its_episode_while_no_release_is_found(tmp_path: Path) -> None:
+    world: _World = _World(polish_wait_h=2, streams=_StreamSource({}))
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        record: SubscriptionRecord = _checked(owner, store)
+        status: EpisodeStatus = _status(owner)
+        waiting: list[SubscriptionRow] = _rows(_ask(owner, "subscriptions_list", command_id="waiting"))
+        world.clock.now = (_NOW + timedelta(hours=2)).timestamp()
+        late: EpisodeStatus = _status(owner)
+        over: list[SubscriptionRow] = _rows(_ask(owner, "subscriptions_list", command_id="over"))
+
+    assert record.targets[0].blocker is Blocker.NO_ADMISSIBLE
+    assert status.polish_wait_until == (_NOW + timedelta(hours=1)).isoformat()
+    assert (waiting[0].due_number, waiting[0].due_state) == (23, "polish")
+    assert late.polish_wait_until is None
+    assert (over[0].due_number, over[0].due_state) == (23, "no_release")
+
+
 def test_download_now_admits_a_waiting_target_once_and_survives_a_restart(tmp_path: Path) -> None:
     world: _World = _World(polish_wait_h=2)
     with _following(tmp_path, _active(_followed()), world) as (owner, store):

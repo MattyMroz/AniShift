@@ -4618,8 +4618,15 @@ class AutomationOwner:
         )
 
     def _disk_row(self, record: SubscriptionRecord, index: _EpisodeIndex, disk: _DiskInventory) -> SubscriptionRow:
-        """Project *record* with the episodes its inventory proves ready."""
+        """Project *record* with the episodes its inventory proves ready and the Polish wait its episode shows."""
         row: SubscriptionRow = subscription_row(record)
+        due: SubscriptionTarget | None = next((item for item in record.targets if item.number == row.due_number), None)
+        if (
+            due is not None
+            and self._state.policy.auto_enabled
+            and self._polish_waiting(record, due, self._clock()) is not None
+        ):
+            row = replace(row, due_state="polish")
         if record.anilist_id is None:
             return row
         ready: set[int] = set()
