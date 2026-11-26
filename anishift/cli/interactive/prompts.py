@@ -20,7 +20,7 @@ from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import ColorDepth
 from rich.cells import cell_len
 from rich.console import Console
-from rich.text import Text
+from rich.text import Span, Text
 
 from anishift.cli.interactive.mascot import mascot_art
 from anishift.cli.interactive.mascot_native import load_native_mascot
@@ -399,8 +399,8 @@ class TerminalRenderer:
         sized: NativeImage | None = image or self._native_drawn_image
         self._native_slot = None
         if position is not None and sized is not None:
-            frame, cells = _guard_slot(frame, position, sized.cell_columns, sized.cell_rows)
-            self._native_slot = (columns, rows, cells)
+            frame, slot = _guard_slot(frame, position, sized.cell_columns, sized.cell_rows)
+            self._native_slot = (columns, rows, slot)
         self._terminal_size = (columns, rows)
         self._native_position = position
         render_console, stream = self._render_target(columns)
@@ -529,17 +529,19 @@ def _native_anchor(frame: str) -> tuple[int, int] | None:
     return row, column
 
 
-def _guard_slot(frame: Text, position: tuple[int, int], columns: int, rows: int) -> tuple[Text, tuple[str, ...]]:
-    """Mark the blank cells under the image as content and return their text, one string per row."""
+def _guard_slot(
+    frame: Text, position: tuple[int, int], columns: int, rows: int
+) -> tuple[Text, tuple[tuple[str, tuple[Span, ...]], ...]]:
+    """Mark the blank cells under the image as content and return the text and styles of every slot row."""
     lines: list[Text] = list(frame.split("\n", allow_blank=True))
-    cells: list[str] = []
+    slot: list[tuple[str, tuple[Span, ...]]] = []
     for line in lines[position[0] : position[0] + rows]:
         line.pad_right(max(position[1] + columns - line.cell_len, 0))
         start: int = character_offset(line.plain, position[1])
         end: int = character_offset(line.plain, position[1] + columns)
         line.stylize(_SLOT_GUARD, start, end)
-        cells.append(line.plain[start:end])
-    return Text("\n").join(lines), tuple(cells)
+        slot.append((line.plain, tuple(line.spans)))
+    return Text("\n").join(lines), tuple(slot)
 
 
 def _native_erase_sequence(position: tuple[int, int], columns: int, rows: int) -> str:

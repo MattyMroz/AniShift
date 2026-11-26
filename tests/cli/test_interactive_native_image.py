@@ -87,10 +87,34 @@ def test_missing_image_in_place_erases_cells_without_clearing_the_screen() -> No
     assert again == ""
 
 
-def test_changed_text_beside_the_slot_writes_no_image() -> None:
+def test_changed_text_in_a_slot_row_redraws_the_same_image() -> None:
     screen: _Screen = _Screen(_SLOT, _image("COVER"))
     screen.paint()
     screen.frame = _SLOT.replace("Beta", "B")
+
+    redrawn: str = screen.paint()
+
+    assert "COVER" in redrawn
+    assert "\x1b[m    " not in redrawn
+
+
+def test_restyled_row_beside_the_slot_redraws_the_same_image() -> None:
+    screen: _Screen = _Screen(_SLOT, _image("COVER"))
+    screen.paint()
+    styled: Text = Text(_SLOT)
+    styled.stylize("blue", _SLOT.index("Beta"), _SLOT.index("Beta") + 4)
+    screen.renderer._frame_provider = lambda _columns, _rows: styled
+
+    redrawn: str = screen.paint()
+
+    assert "COVER" in redrawn
+    assert _CLEAR not in redrawn
+
+
+def test_changed_row_below_the_slot_writes_no_image() -> None:
+    screen: _Screen = _Screen(_SLOT, _image("COVER"))
+    screen.paint()
+    screen.frame = _SLOT.replace("Gamma", "G")
 
     assert screen.paint() == ""
 
