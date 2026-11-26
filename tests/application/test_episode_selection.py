@@ -87,6 +87,7 @@ _TARGET_KEYS: Final[frozenset[str]] = frozenset(
         "other_series",
         "season",
         "type",
+        "year",
     }
 )
 
@@ -496,6 +497,32 @@ def test_identity_target_returns_a_new_json_object_per_call() -> None:
     assert isinstance(aliases, list)
     aliases.clear()
     assert identity_target(graph, 2, _mapping({}), 5)["aliases"]
+
+
+@pytest.mark.parametrize(
+    ("selected", "number", "filename"),
+    [
+        (1, 5, "Star.Garden.2018.S01E05.1080p.CR.WEB-DL.AAC2.0.H.264-AnoZu.mkv"),
+        (2, 5, "Star.Garden.2018.S02E05.1080p.CR.WEB-DL.AAC2.0.H.264-AnoZu.mkv"),
+    ],
+)
+def test_a_file_named_with_the_series_year_matches_its_episode(selected: int, number: int, filename: str) -> None:
+    season: int = 1 if selected == 1 else 2
+    mapping: AniZipMapping = _mapping(
+        {str(number): {"seasonNumber": season, "episodeNumber": number, "absoluteEpisodeNumber": number}}
+    )
+    target: dict[str, object] = identity_target(_star_garden_graph(), selected, mapping, number)
+    candidate: dict[str, str | None] = {"release": filename[:-4], "path": filename, "filename": filename}
+    assert target["year"] == 2018
+    assert classify(target, candidate).verdict is IdentityVerdict.MATCH
+
+
+def test_a_file_named_with_another_year_stays_unmatched() -> None:
+    mapping: AniZipMapping = _mapping({"5": {"seasonNumber": 1, "episodeNumber": 5, "absoluteEpisodeNumber": 5}})
+    target: dict[str, object] = identity_target(_star_garden_graph(), 1, mapping, 5)
+    filename: str = "Star.Garden.2024.S01E05.1080p.WEB-DL.mkv"
+    candidate: dict[str, str | None] = {"release": filename[:-4], "path": filename, "filename": filename}
+    assert classify(target, candidate).verdict is not IdentityVerdict.MATCH
 
 
 def test_identity_target_node_outside_view_joins_other_series_and_changes_verdict() -> None:

@@ -473,8 +473,10 @@ def identity_target(
         titles.extend(_titles(first_season))
     key: str = str(number)
     episode: JsonObject = (mapping.raw_episodes.get(key) or {}) if numbering else {}
+    series: JsonObject = first_season or nodes[selected_id]
     return {
         "aliases": list(dict.fromkeys(titles)),
+        "year": (series.get("startDate") or {}).get("year") or series.get("seasonYear"),
         "type": nodes[selected_id]["format"],
         "local_episode": number,
         "episodes": nodes[selected_id].get("episodes"),
