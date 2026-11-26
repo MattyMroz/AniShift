@@ -804,6 +804,32 @@ def test_snapshot_lists_cached_covers(tmp_path: Path) -> None:
     assert [item.name for item in covers.iterdir()] == [f"{_S1}.jpg"]
 
 
+@pytest.mark.integration
+def test_searched_titles_get_covers_from_the_search_addresses(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    covers.mkdir(parents=True)
+    for anilist_id in (_S1, _SLIME_OAD):
+        (covers / f"{anilist_id}.jpg").write_bytes(_png())
+    searched: str = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx7.jpg"
+    titles.candidates = (
+        TitleCandidate(
+            7, "Searched", None, None, (), None, None, None, None, TitleStatus.UNKNOWN, (), cover_url=searched
+        ),
+    )
+    titles.files = {searched: _png()}
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("acquisition", {"operation": "titles", "query": "searched"})).ok
+        cached: list[int] = _cached(owner, [7, _S1, _SLIME_OAD])
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert cached == [7, _S1, _SLIME_OAD]
+    assert titles.downloads == [searched]
+    assert [7] not in titles.cover_reads
+
+
 class _StoppingTitles(_TitleCatalog):
     def __init__(self) -> None:
         super().__init__(graphs=_slime_titles().graphs)
@@ -823,7 +849,7 @@ def test_cover_fetch_stops_when_shutting_down(tmp_path: Path) -> None:
     acquisition: AcquisitionService | None = owner._service.acquisition
     assert acquisition is not None
 
-    owner._read_covers(acquisition, covers, (_S1, _SLIME_OAD))
+    owner._read_covers(acquisition, covers, (_S1, _SLIME_OAD), {})
 
     assert titles.cover_reads == [[_S1, _SLIME_OAD]]
     assert titles.downloads == []

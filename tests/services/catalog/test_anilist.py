@@ -371,6 +371,33 @@ def test_candidate_country_of_origin(node: dict[str, Any], country: str | None) 
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("image", "url"),
+    [
+        (
+            {"extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx176496.jpg"},
+            "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx176496.jpg",
+        ),
+        ({"extraLarge": None}, None),
+        (None, None),
+    ],
+)
+def test_search_reads_the_extra_large_cover_address(image: dict[str, object] | None, url: str | None) -> None:
+    queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries.append(json.loads(request.content)["query"])
+        return httpx.Response(200, json=_page([{**_SOLO_LEVELING, "coverImage": image}]))
+
+    catalog, http = _catalog(handler)
+    with http:
+        candidate: TitleCandidate = catalog.search("solo leveling")[0]
+
+    assert "coverImage { extraLarge }" in queries[0]
+    assert candidate.cover_url == url
+
+
+@pytest.mark.unit
 def test_franchise_query_asks_for_the_country_of_origin_at_every_depth() -> None:
     queries: list[str] = []
     root: dict[str, Any] = {"id": 1, "type": "ANIME", "format": "ONA", "title": {"romaji": "Root"}}

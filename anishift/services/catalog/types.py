@@ -75,6 +75,7 @@ class TitleCandidate:
     prequel_ids: tuple[int, ...]
     start: date | None = None
     country: str | None = None
+    cover_url: str | None = None
 
     def aliases(self) -> tuple[str, ...]:
         """Return the Latin-script names of this title, in catalog order, without repeats."""

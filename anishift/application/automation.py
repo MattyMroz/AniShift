@@ -988,6 +988,7 @@ class AutomationOwner:
         self._stopping: threading.Event = threading.Event()
         self._covers: set[int] = set()
         self._covers_requested: set[int] = set()
+        self._cover_urls: dict[int, str] = {}
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
@@ -4987,6 +4988,8 @@ class AutomationOwner:
             else acquisition.requests("user")
         )
         with budget, acquisition.observe_decisions(partial(self._record_decision, command_id=request.command_id)):
+            if payload.get("operation") == "titles":
+                return self._titles_read(acquisition, str(payload.get("query", "")))
             read: ControlResponse | None = (
                 self._franchise_read(request, acquisition)
                 if payload.get("operation") == "franchise"
@@ -5019,6 +5022,17 @@ class AutomationOwner:
                     )
                 )
             )
+
+    def _titles_read(self, acquisition: AcquisitionService, query: str) -> ControlResponse:
+        found: tuple[TitleCandidate, ...] = acquisition.find_titles(query)
+        urls: dict[int, str] = {item.anilist_id: item.cover_url for item in found if item.cover_url is not None}
+        if urls:
+            self._queue.put(lambda: self._want_covers(urls))
+        return ControlResponse.succeeded({"items": [encode_view(item) for item in found]})
+
+    def _want_covers(self, urls: Mapping[int, str]) -> None:
+        self._cover_urls.update(urls)
+        self._request_covers()
 
     def _franchise_read(self, request: ControlRequest, acquisition: AcquisitionService) -> ControlResponse:
         token: EventCancellationToken = EventCancellationToken()
@@ -8655,24 +8669,30 @@ class AutomationOwner:
         directory: Path | None = self._cover_directory
         if acquisition is None or directory is None or self._shutting_down:
             return
-        wanted: frozenset[int] = self._known_entries() - self._covers - self._covers_requested
+        wanted: frozenset[int] = (
+            (self._known_entries() | self._cover_urls.keys()) - self._covers - self._covers_requested
+        )
         if not wanted:
             return
         self._covers_requested.update(wanted)
         self._active_io += 1
-        self._pool.submit(self._read_covers, acquisition, directory, tuple(sorted(wanted)))
+        known: dict[int, str] = {item: self._cover_urls[item] for item in wanted if item in self._cover_urls}
+        self._pool.submit(self._read_covers, acquisition, directory, tuple(sorted(wanted)), known)
 
-    def _read_covers(self, acquisition: AcquisitionService, directory: Path, anilist_ids: tuple[int, ...]) -> None:
+    def _read_covers(
+        self, acquisition: AcquisitionService, directory: Path, anilist_ids: tuple[int, ...], known: dict[int, str]
+    ) -> None:
         stored: set[int] = set()
         failures: dict[str, int] = {}
         skipped: int = 0
         try:
             stored |= acquisition.stored_covers(directory) & set(anilist_ids)
             missing: list[int] = [anilist_id for anilist_id in anilist_ids if anilist_id not in stored]
-            urls: dict[int, str] = {}
-            if missing and not self._shutting_down:
+            urls: dict[int, str] = {item: known[item] for item in missing if item in known}
+            unknown: list[int] = [item for item in missing if item not in urls]
+            if unknown and not self._shutting_down:
                 with acquisition.episode_requests():
-                    urls = acquisition.cover_urls(missing)
+                    urls |= acquisition.cover_urls(unknown)
             for anilist_id in missing:
                 if self._shutting_down:
                     break
@@ -9956,10 +9976,6 @@ def _catalog_read(
     acquisition: AcquisitionService, payload: Mapping[str, object], switches: SourceSwitches
 ) -> ControlResponse | None:
     operation: object = payload.get("operation")
-    if operation == "titles":
-        return ControlResponse.succeeded(
-            {"items": [encode_view(item) for item in acquisition.find_titles(str(payload.get("query", "")))]}
-        )
     if operation == "search":
         return ControlResponse.succeeded(encode_view(acquisition.search(str(payload.get("query", "")))))
     if operation == "episodes":

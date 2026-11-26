@@ -60,9 +60,9 @@ OFFSET_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
 SEARCH_QUERY: Final[str] = """
 query ($search: String, $limit: Int) { Page(perPage: $limit) { media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
   id title { romaji english native } synonyms seasonYear startDate { year month day } season format episodes status
-  countryOfOrigin relations { edges { relationType node { id episodes format } } } } } }
+  countryOfOrigin coverImage { extraLarge } relations { edges { relationType node { id episodes format } } } } } }
 """
-"""Search request returning the candidate fields and the direct relation edges."""
+"""Search request returning the candidate fields, the cover address and the direct relation edges."""
 
 RELATIONS_QUERY: Final[str] = """
 query ($id: Int) { Media(id: $id) { id episodes format title { romaji english }
@@ -346,10 +346,11 @@ def _cover_page(data: Mapping[str, Any]) -> dict[int, str]:
         raise _catalog_error(_CatalogFailure.MALFORMED)
     urls: dict[int, str] = {}
     for node in media:
-        image: object = node.get("coverImage") if isinstance(node, Mapping) else None
-        url: object = image.get("extraLarge") if isinstance(image, Mapping) else None
-        identifier: object = node.get("id") if isinstance(node, Mapping) else None
-        if isinstance(identifier, int) and not isinstance(identifier, bool) and isinstance(url, str) and url:
+        if not isinstance(node, Mapping):
+            continue
+        url: str | None = _cover_url(node)
+        identifier: object = node.get("id")
+        if isinstance(identifier, int) and not isinstance(identifier, bool) and url is not None:
             urls[identifier] = url
     return urls
 
@@ -498,7 +499,14 @@ def candidate_from_node(node: Mapping[str, Any]) -> TitleCandidate | None:
         prequel_ids=_prequel_ids(node),
         start=premiere,
         country=_text(node.get("countryOfOrigin")) or None,
+        cover_url=_cover_url(node),
     )
+
+
+def _cover_url(node: Mapping[str, Any]) -> str | None:
+    image: object = node.get("coverImage")
+    url: object = image.get("extraLarge") if isinstance(image, Mapping) else None
+    return url if isinstance(url, str) and url else None
 
 
 def graph_prequels(graph: FranchiseGraph, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
