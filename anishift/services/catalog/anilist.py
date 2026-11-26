@@ -57,12 +57,20 @@ MAX_PREQUEL_HOPS: Final[int] = 8
 OFFSET_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
 """Formats counted into an episode offset; movies, specials, and OVAs are skipped."""
 
-SEARCH_QUERY: Final[str] = """
-query ($search: String, $limit: Int) { Page(perPage: $limit) { media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
-  id title { romaji english native } synonyms seasonYear startDate { year month day } season format episodes status
-  countryOfOrigin coverImage { extraLarge } relations { edges { relationType node { id episodes format } } } } } }
-"""
-"""Search request returning the candidate fields, the cover address and the direct relation edges."""
+_SEARCH_FIELDS: Final[str] = (
+    "id title { romaji english native } synonyms seasonYear startDate { year month day } season format episodes status"
+    " countryOfOrigin coverImage { extraLarge } relations { edges { relationType node { id episodes format } } }"
+)
+"""Candidate fields, the cover address and the direct relation edges read for every searched title."""
+
+SEARCH_QUERY: Final[str] = (
+    "query ($search: String, $limit: Int) { Page(perPage: $limit) {"
+    f" media(search: $search, type: ANIME, sort: SEARCH_MATCH) {{ {_SEARCH_FIELDS} }} }} }}"
+)
+"""Search request of one title."""
+
+SEARCH_BUDGET: Final[int] = 15
+"""Most aliased searches, shortened retries included, of one ``search_many`` call; AniList allows thirty a minute."""
 
 RELATIONS_QUERY: Final[str] = """
 query ($id: Int) { Media(id: $id) { id episodes format title { romaji english }
@@ -162,6 +170,32 @@ class AniListCatalog:
             candidates = self._search_once(shortened, limit)
         logger.info("Searched AniList for titles", hits=len(candidates), retried=retried)
         return candidates
+
+    def search_many(
+        self, texts: Collection[str], *, limit: int = DEFAULT_SEARCH_LIMIT
+    ) -> dict[str, tuple[TitleCandidate, ...]]:
+        """Return the candidates of the leading texts within ``SEARCH_BUDGET``; a text not fully searched is absent."""
+        chosen: dict[str, str | None] = _budgeted(texts)
+        found: dict[str, tuple[TitleCandidate, ...]] = self._search_aliased(tuple(chosen), limit)
+        shortened: dict[str, str] = {
+            text: short for text, short in chosen.items() if not found[text] and short is not None
+        }
+        try:
+            retried: dict[str, tuple[TitleCandidate, ...]] = self._search_aliased(tuple(shortened.values()), limit)
+        except TitleCatalogError as error:
+            logger.warning("Shortened title search failed", provider="anilist", code=error.context.code)
+            for text in shortened:
+                del found[text]
+        else:
+            found.update((text, retried[short]) for text, short in shortened.items())
+        logger.info(
+            "Searched AniList for many titles",
+            titles=len(found),
+            found=sum(bool(candidates) for candidates in found.values()),
+            retried=len(shortened),
+            deferred=len(dict.fromkeys(texts)) - len(chosen),
+        )
+        return found
 
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         """Return every entry airing before *candidate*, direct prequel first."""
@@ -279,17 +313,15 @@ class AniListCatalog:
 
     def _search_once(self, text: str, limit: int) -> tuple[TitleCandidate, ...]:
         """Send one search request and read its media list."""
-        data: Mapping[str, Any] = self._post(SEARCH_QUERY, {"search": text, "limit": limit})
-        page: object = data.get("Page")
-        media: object = page.get("media") if isinstance(page, Mapping) else None
-        if not isinstance(media, list):
-            raise _catalog_error(_CatalogFailure.MALFORMED)
-        candidates: list[TitleCandidate] = []
-        for node in media:
-            candidate: TitleCandidate | None = candidate_from_node(node) if isinstance(node, Mapping) else None
-            if candidate is not None:
-                candidates.append(candidate)
-        return tuple(candidates)
+        return _search_page(self._post(SEARCH_QUERY, {"search": text, "limit": limit}).get("Page"))
+
+    def _search_aliased(self, texts: tuple[str, ...], limit: int) -> dict[str, tuple[TitleCandidate, ...]]:
+        unique: tuple[str, ...] = tuple(dict.fromkeys(texts))
+        if not unique:
+            return {}
+        variables: dict[str, object] = {"limit": limit, **{f"s{index}": text for index, text in enumerate(unique)}}
+        data: Mapping[str, Any] = self._post(_batch_search_query(len(unique)), variables)
+        return {text: _search_page(data.get(f"t{index}")) for index, text in enumerate(unique)}
 
     def _media(self, anilist_id: int) -> Mapping[str, Any] | None:
         """Return one title with its relation edges, or ``None`` when AniList knows no such id."""
@@ -471,6 +503,28 @@ def _start_date(raw: object) -> date | None:
         raise _catalog_error(_CatalogFailure.MALFORMED) from error
 
 
+def _batch_search_query(count: int) -> str:
+    variables: str = "".join(f"$s{index}: String, " for index in range(count))
+    pages: str = " ".join(
+        f"t{index}: Page(perPage: $limit) {{ media(search: $s{index}, type: ANIME, sort: SEARCH_MATCH)"
+        f" {{ {_SEARCH_FIELDS} }} }}"
+        for index in range(count)
+    )
+    return f"query ({variables}$limit: Int) {{ {pages} }}"
+
+
+def _search_page(page: object) -> tuple[TitleCandidate, ...]:
+    media: object = page.get("media") if isinstance(page, Mapping) else None
+    if not isinstance(media, list):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    candidates: list[TitleCandidate] = []
+    for node in media:
+        candidate: TitleCandidate | None = candidate_from_node(node) if isinstance(node, Mapping) else None
+        if candidate is not None:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
 def candidate_from_node(node: Mapping[str, Any]) -> TitleCandidate | None:
     """Build one candidate, or ``None`` when the node carries no id or romaji title."""
     anilist_id: object = node.get("id")
@@ -595,6 +649,20 @@ def _number(raw: object) -> int | None:
     if isinstance(raw, bool) or not isinstance(raw, int):
         return None
     return raw
+
+
+def _budgeted(texts: Collection[str]) -> dict[str, str | None]:
+    """Map the leading texts whose searches and shortened retries fit ``SEARCH_BUDGET`` to their shortened form."""
+    chosen: dict[str, str | None] = {}
+    spent: int = 0
+    for text in dict.fromkeys(texts):
+        short: str | None = _shorten_words(text)
+        cost: int = 1 if short is None else 2
+        if spent + cost > SEARCH_BUDGET:
+            break
+        chosen[text] = short
+        spent += cost
+    return chosen
 
 
 def _shorten_words(text: str) -> str | None:

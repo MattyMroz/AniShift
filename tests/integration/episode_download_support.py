@@ -258,6 +258,9 @@ class Catalog:
     def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
         raise AssertionError((text, limit))
 
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
+        raise AssertionError((texts, limit))
+
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         return ()
 

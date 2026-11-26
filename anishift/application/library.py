@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -19,10 +20,8 @@ from anishift.application.artifacts import SourceGroup
 from anishift.application.control import (
     AcquisitionConfirmation,
     LegacyScope,
-    ProcessingRequest,
     ProductConfirmation,
     ReadyGroup,
-    RequestState,
     WatchState,
     require_relative_paths,
 )
@@ -38,7 +37,6 @@ from anishift.application.episode_selection import (
     entry_title,
     franchise_traversal,
 )
-from anishift.application.intents import GroupIntent
 from anishift.application.products import episode_stem, main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
 from anishift.paths import READY_DIRECTORY
@@ -454,19 +452,27 @@ def file_identity(root: Path, name: str) -> LibraryFileIdentity | None:
 
 
 def project_library(state: WatchState, root: Path, groups: Sequence[SourceGroup]) -> tuple[LibrarySet, ...]:
-    """Reconcile completed sets from provenance, confirmations and the shared discovery inventory."""
+    """Project every recorded set and every ready set on disk, following a recorded set moved inside ``ready``."""
     discovered: dict[str, SourceGroup] = {group.group_id: group for group in groups}
     result: list[LibrarySet] = [
         _recorded_set(item, state, root, discovered.get(item.group_id)) for item in state.ready_groups
     ]
     recorded: frozenset[str] = frozenset(item.group_id for item in state.ready_groups)
-    result.extend(
+    claimed: frozenset[str] = frozenset(
+        name for item in state.ready_groups for name in (*item.sources, *item.products, *item.pending_sources)
+    )
+    loose: list[LibrarySet] = [
         item
         for group in groups
         if group.group_id not in recorded
         and group.directory.is_relative_to(root / READY_DIRECTORY)
-        and (item := _legacy_set(group, state, root)) is not None
-    )
+        and (item := _loose_set(group, root)) is not None
+        and not any(file.path in claimed for file in item.files)
+    ]
+    moved: dict[str, LibrarySet] = _moved_sets(state, result, loose)
+    taken: frozenset[str] = frozenset(item.group_id for item in moved.values())
+    result = [moved.get(item.set_id, item) for item in result]
+    result.extend(item for item in loose if item.group_id not in taken)
     return tuple(os_sorted(result, key=lambda item: (item.name, item.set_id)))
 
 
@@ -512,10 +518,16 @@ def _recorded_set(record: ReadyGroup, state: WatchState, root: Path, group: Sour
         files,
         available,
         problem,
+        _provisional(record, record.main_result),
+    )
+
+
+def _provisional(record: ReadyGroup, main_result: str | None) -> bool:
+    return (
         record.target is WorkflowTarget.TRANSLATE
         and any(Path(name).suffix.casefold() == ".txt" for name in record.sources)
-        and record.main_result is not None
-        and Path(record.main_result).suffix.casefold() == ".srt",
+        and main_result is not None
+        and Path(main_result).suffix.casefold() == ".srt"
     )
 
 
@@ -549,35 +561,63 @@ def _confirmed_main(
     )
 
 
-def _legacy_set(group: SourceGroup, state: WatchState, root: Path) -> LibrarySet | None:
-    latest: ProcessingRequest | None = max(
-        (item for item in state.requests if item.state is RequestState.SUCCEEDED and group.group_id in item.group_ids),
-        key=lambda item: (item.generation, item.accepted_at),
-        default=None,
-    )
-    if latest is None:
-        return None
-    intent: GroupIntent | None = next((item for item in latest.intents if item.group_id == group.group_id), None)
-    products: tuple[str, ...] = tuple(
-        item.path
-        for item in state.products
-        if item.group_id == group.group_id
-        and (
-            item.artifact_kind.removeprefix("final_") in intent.products.requested_products
-            if intent is not None
-            else item.request_id == latest.request_id
-        )
-    )
-    headline: str | None = main_product([Path(name).name for name in products])
-    primary: str | None = next((name for name in products if Path(name).name == headline), None)
-    if primary is None:
-        return None
+def _loose_set(group: SourceGroup, root: Path) -> LibrarySet | None:
     files: tuple[LibraryFile, ...] = tuple(
-        _library_file(root, name, role) for name, role in _discovered_members(group, root, None).items()
+        _library_file(root, name, role) for name, role in sorted(_discovered_members(group, root, None).items())
     )
-    if not _confirmed_main(group.group_id, primary, files, state.products):
+    present: dict[str, str] = {
+        Path(item.path).name: item.path for item in files if item.role == "product" and item.identity is not None
+    }
+    headline: str | None = main_product(tuple(present))
+    if headline is None:
         return None
-    target: WorkflowTarget | None = intent.target if intent is not None else None
-    return LibrarySet(
-        group.group_id, group.group_id, group.stem, target, primary, files, True, "library_ownership_unknown"
+    main: str = present[headline]
+    ordered: tuple[LibraryFile, ...] = tuple(sorted(files, key=lambda item: item.path == main))
+    return LibrarySet(group.group_id, group.group_id, group.stem, None, main, ordered, True)
+
+
+def _moved_sets(state: WatchState, sets: Sequence[LibrarySet], loose: Sequence[LibrarySet]) -> dict[str, LibrarySet]:
+    lost: dict[tuple[int, int], list[ReadyGroup]] = {}
+    for record, item in zip(state.ready_groups, sets, strict=True):
+        if item.problem != "library_result_missing":
+            continue
+        confirmed: ProductConfirmation | None = _main_confirmation(record, state.products)
+        if confirmed is not None:
+            lost.setdefault((confirmed.size, confirmed.modified_ns), []).append(record)
+    found: dict[str, list[tuple[LibrarySet, str]]] = {}
+    for candidate in loose:
+        for file in candidate.files:
+            records: list[ReadyGroup] = (
+                [] if file.identity is None else lost.get((file.identity.size, file.identity.modified_ns), [])
+            )
+            if len(records) == 1:
+                found.setdefault(records[0].set_id, []).append((candidate, file.path))
+    claims: Counter[str] = Counter(candidate.group_id for matches in found.values() for candidate, _path in matches)
+    records_by_id: dict[str, ReadyGroup] = {record.set_id: record for record in state.ready_groups}
+    return {
+        set_id: _moved_set(records_by_id[set_id], matches[0][0], matches[0][1])
+        for set_id, matches in found.items()
+        if len(matches) == 1 and claims[matches[0][0].group_id] == 1
+    }
+
+
+def _main_confirmation(record: ReadyGroup, products: Sequence[ProductConfirmation]) -> ProductConfirmation | None:
+    return next(
+        (
+            item
+            for item in products
+            if item.group_id == record.group_id and item.path == record.main_result and item.size >= 0
+        ),
+        None,
+    )
+
+
+def _moved_set(record: ReadyGroup, found: LibrarySet, main_result: str) -> LibrarySet:
+    return replace(
+        found,
+        set_id=record.set_id,
+        target=record.target,
+        main_result=main_result,
+        files=tuple(sorted(found.files, key=lambda item: item.path == main_result)),
+        provisional_timing=_provisional(record, main_result),
     )

@@ -87,6 +87,7 @@ from anishift.cli.interactive.state_library import (
     library_row_id,
     library_rows,
     library_titles,
+    moved_notice,
     set_entry,
     title_entry,
     title_row,
@@ -1358,7 +1359,7 @@ class StateController:
                 self._preserve_subscription_selection(subscriptions)
                 self._preserve_processing_selection(previous_processing, self._processing_row_ids(payload))
                 self._known_sets.update((library_row_id(item), item) for item in rows(payload.get("library")))
-                self._preserve_library_selection(payload)
+                moved: LibraryTitle | None = self._preserve_library_selection(payload)
                 self._hidden = unsettled_deletions(payload, self._hidden)
                 self._restoring, restore_problem = settled_restores(payload, self._restoring)
                 self._snapshot = payload
@@ -1382,6 +1383,9 @@ class StateController:
                     self._notice = ""
                 if context != self._library_context() and self._notice_persistent and not self._deletion_notice:
                     self._notify("")
+                if moved is not None:
+                    self._notify(moved_notice(moved))
+                    self._notice_persistent = True
                 if restore_problem and self._tab in {_Tab.FILES, _Tab.PROGRESS}:
                     self._notify(restore_problem)
                     self._notice_persistent = True
@@ -1476,33 +1480,49 @@ class StateController:
             return
         self._selected = position
 
-    def _preserve_library_selection(self, payload: Mapping[str, object]) -> None:
+    def _preserve_library_selection(self, payload: Mapping[str, object]) -> LibraryTitle | None:
         old: list[str] = self._library_ids()
-        self._follow_title(payload)
-        new: list[str] = self._library_ids(payload)
         position: int = self._selected if self._details is None else self._detail_selection
         if self._tab != _Tab.FILES:
             position = self._positions.get(_Tab.FILES, 0)
+        moved: tuple[str, LibraryTitle] | None = self._follow_title(
+            payload, old[position] if position < len(old) else None
+        )
+        if moved is not None and self._library_title is None:
+            old = [moved[1].key if key == moved[0] else key for key in old]
+        new: list[str] = self._library_ids(payload)
         position = _kept(old, new, position)
         self._positions[_Tab.FILES] = position
         if self._tab != _Tab.FILES:
-            return
+            return None
         if self._details is None:
             self._selected = position
         else:
             self._detail_selection = position
+        return None if moved is None else moved[1]
 
-    def _follow_title(self, payload: Mapping[str, object]) -> None:
-        current: LibraryTitle | None = self._open_title_view()
-        titles: list[LibraryTitle] = self._all_titles(payload)
+    def _follow_title(self, payload: Mapping[str, object], selected: str | None) -> tuple[str, LibraryTitle] | None:
+        current: LibraryTitle | None
+        titles: list[LibraryTitle]
+        if self._library_title is not None:
+            current, titles = self._open_title_view(), self._all_titles(payload)
+        elif self._details is None:
+            current = next((item for item in self._titles() if item.key == selected), None)
+            titles = self._titles(payload)
+        else:
+            return None
         if current is None or any(item.key == current.key for item in titles):
-            return
+            return None
         shown: set[str] = {library_row_id(item) for item in current.sets}
         successor: LibraryTitle | None = next(
             (item for item in titles if shown & {library_row_id(entry) for entry in item.sets}), None
         )
-        if successor is not None:
+        if successor is None:
+            return None
+        if self._library_title is not None:
             self._library_title = successor.key
+            self._load_episodes((item.get("anilist_id") for item in successor.sets), successor.key)
+        return current.key, successor
 
     def _restore_progress(self, session: ResidentSession, payload: Mapping[str, object]) -> None:
         entries: list[Mapping[str, object]] = rows(payload.get("run_progress"))

@@ -1625,7 +1625,7 @@ def test_merged_library_is_naturally_ordered_and_preserves_missing_selection(
 
 @pytest.mark.parametrize(
     "problem",
-    ["library_ownership_unknown", "library_result_changed", "library_result_missing", "library_source_missing"],
+    ["library_result_changed", "library_result_missing", "library_source_missing"],
 )
 def test_library_details_keep_provenance_without_missing_result_header(
     monkeypatch: pytest.MonkeyPatch, problem: str
@@ -1633,12 +1633,10 @@ def test_library_details_keep_provenance_without_missing_result_header(
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
     controller._tab = state_module._Tab.FILES
-    controller._details = LibrarySet(
-        "set", "group", "Episode", None, "ready/01.txt", (), problem == "library_ownership_unknown", problem
-    )
+    controller._details = LibrarySet("set", "group", "Episode", None, "ready/01.txt", (), False, problem)
     try:
         frame: str = controller.render(120, 40).plain
-        assert (state_texts.LIBRARY_PROBLEMS[problem] in frame) is (problem == "library_ownership_unknown")
+        assert state_texts.LIBRARY_PROBLEMS[problem] not in frame
         assert state_texts.LIBRARY_PROBLEMS["library_result_missing"] not in frame
     finally:
         controller.close()

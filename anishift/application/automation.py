@@ -253,6 +253,7 @@ from anishift.application.transfers import (
     video_sidecars,
 )
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
+from anishift.application.watch_state import load_recognized, save_recognized
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import cleanup_orphaned_tmp, run_tmp_dir
 from anishift.errors import AniShiftError, ErrorCode, ExecutionError, MediaProbeError, UnsupportedMediaError
@@ -315,14 +316,14 @@ IO_WORKERS: Final[int] = 2
 _RECOGNITION_THREAD: Final[str] = "anishift-owner-recognition"
 """Thread searching hand-added Library titles, kept off the I/O pool that deletion and Ctrl+Z wait on."""
 
-RECOGNITION_INTERVAL_S: Final[float] = 2.0
-"""Pause before each hand-added title search, keeping them within the measured 30 AniList requests a minute."""
+RECOGNITION_RETRY_S: Final[float] = 60.0
+"""Wait after each search of hand-added titles before the next one, so it spends one AniList minute at most."""
 
 _RECOGNITION_COOLDOWN_POLL_S: Final[float] = 0.5
 """Interval at which a waiting hand-added search checks whether the AniList cooldown ended."""
 
 _RECOGNITION_ATTEMPTS: Final[int] = 3
-"""Searches of one hand-added title while AniList answers with a cooldown."""
+"""Searches of the same hand-added titles while AniList answers with a cooldown."""
 
 TRANSFER_CHECK_INTERVAL_S: Final[float] = 10.0
 """Delay between shared client reads while accepted transfers need completion proof."""
@@ -989,11 +990,13 @@ class AutomationOwner:
         self._library: InspectedWorkspace | None = None
         self._subtitles_missing: frozenset[str] = frozenset()
         self._ready_library: tuple[LibrarySet, ...] = ()
+        self._ready_groups: tuple[SourceGroup, ...] = ()
         self._series: dict[int, LibrarySeries] = {}
         self._series_requested: set[int] = set()
-        self._recognized: dict[tuple[str, int], int | None] = {}
-        self._recognition_requested: set[tuple[str, int]] = set()
-        self._recognition_interval_s: float = RECOGNITION_INTERVAL_S
+        self._recognized: dict[tuple[str, int], int | None] = load_recognized(store.recognition_path())
+        self._recognition_requested: set[tuple[str, int]] = set(self._recognized)
+        self._recognition_retry_s: float = RECOGNITION_RETRY_S
+        self._recognition_retry_at: float | None = None
         self._stopping: threading.Event = threading.Event()
         self._covers: set[int] = set()
         self._covers_requested: set[int] = set()
@@ -1250,6 +1253,7 @@ class AutomationOwner:
                         self._inspection_at,
                         self._subscriptions_at,
                         self._ready_retry_at,
+                        self._recognition_retry_at,
                     )
                     if deadline is not None
                 )
@@ -1261,6 +1265,7 @@ class AutomationOwner:
                 self._poll_transfers()
                 self._poll_subscriptions()
                 self._poll_ready()
+                self._poll_recognition()
                 continue
             except KeyboardInterrupt:
                 item = None
@@ -1284,6 +1289,7 @@ class AutomationOwner:
             self._poll_transfers()
             self._poll_subscriptions()
             self._poll_ready()
+            self._poll_recognition()
             if self._drained():
                 return
 
@@ -1308,9 +1314,7 @@ class AutomationOwner:
         if workspace is not None:
             self._library = workspace
             self._report_missing_subtitles(workspace)
-            self._ready_library = project_library(
-                self._state, self._service.workspace_root, tuple(group.source for group in workspace.groups)
-            )
+            self._project_ready(tuple(group.source for group in workspace.groups))
             with self._files_lock:
                 self._fresh_sources.intersection_update(
                     artifact.path for group in workspace.groups for artifact in group.artifacts
@@ -1475,7 +1479,7 @@ class AutomationOwner:
     def _record_ready_inventory(self, groups: tuple[SourceGroup, ...] | None) -> None:
         self._inspecting = False
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
             self._publish_state()
         self._inspect_changes()
 
@@ -2012,7 +2016,7 @@ class AutomationOwner:
                     "set_id": item.set_id,
                     "name": next(
                         (group.stem for group in self._state.ready_groups if group.set_id == item.set_id),
-                        item.set_id if unrecorded_group(item.set_id) is None else Path(item.files[0][0]).stem,
+                        Path(item.files[0][0]).stem,
                     ),
                     "remaining": len(item.files) - len(item.recycled),
                     "can_confirm": (item.restore is None or (not item.restore.completed and not item.restore.unsettled))
@@ -2033,6 +2037,13 @@ class AutomationOwner:
                     "retryable": self._deletion_retry_current(item),
                     "restoring": item.operation_id in self._restoring,
                     "unrecorded": unrecorded_group(item.set_id) is not None,
+                    "returned": any(
+                        file.identity is not None
+                        and (file.path, file.identity.size, file.identity.modified_ns) not in item.files
+                        for group in self._ready_library
+                        if group.set_id == item.set_id
+                        for file in group.files
+                    ),
                     "restored": item.restore is not None and item.restore.completed,
                     "gone": restore_gone(item),
                     "restore_problem": next(
@@ -2404,7 +2415,7 @@ class AutomationOwner:
             if scoped is None:
                 return self._library_refusal("library_set_missing")
             return self._deletion_preview(request, scoped, released)
-        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        self._project_ready(groups)
         self._publish_state()
         if request.kind == "deletion_undo":
             return self._start_restore(request, released)
@@ -2441,22 +2452,15 @@ class AutomationOwner:
             return self._library_refusal(group.problem or "library_result_missing")
         if (
             not playback
-            or group.target is not WorkflowTarget.VIDEO
+            or group.target not in {WorkflowTarget.VIDEO, None}
             or Path(group.main_result).suffix.casefold() in {".mkv", ".mp4"}
         ):
             return ControlResponse.succeeded({"path": group.main_result})
-        record: ReadyGroup | None = next(
-            (item for item in self._state.ready_groups if item.set_id == group.set_id), None
-        )
-        sources: set[str] = (
-            {
-                name
-                for name in (*record.sources, *record.pending_sources)
-                if Path(name).suffix.casefold() in {".mkv", ".mp4"}
-            }
-            if record is not None
-            else set()
-        )
+        sources: set[str] = {
+            item.path
+            for item in group.files
+            if item.role in {"source", "pending_source"} and Path(item.path).suffix.casefold() in {".mkv", ".mp4"}
+        }
         if not sources:
             return ControlResponse.succeeded({"path": group.main_result})
         sources = {name for name in sources if Path(name).suffix.casefold() == ".mkv"} or sources
@@ -2519,8 +2523,6 @@ class AutomationOwner:
         record: ReadyGroup | None = next(
             (item for item in self._state.ready_groups if item.set_id == group.set_id), None
         )
-        if record is None and unrecorded_group(group.set_id) is None:
-            return "library_ownership_unknown"
         if (record is not None and record.pending_sources) or self._torrent_owns_set(group, released):
             return "library_source_held"
         return None
@@ -2542,25 +2544,27 @@ class AutomationOwner:
         return unrecorded_set(group.group_id, group.stem, paths, root)
 
     def _deletion_set(self, operation: PendingDeletion) -> LibrarySet | None:
-        """Return the Library set a pending deletion names, or its failed workspace group projected from its files."""
+        """Return the recorded Library set a deletion names, or project its set without a record from its files."""
         group_id: str | None = unrecorded_group(operation.set_id)
-        if group_id is None:
+        if group_id is None and any(item.set_id == operation.set_id for item in self._state.ready_groups):
             return next((item for item in self._ready_library if item.set_id == operation.set_id), None)
-        return unrecorded_set(
-            group_id,
+        projected: LibrarySet = unrecorded_set(
+            group_id or operation.set_id,
             Path(operation.files[0][0]).stem,
             (name for name, _size, _stamp in operation.files),
             self._service.workspace_root,
         )
+        return projected if group_id is not None else replace(projected, set_id=operation.set_id)
 
     def _projected_set(self, set_id: str, groups: tuple[SourceGroup, ...]) -> LibrarySet | None:
         """Project from *groups* only the Library set *set_id*, exactly as the whole Library would show it."""
         group_id: str = next((item.group_id for item in self._state.ready_groups if item.set_id == set_id), set_id)
+        shown: set[str] = {group_id, *(item.group_id for item in self._ready_library if item.set_id == set_id)}
         state: WatchState = replace(
             self._state, ready_groups=tuple(item for item in self._state.ready_groups if item.group_id == group_id)
         )
         projected: tuple[LibrarySet, ...] = project_library(
-            state, self._service.workspace_root, tuple(group for group in groups if group.group_id == group_id)
+            state, self._service.workspace_root, tuple(group for group in groups if group.group_id in shown)
         )
         return next((item for item in projected if item.set_id == set_id), None)
 
@@ -2777,7 +2781,7 @@ class AutomationOwner:
     def _settle_restore(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
         if operation is not None and operation.restore is not None:
             complete: bool = all(item.status == "restored" for item in operation.restore.outcomes)
             self._save(
@@ -2984,7 +2988,7 @@ class AutomationOwner:
 
     def _settle_deletion(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
         self._deleting.pop(operation_id, None)
         self._active_io -= 1
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
@@ -3773,10 +3777,8 @@ class AutomationOwner:
         if finished.origin is RequestOrigin.USER and finished.state is not RequestState.PAUSED and products:
             candidate = _marked(candidate, finished, products, self._now())
         saved: bool = self._save(candidate)
-        if saved and self._library is not None:
-            self._ready_library = project_library(
-                candidate, self._service.workspace_root, tuple(group.source for group in self._library.groups)
-            )
+        if saved:
+            self._project_ready(self._ready_groups)
         self._ledger.mark_finished(recorded.group_ids)
         groups: tuple[InspectedSourceGroup, ...] = self._run_groups.pop(completion.request_id, ())
         if saved and completion.result is not None:
@@ -8678,12 +8680,16 @@ class AutomationOwner:
         self._request_covers()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
+    def _project_ready(self, groups: tuple[SourceGroup, ...]) -> None:
+        self._ready_groups = groups
+        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+
     def _named(self, sets: tuple[LibrarySet, ...]) -> tuple[LibrarySet, ...]:
         return name_series(sets, self._state, self._series, self._recognized)
 
     def _request_recognition(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
-        if acquisition is None or self._shutting_down:
+        if acquisition is None or self._shutting_down or self._recognizing or self._recognition_retry_at is not None:
             return
         titles: dict[tuple[str, int], tuple[str, int | None]] = hand_titles(self._ready_library, self._state)
         wanted: dict[tuple[str, int], tuple[str, int | None]] = {
@@ -8697,6 +8703,12 @@ class AutomationOwner:
             target=self._read_recognition, args=(acquisition, wanted), name=_RECOGNITION_THREAD, daemon=True
         ).start()
 
+    def _poll_recognition(self) -> None:
+        if self._recognition_retry_at is None or time.monotonic() < self._recognition_retry_at:
+            return
+        self._recognition_retry_at = None
+        self._request_recognition()
+
     def _read_recognition(
         self, acquisition: AcquisitionService, wanted: dict[tuple[str, int], tuple[str, int | None]]
     ) -> None:
@@ -8704,12 +8716,15 @@ class AutomationOwner:
         failures: dict[str, int] = {}
         try:
             with acquisition.episode_requests():
-                for key, title in wanted.items():
-                    answered: bool
-                    answered, found[key] = self._recognize_paced(acquisition, key, title, failures)
-                    if not answered:
-                        del found[key]
-                        break
+                candidates: dict[str, tuple[TitleCandidate, ...]] | None = self._search_hand_titles(
+                    acquisition, tuple(title for title, _highest in wanted.values()), failures
+                )
+            if candidates is not None:
+                found = {
+                    key: recognize(candidates[title], key[0], key[1], highest)
+                    for key, (title, highest) in wanted.items()
+                    if title in candidates
+                }
         finally:
             logger.info(
                 "Hand-added Library titles searched",
@@ -8720,26 +8735,23 @@ class AutomationOwner:
                 failed=sum(failures.values()),
                 error_classes=sorted(failures),
             )
-            self._queue.put(lambda: self._record_recognition(found))
+            self._queue.put(lambda: self._record_recognition(tuple(wanted), found))
 
-    def _recognize_paced(
-        self,
-        acquisition: AcquisitionService,
-        key: tuple[str, int],
-        title: tuple[str, int | None],
-        failures: dict[str, int],
-    ) -> tuple[bool, int | None]:
+    def _search_hand_titles(
+        self, acquisition: AcquisitionService, texts: tuple[str, ...], failures: dict[str, int]
+    ) -> dict[str, tuple[TitleCandidate, ...]] | None:
         for _attempt in range(_RECOGNITION_ATTEMPTS):
             if not self._anilist_free(acquisition):
-                return False, None
-            result, failed = self._recognize_title(acquisition, key, title, failures)
-            if not failed or not _cooling(acquisition):
-                return True, result
-        return True, None
+                return None
+            try:
+                return acquisition.find_many_titles(texts)
+            except (AniShiftError, OSError, ValueError) as error:
+                failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
+                if not _cooling(acquisition):
+                    return None
+        return None
 
     def _anilist_free(self, acquisition: AcquisitionService) -> bool:
-        if self._stopping.wait(self._recognition_interval_s):
-            return False
         waited: bool = False
         while _cooling(acquisition):
             if not waited:
@@ -8749,22 +8761,19 @@ class AutomationOwner:
                 return False
         return not self._shutting_down
 
-    @staticmethod
-    def _recognize_title(
-        acquisition: AcquisitionService,
-        key: tuple[str, int],
-        title: tuple[str, int | None],
-        failures: dict[str, int],
-    ) -> tuple[int | None, bool]:
-        try:
-            return recognize(acquisition.find_titles(title[0]), key[0], key[1], title[1]), False
-        except (AniShiftError, OSError, ValueError) as error:
-            failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
-            return None, True
-
-    def _record_recognition(self, found: dict[tuple[str, int], int | None]) -> None:
+    def _record_recognition(
+        self, wanted: tuple[tuple[str, int], ...], found: dict[tuple[str, int], int | None]
+    ) -> None:
         self._recognizing -= 1
+        self._recognition_requested -= set(wanted) - found.keys()
+        self._recognition_retry_at = time.monotonic() + self._recognition_retry_s
+        if not found:
+            return
         self._recognized.update(found)
+        try:
+            save_recognized(self._store.recognition_path(), self._recognized)
+        except OSError as problem:
+            logger.warning("The hand-added Library title cache was not saved", error_class=type(problem).__name__)
         if any(value is not None for value in found.values()):
             self._publish_state()
 
@@ -8936,7 +8945,7 @@ class AutomationOwner:
         self._active_io -= 1
         if groups is None:
             return
-        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        self._project_ready(groups)
         self._offer_ready_results(group_ids, request_id)
 
     def _offer_ready_results(self, group_ids: Sequence[str], request_id: str | None) -> None:
@@ -9121,6 +9130,7 @@ class AutomationOwner:
             if item.restore is not None and item.restore.unsettled and item.operation_id != restoring
         }
         groups: set[str] = {item.group_id for item in self._state.ready_groups if item.set_id in protected}
+        groups.update(item.group_id for item in self._ready_library if item.set_id in protected)
         groups.update(group for set_id in protected if (group := unrecorded_group(set_id)) is not None)
         return protected | groups
 

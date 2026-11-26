@@ -514,6 +514,93 @@ def test_search_does_not_retry_when_no_word_can_be_shortened() -> None:
     assert searched == ["one"]
 
 
+def _aliased(hits: Callable[[str], bool]) -> Callable[[dict[str, Any]], httpx.Response]:
+    def answer(body: dict[str, Any]) -> httpx.Response:
+        searched: dict[str, str] = {key: value for key, value in body["variables"].items() if key != "limit"}
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    f"t{key.removeprefix('s')}": {"media": [_SOLO_LEVELING] if hits(text) else []}
+                    for key, text in searched.items()
+                }
+            },
+        )
+
+    return answer
+
+
+@pytest.mark.unit
+def test_search_many_spends_at_most_fifteen_aliases_with_shortened_retries_and_leaves_the_rest_out() -> None:
+    bodies: list[dict[str, Any]] = []
+    answer: Callable[[dict[str, Any]], httpx.Response] = _aliased(lambda text: text == "sol level")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        bodies.append(body)
+        return answer(body)
+
+    catalog, http = _catalog(handler)
+    texts: list[str] = [*(f"x{index}" for index in range(12)), "solo levelling", "one", "x99"]
+    with http:
+        found: dict[str, tuple[TitleCandidate, ...]] = catalog.search_many(texts)
+
+    assert [len(body["variables"]) - 1 for body in bodies] == [14, 1]
+    assert bodies[1]["variables"]["s0"] == "sol level"
+    assert all("t0: Page(perPage: $limit)" in body["query"] for body in bodies)
+    assert bodies[0]["variables"]["limit"] == 7
+    assert [len(found[text]) for text in texts[:-1]] == [0] * 12 + [1, 0]
+    assert "x99" not in found
+
+
+@pytest.mark.unit
+def test_search_many_in_minute_cycles_finds_forty_titles_without_crossing_thirty_points_a_minute() -> None:
+    texts: list[str] = [f"long title number{index}" if index % 3 == 0 else f"t{index}" for index in range(40)]
+    points: list[int] = [0]
+    rejected: list[int] = []
+    answer: Callable[[dict[str, Any]], httpx.Response] = _aliased(
+        lambda text: text.startswith("t") or text.startswith("lon tit")
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        points[-1] += len(body["variables"]) - 1
+        if points[-1] > 30:
+            rejected.append(points[-1])
+            return httpx.Response(429, json={"errors": [{"message": "Too Many Requests"}]})
+        return answer(body)
+
+    catalog, http = _catalog(handler)
+    found: dict[str, tuple[TitleCandidate, ...]] = {}
+    with http:
+        while len(found) < len(texts) and len(points) <= 10:
+            found.update(catalog.search_many([text for text in texts if text not in found]))
+            points.append(0)
+
+    assert rejected == []
+    assert all(found[text] for text in texts)
+    assert max(points) <= 15
+
+
+@pytest.mark.unit
+def test_search_many_keeps_the_first_request_answers_when_the_shortened_retry_fails() -> None:
+    answer: Callable[[dict[str, Any]], httpx.Response] = _aliased(lambda text: text == "found")
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) > 1:
+            return httpx.Response(429, json={"errors": [{"message": "Too Many Requests"}]})
+        return answer(json.loads(request.content))
+
+    catalog, http = _catalog(handler)
+    with http:
+        found: dict[str, tuple[TitleCandidate, ...]] = catalog.search_many(["found", "solo levelling", "zz"])
+
+    assert len(calls) == 2
+    assert {text: len(candidates) for text, candidates in found.items()} == {"found": 1, "zz": 0}
+
+
 def test_search_rejects_a_rate_limited_answer() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, json={"errors": [{"message": "Too Many Requests"}]})

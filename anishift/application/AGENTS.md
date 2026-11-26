@@ -95,6 +95,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   czekają na blokadę discovery fasady na wątku ownera.
 - `history.py` to nieautorytatywny JSONL ownera (30 dni); awarie nie zmieniają dopuszczenia, deduplikacji ani
   recovery. Naprawiany jest tylko urwany ogon; uszkodzony środek daje odmowę odczytu Historii.
+- `project_library` pokazuje każdy zestaw w `ready/` (z podfolderami) z produktem głównym (`main_product`): bez
+  rekordu jako zestaw o `set_id` = `group_id` grupy, a zestaw z rekordem przeniesiony lub przemianowany w `ready/`
+  (`_moved_sets`) pod `set_id` rekordu, dopasowany po rozmiarze i mtime potwierdzonego wyniku głównego. Wynik główny
+  takich zestawów stoi na końcu `files`, bo Del rzutuje zestaw przed każdym plikiem, a bez niego zestawu nie widać.
 - `ReadyStore` przenosi grupę do `ready/` wyłącznym dowiązaniem i usunięciem starej nazwy na tym samym woluminie; znany
   torrent musi wcześniej zwolnić pliki, blokada relokacji chroni oba ID grupy przed Auto. Nie przenoś plików z renderera.
 - Odcinek wiąże z pobranym zestawem `downloaded_episodes` (`EpisodeAssignment.group_id` = `ReadyGroup.set_id`).
@@ -103,11 +107,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   i czystego `library_series`; daje nazwę serii i numer sezonu, a `entry_title` to tytuł wpisu (sezonu), pod którym
   Biblioteka grupuje zestawy. Wiersze Przetwarzania (`_download_materials`, zlecenie grupy z `ready_groups`) niosą
   `anilist_id/series/entry_title/season/episode` z tego samego `episode_entry`; `library_entries` obejmuje każde
-  zamówione pobranie, także w toku, więc seria i okładka są znane przed gotowym wynikiem. Zestaw ręczny (`hand_key`) owner szuka raz na
-  uruchomienie (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie, żaden
-  remake z rokiem ani wpis o mniejszej liczbie odcinków); inaczej zostaje `name`. Wyszukiwania biegną na własnym wątku
-  `anishift-owner-recognition` (nie w puli I/O, na której czeka usuwanie i Ctrl+Z), co `RECOGNITION_INTERVAL_S`, i
-  czekają na koniec przerwy AniList (`RequestControl.cooling`). Serie, rozpoznania i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
+  zamówione pobranie, także w toku, więc seria i okładka są znane przed gotowym wynikiem. Zestaw ręczny (`hand_key`) owner szuka raz
+  (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie, żaden
+  remake z rokiem ani wpis o mniejszej liczbie odcinków); inaczej zostaje `name`. Wynik (wpis albo brak dopasowania)
+  trafia do `recognition.json` obok `state.json` (`load_recognized`/`save_recognized`, zły plik = pusta pamięć), który
+  owner czyta w konstruktorze. Nowe tytuły idą aliasowanym zapytaniem (`search_many`, najwyżej `SEARCH_BUDGET` aliasów
+  razem ze skróconymi powtórkami, bo każdy alias kosztuje punkt limitu AniList 30/min) na własnym wątku
+  `anishift-owner-recognition` (nie w puli I/O, na której czeka usuwanie i Ctrl+Z) po końcu przerwy AniList
+  (`RequestControl.cooling`). Tytuł spoza budżetu albo z nieudanego zapytania nie wraca w wyniku i niczego nie
+  zapisuje; owner szuka go w następnym wyszukiwaniu, najwcześniej `RECOGNITION_RETRY_S` po poprzednim. Serie i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
   puli I/O do katalogu podanego przez `run_resident(cover_dir=...)`; bez katalogu (testy) okładek nie ma. Snapshot
   `covers` to ID z plikiem w cache. Testy: `test_library_series.py`.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli

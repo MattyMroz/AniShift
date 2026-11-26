@@ -181,7 +181,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Biblioteka ma dwa poziomy: tytuły (`library_titles`: `entry:<id>` jeden wiersz na wpis AniList z `entry_title`, `name:<tytuł>`,
   „Nie rozpoznano” na końcu) i odcinki otwartego tytułu (`_library_title`, prezentacja `AnimeScreen.EPISODES`,
   okruszki `Biblioteka › <tytuł>`). Esc/Backspace/okruszek wracają na ten sam tytuł; zmiana zakładki zamyka tytuł,
-  zaznaczenia, pole `/` i pytanie, filtr zostaje. Tytuły i daty odcinków czyta wątek `anishift-library-episodes`
+  zaznaczenia, pole `/` i pytanie, filtr zostaje. `/` dopasowuje tytuł wiersza, `series`, tytuł z nazwy i `name`
+  zestawów. Gdy zestawy otwartego albo zaznaczonego tytułu przechodzą pod inny klucz (rozpoznanie `name:` →
+  `entry:<id>`), `_follow_title` idzie za nimi i pokazuje „Przeniesiono do <tytuł>”. Tytuły i daty odcinków czyta wątek `anishift-library-episodes`
   własną sesją; wynik innego tytułu ginie. Del więcej niż jednego zestawu pyta (`_library_confirm`), potem jeden wątek
   i jedna sesja usuwają zestaw po zestawie; odmowa jednego wraca sama. Testy: `test_library_titles.py`.
 - Okładka: slot stałego rozmiaru stoi po lewej, okładka i tabela są wyśrodkowane jako blok z odstępem

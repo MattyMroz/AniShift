@@ -58,6 +58,9 @@ class _Episodes:
     def close(self) -> None:
         return
 
+    def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
+        return {"subscriptions": []}
+
     def episodes(self, anilist_id: int) -> EpisodeListing:
         self.read.append(anilist_id)
         assert self.release.wait(5)
@@ -287,3 +290,58 @@ def test_late_episode_titles_of_another_title_are_dropped(panel: StateController
     assert 1 not in panel._episode_info
     assert panel._episode_info[2] == {1: ("First", datetime(2026, 4, 1, 12, tzinfo=UTC))}
     assert "First" in panel.render(100, 30).plain
+
+
+@pytest.mark.parametrize("query", ["apothecary", "hitorigoto", "kusuriya no hitorigoto - 05"])
+def test_filter_finds_an_entry_title_by_its_series_and_its_file_names(query: str) -> None:
+    entry: dict[str, object] = {
+        **_keyed("a", 7, 5, entry_title="Kusuriya"),
+        "series": "The Apothecary Diaries",
+        "name": "[Grp] Kusuriya no Hitorigoto - 05 [1080p]",
+    }
+
+    titles: list[state_library.LibraryTitle] = state_library.library_titles({"library": [entry]}, query=query)
+
+    assert [item.key for item in titles] == ["entry:7"]
+
+
+def test_entry_title_names_its_row_even_when_an_earlier_set_lacks_it() -> None:
+    unnamed: dict[str, object] = {**_keyed("a", 5, 1, entry_title=None), "name": "[Grp] Aaa - 01 [1080p]"}
+    snapshot: Mapping[str, object] = {"library": [unnamed, _keyed("b", 5, 2)]}
+
+    titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot)
+
+    assert [(item.key, item.title) for item in titles] == [("entry:5", "Blue Box Season 2")]
+
+
+def _joined_episode_reads(owner: _Episodes) -> list[int]:
+    for thread in threading.enumerate():
+        if thread.name == "anishift-library-episodes":
+            thread.join(5)
+    return owner.read
+
+
+def _receive(panel: StateController, payload: Mapping[str, object]) -> None:
+    panel._receive(panel._parent, {"event": "state_changed", "payload": payload})
+
+
+@pytest.mark.parametrize("opened", [False, True])
+def test_recognition_moving_the_sets_of_a_title_follows_them_with_a_notice(
+    panel: StateController, *, opened: bool
+) -> None:
+    before: dict[str, object] = {"library": [_hand("z", "[Grp] Zeta - 01"), _hand("a", "[Grp] Abc - 01")]}
+    recognized: dict[str, object] = {**_hand("a", "[Grp] Abc - 01"), "anilist_id": 9, "entry_title": "Zzz Season"}
+    owner: _Episodes = cast("_Episodes", panel._parent)
+    owner.release.set()
+    _receive(panel, before)
+    if opened:
+        panel.handle_key("enter")
+
+    _receive(panel, {"library": [_hand("z", "[Grp] Zeta - 01"), recognized]})
+
+    if opened:
+        assert panel._library_title == "entry:9"
+        assert _joined_episode_reads(owner) == [9]
+    else:
+        assert panel._titles()[panel._selected].key == "entry:9"
+    assert "Przeniesiono do Zzz Season" in panel.render(100, 30).plain

@@ -516,6 +516,17 @@ def test_deleted_sets_leave_a_set_gone_from_the_bin_to_the_owner_library() -> No
     assert state_texts.deleted_sets({"deletions": deletions}) == {"Alpha"}
 
 
+def test_a_downloaded_again_set_with_an_old_recycled_deletion_is_listed_again() -> None:
+    problem: dict[str, object] = {"set_id": "Alpha", "name": "Alpha", "available": False, "problem": "x"}
+    deletion: dict[str, object] = {**_RECYCLED, "recycled": 1, "returned": True}
+
+    listed: list[Mapping[str, object]] = state_library.library_rows(
+        {"library_problems": [problem], "deletions": [deletion]}
+    )
+
+    assert [state_library.library_row_id(item) for item in listed] == ["Alpha"]
+
+
 @pytest.mark.parametrize(
     ("deletions", "expected"),
     [

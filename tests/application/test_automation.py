@@ -58,6 +58,7 @@ from anishift.application.automation import (
     TRANSFER_BACKOFF_CEILING_S,
     TRANSFER_CHECK_INTERVAL_S,
     AutomationOwner,
+    _Completion,
 )
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.control import (
@@ -1643,6 +1644,41 @@ def test_library_distinguishes_missing_main_from_existing_unconfirmed_result(tmp
         service.close()
 
 
+@pytest.mark.integration
+def test_finished_run_keeps_ready_sets_inventoried_after_the_last_full_inspection(tmp_path: Path) -> None:
+    service, store, state = _completed_library(tmp_path)
+    request: ProcessingRequest = ProcessingRequest(
+        "running",
+        1,
+        (state.ready_groups[0].group_id,),
+        {},
+        RequestOrigin.USER,
+        SourceSelection.MANUAL,
+        None,
+        RequestState.RUNNING,
+        1,
+        _MOMENT.isoformat(),
+    )
+    store.save(replace(state, requests=(request,)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        write_text_source(tmp_path / "03.txt", "Text")
+        owner.files_changed(DirectoryChange(paths=(tmp_path / "03.txt",)))
+        assert _await(lambda: owner._on_owner(lambda: owner._library is not None))
+        assert len(_read_ready_sets(owner)) == 1
+        (tmp_path / "ready/02.txt").write_text("source", encoding="utf-8")
+        (tmp_path / "ready/02.pl.txt").write_text("translated", encoding="utf-8")
+        owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/02.txt", tmp_path / "ready/02.pl.txt")))
+        _await_library_count(owner, 2)
+        owner._on_owner(lambda: owner._record_completion(_Completion("running", None)))
+        assert len(cast("list[object]", owner.handle(_request("status")).result["library"])) == 2
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
 def _await_library_count(owner: AutomationOwner, expected: int) -> None:
     deadline: float = time.monotonic() + _TIMEOUT_S
     while time.monotonic() < deadline:
@@ -2005,39 +2041,20 @@ def test_deletion_preview_rejects_symlink_source_without_reading_external_target
         service.close()
 
 
-@pytest.mark.parametrize("evidence", ["complete", "failed", "unidentified"])
-def test_legacy_library_needs_success_and_identified_product_but_never_invents_a_target(
-    tmp_path: Path, evidence: str
+def test_ready_set_without_any_record_or_request_is_listed_and_deletable_but_never_invents_a_target(
+    tmp_path: Path,
 ) -> None:
     service, store, state = _completed_library(tmp_path)
     group_id: str = state.ready_groups[0].group_id
-    request: ProcessingRequest = ProcessingRequest(
-        "completed",
-        1,
-        (group_id,),
-        {},
-        RequestOrigin.USER,
-        SourceSelection.MANUAL,
-        None,
-        RequestState.FAILED if evidence == "failed" else RequestState.SUCCEEDED,
-        1,
-        _MOMENT.isoformat(),
-    )
-    state = replace(state, ready_groups=(), requests=(request,))
-    if evidence == "unidentified":
-        state = replace(state, products=tuple(replace(item, size=-1, modified_ns=-1) for item in state.products))
-    store.save(state)
+    store.save(replace(state, ready_groups=(), products=()))
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
     try:
         sets: tuple[LibrarySet, ...] = _read_ready_sets(owner)
-        assert len(sets) == int(evidence == "complete")
-        if sets:
-            assert sets[0].target is None
-            assert sets[0].main_result == "ready/01.pl.txt"
-            assert sets[0].problem == "library_ownership_unknown"
-            response: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": group_id}))
-            assert not response.ok
+        assert [(item.set_id, item.target, item.main_result, item.problem) for item in sets] == [
+            (group_id, None, "ready/01.pl.txt", None)
+        ]
+        assert owner.handle(_request("deletion_preview", {"set_id": group_id})).ok
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
