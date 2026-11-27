@@ -6596,7 +6596,7 @@ def test_repeated_pause_and_resume_never_spends_the_recovery_budget_of_a_paused_
         run_id: str = _started(owner)
         service.active.remove(run_id)
         service.handles[run_id].resolve(RunResult(run_id, (GroupResult(group_id, GroupStatus.CANCELLED),), paused=True))
-        assert _await(lambda: _request_states(owner) == [RequestState.PAUSED.value])
+        assert _await(lambda: service.submitted == [run_id, run_id])
         for cycle in range(4):
             assert _switched(owner, enabled=False, command_id=f"pause-{cycle}")
             assert _switched(owner, enabled=True, command_id=f"resume-{cycle}")

@@ -15,6 +15,7 @@ from typing import Final
 from anishift.application.control_views import cached_adapter
 from anishift.application.events import sanitize_event_message
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_replace
 
 logger = get_logger(__name__)
 
@@ -218,5 +219,5 @@ class HistoryJournal:
                 stream.write(cached_adapter(HistoryEvent).dump_json(item) + b"\n")
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(self._path)
+        safe_replace(temporary, self._path)
         self._torn = False

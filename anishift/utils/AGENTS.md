@@ -14,7 +14,7 @@ Portable utilities with no host application dependencies. The package facade exp
 - `device.py` — wybór CUDA>CPU bez importu torcha
 - `mp3_frames.py` — ramki MPEG Layer III: nagłówki, ID3v2, czas serwera, cięcie przed czasem, miejsca sklejeń i przeliczenie na oś zdekodowaną; jedyny parser ramek w repo
 - `pauses.py` — poziomy RMS ramek 10 ms (`frame_levels`), czasy ramek na osi serwera i reguła cięcia między kwestiami (`best_pause`, `silent_cut`, `cut_points`); jedyne źródło tej reguły w repo
-- `safe_fs.py` — `safe_rmtree`/`safe_move` z retry na `PermissionError`
+- `safe_fs.py` — `safe_rmtree`/`safe_move`/`safe_replace` z retry na `PermissionError`; `safe_replace` to jedyna droga atomowej podmiany pliku stanu (czytelnik bez współdzielenia usuwania blokuje `os.replace` na Windows)
 - `safe_path.py` — `safe_resolve` chroniący przed path traversal
 - `secrets.py` — niemutujące redagowanie sekretów w dictach
 - `timing.py` — `elapsed_ms_since` na zegarze monotonicznym
@@ -27,7 +27,7 @@ Portable utilities with no host application dependencies. The package facade exp
 - `build_retry` przekazuje `sleep=asyncio.sleep` przez referencję (late-binding), by `monkeypatch.setattr(asyncio,"sleep",...)` działał — przeniesienie do domyślnego argumentu ominęłoby patcha. `_retry.py`
 - W `build_retry` `max_attempts` to CAŁKOWITA liczba wywołań (`stop_after_attempt`), nie liczba dodatkowych ponowień. `_retry.py`
 - `_is_retryable_network_error` rozpoznaje `DownloadError` po nazwach w `__mro__` (lazy) i celowo NIE ponawia gdy w MRO jest też `OfflineError`. `_retry.py`
-- `safe_rmtree`/`safe_move` pętlą `range(retries + 1)` — przy `retries=3` to 4 próby, backoff 0.5→1.0→2.0 s. `safe_fs.py`
+- `safe_rmtree`/`safe_move` pętlą `range(retries + 1)` — przy `retries=3` to 4 próby, backoff 0.5→1.0→2.0 s; `safe_replace` ma 6 prób, backoff 0.05→0.8 s (razem około 1.5 s), bo czeka na nią wątek ownera. `safe_fs.py`
 - `safe_resolve` używa `is_relative_to` na już rozwiązanych ścieżkach (po `.resolve()` obu stron) — symlinki są śledzone przed sprawdzeniem. `safe_path.py`
 - `mp3_frames`: ramka jest ważna tylko wtedy, gdy po niej stoi poprawny nagłówek albo kończą się dane. Zgubioną ramką (sklejeniem) jest wyłącznie ciąg bajtów między ważnymi ramkami, który zaczyna się poprawnym nagłówkiem: dekoder pomija go w całości, a czas serwera (`frames_duration_ms`, `cut_before_ms`) liczy go jako jedną ramkę. Obce bajty bez nagłówka nie są ani czasem, ani sklejeniem. Ostatnia ramka, po której do końca pliku stoją obce bajty, jest odtwarzana i liczy się jak zwykła ramka. `splice_times` zwraca czasy na osi zdekodowanej; `to_decoded` wymaga długości ramki strumienia (`FrameHeader.duration_ms`). `mp3_frames.py`
 - Trzy różne `timing.py`: `utils/timing.py` (`elapsed_ms_since`), `utils/logger/timing.py` i `utils/timer/timing.py` — nie mylić przy imporcie.

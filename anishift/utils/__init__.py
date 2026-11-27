@@ -9,12 +9,13 @@ Use ``from <pkg>.utils.device import get_device`` explicitly.
 
 from __future__ import annotations
 
-from .safe_fs import safe_move, safe_rmtree
+from .safe_fs import safe_move, safe_replace, safe_rmtree
 from .safe_path import PathTraversalError, safe_resolve
 
 __all__ = [
     "PathTraversalError",
     "safe_move",
+    "safe_replace",
     "safe_resolve",
     "safe_rmtree",
 ]

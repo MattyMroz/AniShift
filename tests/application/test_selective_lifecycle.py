@@ -1371,7 +1371,7 @@ def test_a_selection_the_client_keeps_finishing_with_nothing_wanted_is_reported_
     setup.network.empty_after_start = 10
     with _running(setup) as owner:
         _start_content(setup, owner)
-        _until(lambda: _stored(setup).problem is not None)
+        _until(lambda: owner.state.acquisitions[0].problem is not None)
         _polls(setup)
 
     assert _stored(setup).problem == automation_module._SELECTION_MISMATCH

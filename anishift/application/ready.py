@@ -19,6 +19,7 @@ from anishift.application.workflows import WorkflowRoute, WorkflowTarget
 from anishift.errors import ExecutionError
 from anishift.paths import READY_DIRECTORY, ready_dir
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_replace
 
 logger = get_logger(__name__)
 
@@ -310,7 +311,7 @@ class ReadyStore:
             stream.write(cached_adapter(ReadyMove).dump_json(move))
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(path)
+        safe_replace(temporary, path)
 
     def _path(self, group_id: str) -> Path:
         if Path(group_id).name != group_id or group_id in {".", ".."}:
