@@ -1,0 +1,10 @@
+Problem:
+- <fact about the state before the change>
+
+Change:
+- <step>, because <reason>
+
+Verification:
+- <check>: <result>
+
+Closes: #<issue number, or delete this line>
