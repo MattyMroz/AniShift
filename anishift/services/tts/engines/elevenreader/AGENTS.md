@@ -37,7 +37,9 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
 - `ElevenReaderConfig.redo` (`Redo`, bez wartości domyślnej): `LINE` nagrywa złą część samą, `PARAGRAPH` razem z
   częścią przed i po niej jako jeden dokument, który zastępuje wszystkie trzy. Bloki stykające się lub nachodzące
   łączą się w jeden. Każdy blok nagrywa się raz; dogranie z brakującym słowem albo błędem nie jest wklejane i nie ma
-  kolejnych ponowień, a jego części są w wyniku jako `incomplete`. Nigdy nie nagrywa się całego dokumentu od nowa po
+  kolejnych ponowień, a jego części są w wyniku jako `incomplete`. Trwały błąd dogrania (`FatalError`: logowanie,
+  App Check, kredyty, głos) kończy dogrywanie: reszta bloków nie jest nagrywana, a `ErrorContext` tego błędu wraca
+  jako `incomplete_cause`, żeby niepełne części dostały jego kod i podpowiedź. Nigdy nie nagrywa się całego dokumentu od nowa po
   odebraniu dźwięku.
 - Sklejanie (`splice`) tnie w ciszy wykrytej w dźwięku (`best_pause` między częścią przed i po szwie, w niej
   `silent_cut`), a nie według czasów serwera. Błąd dekodowania albo brak pauzy zostawia nagranie bez wklejenia, a

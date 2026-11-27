@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.tts import (
     AudioFormat,
     AvailabilityProbeKind,
@@ -103,7 +104,7 @@ class _DocumentEngine:
         adapter_version="document:v1",
     )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         failures: tuple[TtsError, ...] = (),
@@ -111,9 +112,11 @@ class _DocumentEngine:
         wrong_voice_once: bool = False,
         speaks_up_to: dict[str, int] | None = None,
         incomplete: frozenset[str] = frozenset(),
+        incomplete_cause: ErrorContext | None = None,
     ) -> None:
         self.speaks_up_to: dict[str, int] = speaks_up_to or {}
         self.incomplete: frozenset[str] = incomplete
+        self.incomplete_cause: ErrorContext | None = incomplete_cause
         self.documents: list[tuple[str, ...]] = []
         self.document_ids: list[str] = []
         self.recordings: list[Path] = []
@@ -189,6 +192,7 @@ class _DocumentEngine:
             request_time_ms=5.0,
             parts=timings,
             incomplete=tuple(part.request_id for part in request.parts if part.text in self.incomplete),
+            incomplete_cause=self.incomplete_cause,
         )
 
     async def close(self) -> None:
@@ -413,6 +417,18 @@ def test_document_batch_line_still_missing_words_after_redo_fails_alone_without_
     assert [[span.request_id for span in spans] for spans in splitter.calls] == [["line-0", "line-1", "line-2"]]
     assert result.requests[1].speech_clip is None
     assert result.status is SpeechBatchStatus.PARTIAL
+
+
+def test_document_batch_incomplete_line_fails_with_the_cause_that_stopped_its_redo(tmp_path: Path) -> None:
+    cause = ErrorContext(code=ErrorCode.TTS_AUTH_FAILED, message="refused", suggestion="sign in again")
+    engine = _DocumentEngine(incomplete=frozenset({"Trzy cztery."}), incomplete_cause=cause)
+
+    (result,) = _run(tmp_path, engine, _Splitter(), _batch("Raz dwa.", "Trzy cztery."))
+
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED]
+    assert result.requests[1].error_code == "TTS_AUTH_FAILED"
+    assert result.failure == cause
+    assert len(engine.documents) == 1
 
 
 def test_document_batch_lines_silent_in_large_document_are_spoken_after_reading_them_together(

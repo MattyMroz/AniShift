@@ -343,7 +343,7 @@ class PartTiming:
 
 @dataclass(frozen=True, slots=True)
 class EngineDocumentResult:
-    """Provider-native recording, part timings and the parts still missing words after their redo."""
+    """Provider-native recording, part timings, the parts still missing words and why their redo stopped."""
 
     request_id: str
     recording: Path
@@ -354,6 +354,7 @@ class EngineDocumentResult:
     request_time_ms: float
     parts: tuple[PartTiming, ...]
     incomplete: tuple[str, ...] = ()
+    incomplete_cause: ErrorContext | None = None
 
 
 @dataclass(frozen=True, slots=True)

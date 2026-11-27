@@ -323,6 +323,7 @@ class _DocumentAttempt:
         "_engine",
         "_expectation",
         "_incomplete",
+        "_incomplete_cause",
         "_lines",
         "_paths",
         "_progress",
@@ -362,6 +363,7 @@ class _DocumentAttempt:
         self._receipts: dict[str, ValidatedClipReceipt] = {}
         self._unspoken: frozenset[str] = frozenset()
         self._incomplete: frozenset[str] = frozenset()
+        self._incomplete_cause: ErrorContext | None = None
 
     @property
     def lines(self) -> tuple[_DocumentLine, ...]:
@@ -388,6 +390,13 @@ class _DocumentAttempt:
         """Return the request ids of lines that still miss words after the engine read them again."""
         return self._incomplete
 
+    @property
+    def incomplete_error(self) -> TtsError:
+        """Return the failure of an incomplete line: what stopped the engine's redo, or the words left unread."""
+        if self._incomplete_cause is not None:
+            return TtsError(context=self._incomplete_cause)
+        return _incomplete_line_error()
+
     def receipt_for(self, request_id: str) -> ValidatedClipReceipt | None:
         """Return the accepted clip receipt of one document line."""
         return self._receipts.get(request_id)
@@ -400,6 +409,7 @@ class _DocumentAttempt:
         self._receipts = {}
         self._unspoken = frozenset()
         self._incomplete = frozenset()
+        self._incomplete_cause = None
         recording: Path = self._reserve(self._recording_format)
         self._recording = recording
         request: DocumentSynthesisRequest = DocumentSynthesisRequest(
@@ -459,6 +469,7 @@ class _DocumentAttempt:
             receipts[span.request_id] = receipt
         self._receipts = receipts
         self._incomplete = incomplete
+        self._incomplete_cause = result.incomplete_cause
         self._unspoken = frozenset(
             timing.request_id for timing in result.parts if not timing.spoken and timing.request_id not in incomplete
         )
@@ -1273,7 +1284,7 @@ class TtsService:
             error: TtsError = outcome.error or _incomplete_error()
             return _failed_execution(line.request, error, calls, retries, request_time_ms)
         if line.request.request_id in attempt.incomplete:
-            return _failed_execution(line.request, _incomplete_line_error(), calls, retries, request_time_ms)
+            return _failed_execution(line.request, attempt.incomplete_error, calls, retries, request_time_ms)
         if line.request.request_id in attempt.unspoken:
             return _failed_execution(line.request, _unspoken_line_error(), calls, retries, request_time_ms)
         receipt: ValidatedClipReceipt | None = attempt.receipt_for(line.request.request_id)

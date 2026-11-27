@@ -33,6 +33,7 @@ from .host import (
     EngineSurface,
     ErrorCode,
     ErrorContext,
+    FatalError,
     TtsCancelledError,
     TtsClipValidationError,
     TtsError,
@@ -143,7 +144,10 @@ class ElevenReaderTtsEngine(EngineSurface):
         reported: DocumentSynthesisRequest = _reported_here(request)
         main: Take = await self._take(reported, request.parts, voice, cancel, progress=reported.progress)
         reading: Reading = _read(main, texts, offset=0)
-        redone: list[Redone] = await self._redo(request, voice, reading, cancel) if reading.missing else []
+        redone: list[Redone] = []
+        cause: ErrorContext | None = None
+        if reading.missing:
+            redone, cause = await self._redo(request, voice, reading, cancel)
         chunks: tuple[AlignmentChunk, ...] = await asyncio.to_thread(
             _joined, main, reading, redone, request.recording, len(request.parts)
         )
@@ -171,6 +175,7 @@ class ElevenReaderTtsEngine(EngineSurface):
             chunks=chunks,
             ranges=joined.ranges,
             incomplete=incomplete,
+            incomplete_cause=cause if incomplete else None,
         )
 
     async def download_document(
@@ -209,6 +214,7 @@ class ElevenReaderTtsEngine(EngineSurface):
             chunks=take.chunks,
             ranges=(),
             incomplete=(),
+            incomplete_cause=None,
         )
 
     async def close(self) -> None:
@@ -229,8 +235,8 @@ class ElevenReaderTtsEngine(EngineSurface):
 
     async def _redo(
         self, request: DocumentSynthesisRequest, voice: ElevenReaderVoice, reading: Reading, cancel: CancellationToken
-    ) -> list[Redone]:
-        """Record every block with a missing word once more and return the blocks that came back complete."""
+    ) -> tuple[list[Redone], ErrorContext | None]:
+        """Record every block with a missing word once more; return the complete blocks and what stopped the rest."""
         redone: list[Redone] = []
         for first, last in redo_blocks(reading.missing, len(request.parts), self._config.redo):
             parts: tuple[DocumentPart, ...] = request.parts[first : last + 1]
@@ -239,6 +245,13 @@ class ElevenReaderTtsEngine(EngineSurface):
                 take: Take = await self._take(request, parts, voice, cancel, progress=None)
             except TtsCancelledError:
                 raise
+            except FatalError as error:
+                logger.warning(
+                    "ElevenReader redo stopped; the blocks left stay incomplete",
+                    first=first,
+                    error_code=error.context.code.value,
+                )
+                return redone, error.context
             except (TtsError, OSError) as error:
                 logger.warning("ElevenReader redo failed", first=first, last=last, error_class=type(error).__name__)
                 continue
@@ -246,7 +259,7 @@ class ElevenReaderTtsEngine(EngineSurface):
                 logger.warning("ElevenReader redo still lacks words and is not joined", first=first, last=last)
                 continue
             redone.append(Redone(first=first, last=last, take=take))
-        return redone
+        return redone, None
 
     async def _take(
         self,

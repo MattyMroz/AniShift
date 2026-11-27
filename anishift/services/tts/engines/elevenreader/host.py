@@ -8,7 +8,7 @@ from array import array
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Never
 
-from anishift.errors import ErrorCode, ErrorContext
+from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.platform.binaries import Binary, BinaryNotFoundError, require_binary
 from anishift.platform.child_processes import independent_child_flags
 from anishift.platform.installed import find_installed
@@ -102,6 +102,7 @@ __all__ = [
     "EngineSurface",
     "ErrorCode",
     "ErrorContext",
+    "FatalError",
     "FrameHeader",
     "LineSpan",
     "PartTiming",
@@ -343,6 +344,7 @@ def document_result(  # noqa: PLR0913 - every field of one recorded document
     chunks: tuple[AlignmentChunk, ...],
     ranges: tuple[tuple[int, int] | None, ...],
     incomplete: tuple[str, ...],
+    incomplete_cause: ErrorContext | None,
 ) -> EngineDocumentResult:
     """Return the result AniShift's TTS service reads: the recording, part timings and the incomplete parts."""
     del chunks, ranges
@@ -356,6 +358,7 @@ def document_result(  # noqa: PLR0913 - every field of one recorded document
         request_time_ms=request_time_ms,
         parts=parts,
         incomplete=incomplete,
+        incomplete_cause=incomplete_cause,
     )
 
 

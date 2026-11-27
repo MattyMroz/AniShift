@@ -13,8 +13,11 @@ import pytest
 from engine_host import make_engine, make_request
 
 from anishift.services.tts.engines.elevenreader import Redo, redo, service
+from anishift.services.tts.engines.elevenreader.api_backend import refused_error
 from anishift.services.tts.engines.elevenreader.host import (
+    REFUSED_HINT,
     Cancellation,
+    ErrorCode,
     TtsCancelledError,
     TtsProviderUnavailableError,
     frames_duration_ms,
@@ -127,6 +130,7 @@ class Site:
     broken: set[int] = field(default_factory=set)
     hangs: set[int] = field(default_factory=set)
     loud_pauses: set[int] = field(default_factory=set)
+    refused: set[int] = field(default_factory=set)
     on_upload: Callable[[int], None] | None = None
     uploads: list[list[str]] = field(default_factory=list)
     account: dict[str, object] = field(default_factory=lambda: {"default_voice_id": "other", "playback_speed_rate": 1})
@@ -176,10 +180,12 @@ class Page:
         del url, token, action
 
     def raise_if_refused(self) -> None:
-        return
+        if self.take in self.site.refused:
+            raise refused_error("AppCheck: 403")
 
     async def open_document(self, read_id: str) -> None:
         assert read_id == f"read-{self.take}"
+        self.raise_if_refused()
 
     async def press_play(self) -> None:
         assert self.recorder is not None
@@ -442,6 +448,24 @@ def test_redo_ending_in_an_error_leaves_its_parts_incomplete_and_keeps_the_recor
     assert len(site.uploads) == 2
     assert result.incomplete == ("part-2",)
     assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+
+
+def test_redo_refused_by_app_check_stops_the_redo_and_gives_its_cause_to_the_incomplete_parts(
+    tmp_path: Path,
+) -> None:
+    def script(take: int, parts: list[str]) -> list[str]:
+        return parts if take else [parts[0], "Druga kwestia.", parts[2], "Czwarta kwestia.", parts[4]]
+
+    site = Site(script=script, refused={1})
+
+    result = record(tmp_path, site, Redo.LINE)
+
+    assert len(site.uploads) == 2
+    assert result.incomplete == ("part-1", "part-3")
+    assert result.incomplete_cause is not None
+    assert result.incomplete_cause.code is ErrorCode.TTS_AUTH_FAILED
+    assert result.incomplete_cause.suggestion == REFUSED_HINT
+    assert fills(result.recording) == [1, 2, 3, 4, 5]
 
 
 def test_redo_without_a_pause_to_cut_in_is_left_out(tmp_path: Path) -> None:
