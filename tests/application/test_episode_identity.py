@@ -437,6 +437,18 @@ def test_classify_movie_year_collision_and_special_directory_rejected() -> None:
         _assert_rejected({**target, "years": [2020]}, candidate)
 
 
+def test_classify_file_year_of_the_target_outweighs_another_package_year() -> None:
+    target: dict[str, Any] = _target_for("Berserk", episode=1, local_episode=1, absolute=1, years=[2016])
+    candidate: dict[str, Any] = {
+        "release": "[zza] Berserk (1997+Reboot) [1080p.x265][multisubs:eng fre][Vostfr]",
+        "path": "2016/[zza] Berserk (2016) - 01 [1080p.x265].mkv",
+        "filename": "[zza] Berserk (2016) - 01 [1080p.x265].mkv",
+    }
+    assert _assess(target, candidate).verdict is IdentityVerdict.MATCH
+    undated: str = "[zza] Berserk - 01 [1080p.x265].mkv"
+    _assert_rejected(target, {**candidate, "path": undated, "filename": undated})
+
+
 @pytest.mark.parametrize("marker", ["第5话", "第5話", "第5集", "Episode 5", "Ep 5", "E 5", "#5"])
 def test_classify_cjk_single_numbers_accepted_and_ranges_rejected(marker: str) -> None:
     assert _assess(_target_for(), {"filename": f"Star Garden - {marker} [1080p].mkv"}).verdict is IdentityVerdict.MATCH
