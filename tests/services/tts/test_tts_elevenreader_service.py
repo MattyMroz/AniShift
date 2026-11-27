@@ -1032,7 +1032,7 @@ def test_mono_pcm_runs_ffmpeg_without_a_console_window(tmp_path: Path, monkeypat
         return subprocess.CompletedProcess(command, 0, stdout=bytes(4))
 
     monkeypatch.setattr(host, "require_binary", lambda binary: tmp_path / binary.value)
-    monkeypatch.setattr(host.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
 
     pcm = host.mono_pcm(tmp_path / "take.mp3")
 
