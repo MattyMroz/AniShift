@@ -99,6 +99,15 @@ zostaje wynikiem.
 6. Test „przekroczenie czasu przed dźwiękiem → przeglądarka podejrzana” wrócił w nowej postaci (brak dźwięku po Play,
    drugie nagranie trwa, przeglądarka restartuje dopiero po nim). `8c99cf08`.
 
+Decyzje prowadzącego po recenzji:
+
+- D1: `TtsService` AniShift usuwa próby silnika także po błędzie albo anulowaniu przed wynikiem, bo AniShift nigdy ich
+  nie użyje. Próba z odebranym dźwiękiem staje się wynikiem i nie jest usuwana; pilnuje tego test
+  `test_errors_after_speech_keep_it_as_the_result_and_delete_only_the_takes`. `c1c850c1`.
+- D2: wynik dokumentu niezgodny z kontraktem (inny request, głos, model, format albo inna lista części) był błędem
+  przejściowym, więc scheduler nagrywał dokument od nowa. Teraz to trwały `TtsRecordingSplitError` z kodem
+  `TTS_CLIP_INVALID` i podpowiedzią; linie przegrywają, nagrania się nie powtarza. `6727d990`.
+
 Poza listą: `host.mono_pcm` uruchamia FFmpeg z `CREATE_NO_WINDOW`, jak reszta wywołań w AniShift (`207c3a7b`, tylko
 `host.py` AniShift).
 
@@ -124,11 +133,12 @@ Reszta ElevenDownloaderPro:
   `download.take1.mp3`); `edp record`/`download` może pokazać `incomplete_cause` przy częściach `incomplete`.
 - `tests/engine/test_engine_redo.py`: te same zmiany co w AniShift (`tests/services/tts/test_engine_redo.py`):
   test bez plików prób po wyniku, test usunięcia niewklejanego dogrania, test odmowy App Check w dogrywaniu
-  (`incomplete_cause`), test błędu w kodzie przy sklejaniu (pierwsze nagranie zostaje), porównania z
-  `doc.take1.mp3` zamienione na `fills(...)`.
+  (`incomplete_cause`), test błędu w kodzie przy sklejaniu (pierwsze nagranie zostaje), test błędów po dźwięku
+  (wynik zostaje, znikają tylko próby, D1), porównania z `doc.take1.mp3` zamienione na `fills(...)`.
+- D2 dotyczy tylko `TtsService` AniShift; w ElevenDownloaderPro sprawdzić, czy `_retrying` nie nagrywa dokumentu od
+  nowa po wyniku, którego nie przyjmuje.
 - `AGENTS.md` silnika: sekcje „Wykrywanie i dogrywanie” i „Pliki nagrań” jak w AniShift.
 
 ## Sprawy otwarte
 
-- AniShift: wynik dokumentu niezgodny z kontraktem (`_unowned_clip_error`, `_document_timing_error`, oba
-  przejściowe) dalej każe schedulerowi nagrać dokument od nowa; to błąd silnika, nie cięcia, więc zostało bez zmian.
+- Brak górnej granicy liczby dograń (brak danych do jej ustalenia).
