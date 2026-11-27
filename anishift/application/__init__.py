@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         InspectedWorkspace,
         InspectionWarning,
         WorkspaceInspector,
+        WorkspacePage,
     )
     from anishift.application.library import LibraryLabel, library_label
     from anishift.application.ready import ReadyStore
@@ -345,6 +346,7 @@ __all__ = [
     "WorkerNotificationKind",
     "WorkflowTarget",
     "WorkspaceInspector",
+    "WorkspacePage",
     "anilist_date",
     "audio_text",
     "confidence_text",
@@ -447,6 +449,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "SettingsDraft": ("anishift.application.service", "SettingsDraft"),
     "TranslationModelOption": ("anishift.application.service", "TranslationModelOption"),
     "WorkspaceInspector": ("anishift.application.inspection", "WorkspaceInspector"),
+    "WorkspacePage": ("anishift.application.inspection", "WorkspacePage"),
 }
 """I/O exports loaded only when requested, avoiding eager package import cycles."""
 
