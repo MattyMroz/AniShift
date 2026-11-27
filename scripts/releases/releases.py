@@ -125,9 +125,10 @@ def record(cases: list[tuple[int, int]], directory: Path) -> None:
                 json.loads(gzip.decompress(path.read_bytes())) if path.exists() else _new_case(anilist_id, number)
             )
             known: int = len(document["responses"])
+            modes: dict[str, list[int]] = dict(document["modes"])
             if not _record_case(Recorder.of(transport, document["responses"]), document):
                 continue
-            if not path.exists() or len(document["responses"]) > known:
+            if not path.exists() or document["modes"] != modes:
                 path.write_bytes(gzip.compress(json.dumps(document, ensure_ascii=False).encode()))
                 print(f"{path.name}: {len(document['responses']) - known} new responses", flush=True)
     finally:
