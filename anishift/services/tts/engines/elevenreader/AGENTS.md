@@ -29,8 +29,7 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
   porównuje naraz wszystkie słowa dokumentu (`[^\W_]+`, małe litery; interpunkcja, odstępy i wielkość liter się nie
   liczą) ze słowami strumienia (bez znaczników `<break>`) przez `difflib.SequenceMatcher` bez `autojunk`. Połączenie
   lub rozdzielenie linii przez serwer nie jest różnicą. Słowo brakujące albo inne oznacza część jako brakującą
-  (`missing`); słowo dodane przez serwer trafia tylko do logu. Każda różnica idzie do logu (`ElevenReader streamed
-  other words than the parts`) z numerem części i słowami obu wersji; to jedyny wyjątek od zakazu tekstu w logach.
+  (`missing`); słowo dodane przez serwer trafia tylko do logu. Każda różnica idzie do logu (`ElevenReader streamed other words than the parts`) z numerem części i słowami obu wersji; to jedyny wyjątek od zakazu tekstu w logach.
 - Zakres części w tekście strumienia biegnie od jej pierwszego do ostatniego słowa wraz z interpunkcją do najbliższej
   pauzy albo spacji; część bez słów dostaje akapit bez słów między sąsiadami. Część poza zakresem, z odwróconym czasem
   albo dotykająca cichej porcji dostaje pusty `PartTiming`. Inna liczba znaków niż `char_count` tylko ostrzega.
