@@ -112,13 +112,13 @@ Decyzje prowadzącego po recenzji:
   nagrywał dokument od nowa do `tts_max_retries` razy. Teraz w drodze dokumentu (`_DocumentAttempt.call` i
   `accept_result` w `tts/service.py`) taki wyjątek idzie do logu z tracebackiem i kończy kwestie trwałym
   `TtsRecordingSplitError` (`TTS_CLIP_INVALID`), bez ponowienia. Droga pojedynczych kwestii zostaje bez zmian, bo
-  ponowienie jednej kwestii jest tanie. Sha w raporcie wykonawcy i w historii gałęzi.
+  ponowienie jednej kwestii jest tanie. `10f32c23`.
 - F2 (druga runda recenzji): po dwóch nieudanych cięciach `finally: attempt.discard()` kasował opłacone nagranie, a
   podpowiedź obiecywała nagranie od nowa. Teraz nagranie, którego nie dało się pociąć, zostaje w katalogu klipów
   zadania (`clips/document-<klucz>.mp3` i czasy w `document-<klucz>.json`, klucz z odcisków kwestii dokumentu);
   następna próba tego samego dokumentu, także ponowienie zadania w zachowanym przebiegu, tnie je bez nagrywania, a po
   przyjęciu oba pliki znikają. Nagranie bez ramek MPEG nie jest zachowywane i podpowiedź mówi, że kwestie zostaną
-  nagrane od nowa. Pliki znikają też razem z katalogiem przebiegu.
+  nagrane od nowa. Pliki znikają też razem z katalogiem przebiegu. `10f32c23`.
 
 Poza listą: `host.mono_pcm` uruchamia FFmpeg z `CREATE_NO_WINDOW`, jak reszta wywołań w AniShift (`207c3a7b`, tylko
 `host.py` AniShift).
