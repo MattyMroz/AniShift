@@ -32,6 +32,7 @@ from anishift.application import (
     RetryProposal,
     StreamCandidate,
     TitleCandidate,
+    WorkspacePage,
     decode_view,
     encode_view,
     episode_read_timeout_s,
@@ -55,6 +56,15 @@ _SESSION_CLOSED: Final[str] = "The panel session is closed"
 _READ_INTERRUPTED: Final[str] = "The catalogue read was interrupted"
 """Refusal raised for a catalogue read started before the latest `interrupt_reads`."""
 
+_DISCOVER_ATTEMPTS: Final[int] = 3
+"""Reads of the paged workspace before a library that keeps changing between its pages is refused."""
+
+_WORKSPACE_CHANGING: Final[str] = "The workspace kept changing while it was read"
+"""Refusal raised when no read returned every page from one workspace revision."""
+
+WORKSPACE_CHANGING_REASON: Final[str] = "workspace_changing"
+"""Machine-readable reason of a workspace read refused because its pages kept changing."""
+
 
 class ResidentSession:
     """Keep one editing identity and delegate its work to the authenticated owner."""
@@ -76,12 +86,25 @@ class ResidentSession:
         self._external: dict[str, dict[str, object]] = {}
 
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
-        """Read the owner's inspected library without probing it in the panel."""
+        """Read the owner's inspected library page by page from one revision, without probing it in the panel."""
         token: CancellationToken = cancel or NeverCancelledToken()
+        for _ in range(_DISCOVER_ATTEMPTS):
+            pages: list[WorkspacePage] = [self._discover_page(0, token)]
+            while (offset := pages[-1].next_offset) is not None:
+                pages.append(self._discover_page(offset, token))
+            token.raise_if_cancelled()
+            if all(page.revision == pages[0].revision for page in pages):
+                return InspectedWorkspace(
+                    groups=tuple(group for page in pages for group in page.groups),
+                    warnings=tuple(warning for page in pages for warning in page.warnings),
+                )
+        raise ControlError(
+            _WORKSPACE_CHANGING, code=ControlErrorCode.REFUSED, reason=WORKSPACE_CHANGING_REASON, answered=True
+        )
+
+    def _discover_page(self, offset: int, token: CancellationToken) -> WorkspacePage:
         token.raise_if_cancelled()
-        workspace: InspectedWorkspace = decode_view(InspectedWorkspace, self._call("discover"))
-        token.raise_if_cancelled()
-        return workspace
+        return decode_view(WorkspacePage, self._call("discover", {"offset": offset}))
 
     def new_session(self) -> ResidentSession:
         """Open an independent editing identity for one manual wizard."""

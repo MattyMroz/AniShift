@@ -28,6 +28,7 @@ from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.input import DummyInput
 from prompt_toolkit.output import DummyOutput
 
+import anishift.application.automation as automation_module
 import anishift.application.episode_fonts as episode_fonts_module
 import anishift.application.service as service_module
 import anishift.application.watch as watch_module
@@ -35,7 +36,14 @@ from anishift.application.acquisition import AcquisitionService
 from anishift.application.automation import AutomationOwner
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.control import AcquisitionConfirmation, ProcessingRequest, ReadyGroup, RequestState
-from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview, RetryProposal, decode_view
+from anishift.application.control_views import (
+    DeletionPreview,
+    LibrarySet,
+    PlanPreview,
+    RetryProposal,
+    decode_view,
+    encode_view,
+)
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.handlers import (
     ExecutionHandlers,
@@ -46,7 +54,15 @@ from anishift.application.handlers import (
     TtsTaskHandler,
 )
 from anishift.application.history import HistoryKind
-from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
+from anishift.application.inspection import (
+    EncodedWorkspace,
+    InspectedSourceGroup,
+    InspectedWorkspace,
+    WorkspaceInspector,
+    WorkspacePage,
+    encode_workspace,
+    workspace_page,
+)
 from anishift.application.intents import (
     AutoPreset,
     ExternalAudioRole,
@@ -84,6 +100,7 @@ from anishift.errors import ErrorCode, ExecutionError, RunConflictError
 from anishift.paths import TRANSLATE_DIRECTORY, relocation_journal_dir
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
+    MAX_FRAME_BYTES,
     ControlClient,
     ControlError,
     ControlErrorCode,
@@ -210,6 +227,39 @@ def _panel_owner(
         owner.request_shutdown()
         thread.join(timeout=5.0)
         assert not thread.is_alive()
+
+
+@pytest.mark.integration
+def test_panel_discovers_a_library_larger_than_one_control_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready: Path = tmp_path / "ready"
+    ready.mkdir()
+    for number in range(1000):
+        (ready / f"Show - {number:04d}.mkv").touch()
+    service: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
+    encoded: list[EncodedWorkspace] = []
+    pages: list[int] = []
+
+    def counted(workspace: InspectedWorkspace) -> EncodedWorkspace:
+        encoded.append(encode_workspace(workspace))
+        return encoded[-1]
+
+    def paged(source: EncodedWorkspace, offset: int) -> WorkspacePage:
+        pages.append(offset)
+        return workspace_page(source, offset)
+
+    monkeypatch.setattr(automation_module, "encode_workspace", counted)
+    monkeypatch.setattr(automation_module, "workspace_page", paged)
+
+    with closing(service), _panel_owner(service, tmp_path) as (session, _):
+        workspace: InspectedWorkspace = session.discover()
+
+    assert len(encoded) == 1
+    assert len(pages) > 1
+    assert len(workspace.groups) == 1000
+    assert len(json.dumps(encode_view(workspace), ensure_ascii=False).encode()) > MAX_FRAME_BYTES
+    assert [group.group_id for group in workspace.groups] == [group.group_id for group in service.discover().groups]
 
 
 @pytest.mark.integration
