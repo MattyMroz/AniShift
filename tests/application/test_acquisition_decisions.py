@@ -125,6 +125,11 @@ def test_source_429_is_recorded_without_private_http_context(tmp_path: Path) -> 
 def test_decision_projection_excludes_unlisted_metadata() -> None:
     target: dict[str, object] = {"aliases": ["Show"], "headers": {"Authorization": "secret"}, "media": b"secret"}
     assert acquisition_decisions.target_view(target) == {"aliases": ["Show"]}
+
+
+@pytest.mark.unit
+def test_decision_projection_keeps_the_airing_years() -> None:
+    assert acquisition_decisions.target_view({"years": [2023, 2024]}) == {"years": [2023, 2024]}
     stream: StreamCandidate = replace(_stream(4), trackers=("https://secret/?signature=hidden",))
     assert "trackers" not in acquisition_decisions.stream_view(stream)
 
