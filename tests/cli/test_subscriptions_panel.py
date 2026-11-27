@@ -18,6 +18,12 @@ from anishift.platform.local_control import ControlError, ControlErrorCode
 
 _SIZES: list[tuple[int, int]] = [(120, 30), (50, 24), (50, 12)]
 
+_AIRING: dict[str, object] = {"due_state": "not_ordered", "due_reason": "subscription_awaiting_airing"}
+
+_RELEASE: dict[str, object] = {"due_state": "not_ordered", "due_reason": "subscription_awaiting_release"}
+
+_POLISH: dict[str, object] = {"due_state": "not_ordered", "due_reason": "subscription_awaiting_polish"}
+
 
 class _Remote:
     def __init__(self, refusal: str = "") -> None:
@@ -185,11 +191,18 @@ def test_every_row_is_one_line_of_title_episodes_ready_and_state(panel: StateCon
         _row("p", "Problem", anilist_id=None, problem="season_unrecognized", episode_count=None, aired=0),
         _row("m", "Moved", paused=True, pause_reason="migrated_missing", review_pending=True, episode_count=None),
         _row("r", "Review", review_pending=True, aired=0),
-        _row("s", "Soon", episode_count=12, ready=1, due_at=(now + timedelta(days=3, hours=1, seconds=30)).isoformat()),
-        _row("h", "Hour", due_at=(now + timedelta(minutes=30, seconds=30)).isoformat()),
-        _row("w", "Waiting", due_at=(now - timedelta(days=2, hours=1)).isoformat()),
-        _row("y", "Yesterday", due_at=(now - timedelta(days=1, hours=1)).isoformat()),
-        _row("n", "Recent", due_at=(now - timedelta(hours=5, minutes=1)).isoformat()),
+        _row(
+            "s",
+            "Soon",
+            episode_count=12,
+            ready=1,
+            due_at=(now + timedelta(days=3, hours=1, seconds=30)).isoformat(),
+            **_AIRING,
+        ),
+        _row("h", "Hour", due_at=(now + timedelta(minutes=30, seconds=30)).isoformat(), **_AIRING),
+        _row("w", "Waiting", due_at=(now - timedelta(days=2, hours=1)).isoformat(), **_RELEASE),
+        _row("y", "Yesterday", due_at=(now - timedelta(days=1, hours=1)).isoformat(), **_RELEASE),
+        _row("n", "Recent", due_at=(now - timedelta(hours=5, minutes=1)).isoformat(), **_RELEASE),
         _row("u", "Undated"),
     ]
 
@@ -197,13 +210,13 @@ def test_every_row_is_one_line_of_title_episodes_ready_and_state(panel: StateCon
 
     expected: dict[str, tuple[str, ...]] = {
         "Problem": ("0/?", "0", "Nie rozpoznano sezonu"),
-        "Moved": ("1/?", "0", "Wstrzymana"),
-        "Review": ("0/4", "0", "Weryfikuję"),
-        "Soon": ("1/12", "1", "Odcinek · "),
-        "Hour": ("1/4", "0", "Odcinek · "),
-        "Waiting": ("1/4", "0", "Odcinek · szukam"),
-        "Yesterday": ("1/4", "0", "Odcinek · szukam"),
-        "Recent": ("1/4", "0", "Odcinek · szukam"),
+        "Moved": ("1/?", "0", "Wstrzymane"),
+        "Review": ("0/4", "0", "Weryfikacja"),
+        "Soon": ("1/12", "1", "Odcinek · Czeka na emisję · "),
+        "Hour": ("1/4", "0", "Odcinek · Czeka na emisję · "),
+        "Waiting": ("1/4", "0", "Odcinek · Czeka na wydanie"),
+        "Yesterday": ("1/4", "0", "Odcinek · Czeka na wydanie"),
+        "Recent": ("1/4", "0", "Odcinek · Czeka na wydanie"),
         "Undated": ("1/4", "0", "Termin nieznany"),
     }
     for title, values in expected.items():
@@ -232,7 +245,7 @@ def test_the_highlighted_row_explains_its_full_state_beneath_the_table(panel: St
     second: str = _frame(panel)
 
     assert "Nie rozpoznano sezonu — usuń i dodaj ponownie" in first
-    assert "Wstrzymana — zakończona przez starą wersję · W wznów" in second
+    assert "Wstrzymane — zakończona przez starą wersję · W wznów" in second
     assert "usuń i dodaj ponownie" not in second
     assert "pobrano" not in first + second
     assert "· Problem" not in first
@@ -254,16 +267,18 @@ def test_the_longest_typical_states_stay_whole_in_their_rows(panel: StateControl
     panel._clock = lambda: now
     panel._subscriptions = [
         _row("a", "As a Reincarnated Aristocrat Season 3", episode_count=12),
-        _row("e", "Reincarnated as a Sword Season 2", due_at=(now + week).isoformat()),
-        _row(
-            "w", "The Apothecary Diaries Season 3", due_at=(now - week).isoformat(), due_number=12, due_state="polish"
-        ),
+        _row("e", "Reincarnated as a Sword Season 2", due_at=(now + week).isoformat(), due_number=9, **_AIRING),
+        _row("w", "The Apothecary Diaries Season 3", due_at=(now - week).isoformat(), due_number=12, **_POLISH),
     ]
 
     lines: list[str] = _frame(panel, columns, 24).splitlines()
 
-    assert lines[_line(lines, "Odcinek · ")].rstrip().endswith(f"  Odcinek · {(now + week).astimezone():%d.%m %H:%M}")
-    assert lines[_line(lines, "E12 · ")].rstrip().endswith("  E12 · czekam na PL")
+    assert (
+        lines[_line(lines, "E9 ")]
+        .rstrip()
+        .endswith(f"  E9  · Czeka na emisję · {(now + week).astimezone():%d.%m %H:%M}")
+    )
+    assert lines[_line(lines, "E12 · ")].rstrip().endswith("  E12 · Czeka na PL")
 
 
 def test_episode_labels_of_different_widths_keep_the_separator_in_one_column() -> None:
@@ -271,19 +286,18 @@ def test_episode_labels_of_different_widths_keep_the_separator_in_one_column() -
     due: str = (now + timedelta(days=3)).isoformat()
     rows: tuple[AnimeRow, ...] = subscription_rows(
         [
-            _row("a", "Alpha", due_at=due, due_number=8),
-            _row("b", "Beta", due_at=due, due_number=22),
-            _row("c", "Gamma", due_at=due, due_number=105),
+            _row("a", "Alpha", due_at=due, due_number=8, **_AIRING),
+            _row("b", "Beta", due_at=due, due_number=22, **_AIRING),
+            _row("c", "Gamma", due_at=due, due_number=105, **_AIRING),
             _row("d", "Delta", paused=True, pause_reason="user"),
         ],
         {},
         now,
-        idle=False,
     )
 
     assert {row.status.index("·") for row in rows[:3]} == {5}
-    assert rows[0].status.startswith("E8   · ")
-    assert rows[3].status == "Wstrzymana"
+    assert rows[0].status.startswith("E8   · Czeka na emisję · ")
+    assert rows[3].status == "Wstrzymane"
 
 
 def test_problem_states_share_the_style_of_every_other_state(panel: StateController) -> None:
@@ -343,7 +357,7 @@ def test_the_status_row_names_why_monitoring_does_not_progress(
     [
         ({"auto_enabled": False, "pausing": True}, "Automat: zatrzymywanie · O włącz"),
         ({"auto_enabled": False, "pause_incomplete": True}, "Automat: pauza niepełna · O włącz"),
-        ({"auto_enabled": False}, "Automat wstrzymany · O włącz"),
+        ({"auto_enabled": False}, "Automat wyłączony · O włącz"),
     ],
 )
 def test_the_pause_state_shows_only_in_the_status_line(
@@ -364,7 +378,7 @@ def test_the_global_pause_changes_only_the_status_line(panel: StateController, c
     paused: list[str] = _frame(panel, columns, rows).splitlines()
 
     assert paused[:-1] == running[:-1]
-    assert paused[-1].strip() == "Automat wstrzymany · O włącz"
+    assert paused[-1].strip() == "Automat wyłączony · O włącz"
     assert running[-1].strip() == "Automat: bezczynny · O wyłącz"
     assert "O wznów" not in "\n".join(running)
 

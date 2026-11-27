@@ -153,7 +153,7 @@ def _live_material(group_id: str, run_id: str = "run", state: str = "running") -
         ("stoppedUP", "accepted", None, "Pobrane", True),
         (None, "accepted", None, "Łączenie", False),
         ("downloading", "accepted", "unavailable", "Brak połączenia", False),
-        ("missingFiles", "accepted", None, "Błąd torrenta", False),
+        ("missingFiles", "accepted", None, "Błąd pobierania", False),
         ("uploading", "accepted", None, "Pobrane", True),
         ("stalledUP", "accepted", None, "Pobrane", True),
         ("forcedUP", "accepted", None, "Pobrane", True),
@@ -475,7 +475,7 @@ def test_processing_labels_predecessor_wait_without_attention_warning(monkeypatc
     try:
         frame: str = controller.render(120, 40).plain
         assert "W kolejce" in frame
-        assert "Wymaga uwagi" not in frame
+        assert "Do sprawdzenia" not in frame
     finally:
         controller.close()
         controller._thread.join(5)
@@ -932,7 +932,7 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
     ("snapshot", "action", "status"),
     [
         ({"auto_enabled": True}, "O automat", "Automat: bezczynny · O wyłącz"),
-        ({"auto_enabled": False}, "O automat", "Automat wstrzymany · O włącz"),
+        ({"auto_enabled": False}, "O automat", "Automat wyłączony · O włącz"),
         ({"auto_enabled": False, "pausing": True}, "O automat", "Automat: zatrzymywanie · O włącz"),
         ({"auto_enabled": False, "pause_incomplete": True}, "O automat", "Automat: pauza niepełna · O włącz"),
     ],
@@ -1348,8 +1348,8 @@ def _row(subscription_id: str, title: str, *, aired: int = 1, paused: bool = Fal
 def _assert_subscription_rows(frame: str) -> None:
     rows: list[str] = frame.splitlines()
     example: str = next(line for line in rows if "\u276f Example" in line)
-    assert example.split()[2:] == ["22/?", "0", "Weryfikuję"]
-    assert next(line for line in rows if " Other " in line).split()[-1] == "Wstrzymana"
+    assert example.split()[2:] == ["22/?", "0", "Weryfikacja"]
+    assert next(line for line in rows if " Other " in line).split()[-1] == "Wstrzymane"
     assert "Sprawdzam przeniesioną subskrypcję" in " ".join(frame.split())
     assert "pobrano" not in frame
     assert "Aktywne" not in frame
@@ -2303,7 +2303,7 @@ def test_processing_excludes_an_order_the_client_never_reported(tmp_path: Path) 
 
     assert "Brak aktywnego przetwarzania" in frame
     assert "Episode 22" not in frame
-    assert "wymaga uwagi" not in frame
+    assert "do sprawdzenia" not in frame
     assert "%" not in frame
 
 

@@ -37,12 +37,16 @@ from anishift.cli.interactive.pointer import (
     selected_text,
     text_cells,
 )
+from anishift.cli.interactive.state_texts import state_style
 from anishift.text.graphemes import split_graphemes
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 MIN_COLUMNS: Final[int] = 50
 """Minimum supported terminal width."""
+
+_WARNINGS: Final[frozenset[str]] = frozenset({"Brak wydania", "Problem"})
+"""Warning words of an empty release list and of a Library set, which name no episode state."""
 
 WIDE_COLUMNS: Final[int] = 80
 """Widest text budget used for wrapped details and editors."""
@@ -616,15 +620,16 @@ def _item(  # noqa: PLR0913
 
 
 def _value_style(value: str, *, active: bool, item: AnimeRow, searching: bool) -> str:
-    if not item.navigable or value == "Nie wyemitowano":
+    style: str | None = state_style(value)
+    if not item.navigable or style == "gray":
         return "gray"
-    if value.startswith("Błąd"):
+    if style == "error":
         return "error"
-    if value in {"Brak wydania", "Nieznany", "Problem"}:
+    if style == "warning" or value in _WARNINGS:
         return "warning"
     if searching:
         return "brand_accent"
-    if value in {"Zlecono", "Pobrano", "Gotowe"}:
+    if style == "success":
         return "success"
     return "brand_accent" if active else "white_bold"
 

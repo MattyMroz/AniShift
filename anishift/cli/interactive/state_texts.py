@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
 
-from anishift.application import RefusalReason
+from anishift.application import AdmissionConflict, EpisodeReason, RefusalReason
 from anishift.application.events import sanitize_event_message
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
@@ -17,7 +17,7 @@ __all__ = [
     "LIBRARY_READY",
     "LIBRARY_TO_CHECK",
     "LIBRARY_UNRECOGNIZED",
-    "RESTORING",
+    "STATES",
     "PendingRestore",
     "deleted_sets",
     "deleting_sets",
@@ -26,10 +26,63 @@ __all__ = [
     "rows",
     "safe_text",
     "settled_restores",
+    "state_style",
+    "state_word",
     "undo_target",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
+
+STATES: Final[Mapping[str, tuple[str, str | None]]] = MappingProxyType(
+    {
+        EpisodeReason.EPISODE_NOT_AIRED: ("Przed emisją", "gray"),
+        EpisodeReason.SUBSCRIPTION_AWAITING_AIRING: ("Czeka na emisję", None),
+        EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE: ("Czeka na wydanie", None),
+        EpisodeReason.SUBSCRIPTION_AWAITING_POLISH: ("Czeka na PL", None),
+        EpisodeReason.SUBSCRIPTION_NO_CERTAIN_RELEASE: ("Brak pewnego wydania", "warning"),
+        EpisodeReason.NO_SUGGESTION: ("Brak pewnego wydania", "warning"),
+        EpisodeReason.RESULT_MISSING: ("Do pobrania", None),
+        "ordered": ("Zlecono", "success"),
+        EpisodeReason.ADMITTED: ("Zlecono", "success"),
+        AdmissionConflict.ADMITTED: ("Zlecono", "success"),
+        EpisodeReason.WAITING_PREVIOUS_TRANSFER: ("W kolejce", None),
+        "downloading": ("Pobieranie", None),
+        "downloaded": ("Pobrane", "success"),
+        EpisodeReason.SUBSCRIPTION_CHECKING: ("Sprawdzanie pliku", None),
+        "processing": ("Przetwarzanie", None),
+        "retrying": ("Ponawianie", None),
+        "ready": ("Gotowe", "success"),
+        "paused": ("Wstrzymane", None),
+        EpisodeReason.SUBSCRIPTION_PAUSED: ("Wstrzymane", None),
+        "cancelled": ("Anulowane", None),
+        EpisodeReason.SUBSCRIPTION_EXHAUSTED: ("Próby wyczerpane", None),
+        "attention": ("Do sprawdzenia", None),
+        EpisodeReason.TRANSFER_FAILED: ("Błąd pobierania", "error"),
+        EpisodeReason.SOURCE_FAILED: ("Błąd pobierania", "error"),
+        "processing_failed": ("Błąd przetwarzania", "error"),
+        EpisodeReason.PUBLICATION_FAILED: ("Błąd zapisu", "error"),
+        EpisodeReason.FINALIZATION_FAILED: ("Błąd zapisu", "error"),
+        EpisodeReason.LEGACY_UNREADABLE: ("Błąd zapisu", "error"),
+        "restoring": ("Przywracanie", None),
+        "review": ("Weryfikacja", None),
+        "automation_off": ("Automat wyłączony", None),
+        EpisodeReason.EPISODE_IN_PROGRESS: ("W toku", None),
+        "possibly_admitted": ("Już zlecone?", None),
+        AdmissionConflict.POSSIBLY_ADMITTED: ("Już zlecone?", None),
+        AdmissionConflict.TRANSFER_RECORDED: ("Już pobierane", None),
+        EpisodeReason.EPISODE_FILE_UNRESOLVED: ("Wskaż plik", None),
+        EpisodeReason.EPISODE_NAME_WAITING: ("Czeka na AniList", None),
+        EpisodeReason.PUBLICATION_MISSING: ("Brak pliku", None),
+        EpisodeReason.PACK_IN_PROGRESS: ("Czeka na paczkę", None),
+        EpisodeReason.SUBSCRIPTION_CHECK_SKIPPED: ("Niesprawdzony", None),
+    }
+)
+"""Polish word and style of every state the panel names, keyed by the owner state, owner reason or panel phase."""
+
+_STYLES: Final[Mapping[str, str]] = MappingProxyType(
+    {word: style for word, style in STATES.values() if style is not None}
+)
+"""Style of each state word that has its own colour."""
 
 _RETRY_PROBLEMS: Final[dict[str, str]] = {
     "retry_source_missing": "Brak lokalnego źródła; usuniętej treści nie można odtworzyć",
@@ -141,9 +194,6 @@ LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
 """Polish explanations keyed by the owner's library reason codes."""
 
 
-RESTORING: Final[str] = "Przywracam"
-"""State of a deleted set's row from Ctrl+Z until the owner finishes bringing its files back."""
-
 LIBRARY_UNRECOGNIZED: Final[str] = "Nie rozpoznano"
 """Library title gathering the sets whose names carry no title, season or episode."""
 
@@ -155,6 +205,16 @@ LIBRARY_READY: Final[str] = "Gotowe"
 
 LIBRARY_TO_CHECK: Final[str] = "do sprawdzenia"
 """Words after the number of a Library title's sets with a problem."""
+
+
+def state_word(state: str) -> str:
+    """Return the one Polish word of *state*."""
+    return STATES[state][0]
+
+
+def state_style(word: str) -> str | None:
+    """Return the style of a state word, or None for a word without its own colour."""
+    return _STYLES.get(word)
 
 
 @dataclass(frozen=True, slots=True)

@@ -29,6 +29,7 @@ from anishift.application import (
 )
 from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.palette import hex_color, rim_color
+from anishift.cli.interactive.state_texts import state_word
 
 __all__ = ["ObservedProgressTimer", "RichRunProgress", "render_material_progress"]
 
@@ -92,7 +93,7 @@ _ACTIVE_LABEL: Final[dict[str, str]] = {
 }
 """Labels shown while measurable stages are active."""
 
-_FALLBACK_LABEL: Final[str] = "Przetwarzanie"
+_FALLBACK_LABEL: Final[str] = state_word("processing")
 """Label of an active stage without its own entry."""
 
 _AUDIO_LABEL: Final[dict[str, str]] = {
@@ -463,7 +464,7 @@ class RichRunProgress:
             TaskKind.TRANSLATE_SUBTITLES,
         }:
             return False
-        state.phase = "Ponawianie"
+        state.phase = state_word("retrying")
         state.style = "warning"
         return True
 
@@ -503,10 +504,10 @@ class RichRunProgress:
             return
         state.completed = 0
         if task_state is TaskState.CANCELLED:
-            state.phase = "Anulowano"
+            state.phase = state_word("cancelled")
             state.style = "warning"
             return
-        state.phase = "Błąd"
+        state.phase = state_word("processing_failed")
         state.style = "error"
 
     def _finish_remaining(self, task_state: TaskState | None) -> bool:
@@ -519,7 +520,7 @@ class RichRunProgress:
             state.completed = 0
             _stop_timer(state)
             if task_state is TaskState.CANCELLED:
-                state.phase = "Anulowano"
+                state.phase = state_word("cancelled")
                 state.style = "warning"
             else:
                 state.phase = "Nie wykonano"

@@ -21,13 +21,8 @@ from anishift.application import (
     entry_title,
 )
 from anishift.cli.interactive.anime_state import AnimeRow
-from anishift.cli.interactive.anime_texts import (
-    EPISODE_REASON_LABELS,
-    IN_PROGRESS_HINT,
-    RETRY_HINT,
-    episode_status_label,
-    safe,
-)
+from anishift.cli.interactive.anime_texts import IN_PROGRESS_HINT, RETRY_HINT, episode_state, safe
+from anishift.cli.interactive.state_texts import state_word
 from anishift.cli.interactive.subscription_texts import SubscriptionDraft
 
 __all__ = [
@@ -118,11 +113,9 @@ def air_date(moment: datetime | None) -> str:
 
 def episode_row(episode: ListedEpisode, status: EpisodeStatus | None, *, film: bool, eligible: bool) -> AnimeRow:
     """Return the row of one listed episode with its owner state."""
-    label: str = episode_status_label(status) if status else ""
+    label: str = episode_state(status.state, status.reason) if status else ""
     if not label:
-        label = EPISODE_REASON_LABELS[
-            EpisodeReason.RESULT_MISSING if episode.aired else EpisodeReason.EPISODE_NOT_AIRED
-        ]
+        label = state_word(EpisodeReason.RESULT_MISSING if episode.aired else EpisodeReason.EPISODE_NOT_AIRED)
     detail: str = ""
     if status is not None and status.reason == EpisodeReason.EPISODE_FILE_UNRESOLVED:
         detail = "Nie ustalono pliku w paczce · Enter wskaż plik"

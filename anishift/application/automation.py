@@ -572,15 +572,6 @@ _CHECK_TIMEOUT_S: Final[float] = 30.0
 _CHECK_UNAVAILABLE: Final[str] = "probe_unavailable"
 """Reason of a download check skipped because no media probe can identify files."""
 
-_TARGET_REASONS: Final[Mapping[TargetState, EpisodeReason]] = MappingProxyType(
-    {
-        TargetState.AWAITING_AIRING: EpisodeReason.SUBSCRIPTION_AWAITING_AIRING,
-        TargetState.DUE: EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE,
-        TargetState.EXHAUSTED: EpisodeReason.SUBSCRIPTION_EXHAUSTED,
-    }
-)
-"""Episode reason an unordered episode shows while an unpaused subscription target waits in that state."""
-
 _LOOKUP_REFUSALS: Final[frozenset[str]] = frozenset(
     {
         EpisodeReason.NO_SUGGESTION,
@@ -872,6 +863,7 @@ class AutomationOwner:
         self._check_retries: dict[str, float] = {}
         self._checking: set[str] = set()
         self._unnamed: set[str] = set()
+        self._batches: tuple[tuple[CommandReceipt, ...], Mapping[EpisodeKey, str]] | None = None
         self._subscriptions_at: float | None = None
         self._subscription_checks: set[str] = set()
         self._subscription_requests: set[str] = set()
@@ -4620,17 +4612,14 @@ class AutomationOwner:
         )
 
     def _disk_row(self, record: SubscriptionRecord, index: _EpisodeIndex, disk: _DiskInventory) -> SubscriptionRow:
-        """Project *record* with the episodes its inventory proves ready and the Polish wait its episode shows."""
+        """Project *record* with the episodes its inventory proves ready and the state its due episode shows."""
         row: SubscriptionRow = subscription_row(record)
-        due: SubscriptionTarget | None = next((item for item in record.targets if item.number == row.due_number), None)
-        if (
-            due is not None
-            and self._state.policy.auto_enabled
-            and self._polish_waiting(record, due, self._clock()) is not None
-        ):
-            row = replace(row, due_state="polish")
         if record.anilist_id is None:
             return row
+        if row.due_number is not None:
+            key: EpisodeKey = EpisodeKey(record.anilist_id, row.due_number)
+            due: EpisodeStatus = self._episode_status(key, batches=self._status_batches())
+            row = replace(row, due_state=due.state, due_reason=due.reason)
         ready: set[int] = set()
         indexed: set[int] = set()
         for (entry, number), matches in index.episodes.items():
@@ -4906,7 +4895,7 @@ class AutomationOwner:
         title: str = _subscription_title(record)
         target: SubscriptionTarget | None = next((item for item in record.targets if item.number == int(number)), None)
         failed: TargetNotice | None = None if target is None else self._attempt_notice(target)
-        message: str = f"{title} E{number}: wyczerpano próby ({MAX_ATTEMPTS} z {MAX_ATTEMPTS})"
+        message: str = f"{title} E{number}: Próby wyczerpane ({MAX_ATTEMPTS} z {MAX_ATTEMPTS})"
         if key[1] == "late":
             message = f"Nie znaleziono {title} E{number} od 7 dni"
         elif key[1] != "exhausted":
@@ -5242,14 +5231,18 @@ class AutomationOwner:
             validate_episode_keys(keys)
         except ValueError, TypeError:
             return _invalid("Episode states require 1-100 unique positive numbers of one entry")
-        batches: Mapping[EpisodeKey, str] = {
+        batches: Mapping[EpisodeKey, str] = self._status_batches()
+        return ControlResponse.succeeded(
+            {"items": [encode_view(self._episode_status(key, batches=batches)) for key in keys]}
+        )
+
+    def _status_batches(self) -> dict[EpisodeKey, str]:
+        """Return the batch results an episode state shows, without past lookups and admissions."""
+        return {
             key: reason
             for key, reason in self._batch_reasons().items()
             if reason not in _LOOKUP_REFUSALS and reason not in _ADMISSION_RESULTS
         }
-        return ControlResponse.succeeded(
-            {"items": [encode_view(self._episode_status(key, batches=batches)) for key in keys]}
-        )
 
     def _episode_files_command(self, request: ControlRequest) -> ControlResponse:
         receipt: CommandReceipt | None = self._on_owner(lambda: self._receipt(request))
@@ -5403,23 +5396,24 @@ class AutomationOwner:
         )
 
     def _target_status(self, status: EpisodeStatus) -> EpisodeStatus:
-        """Show an unordered episode as awaiting its airing or release while automation runs."""
+        """Show an unordered episode in the phase of the subscription target that follows it."""
         found: tuple[SubscriptionRecord, SubscriptionTarget] | None = next(
             (
                 (record, item)
                 for record in self._state.subscriptions
-                if record.anilist_id == status.key.anilist_id and not record.paused
+                if record.anilist_id == status.key.anilist_id
                 for item in record.targets
                 if item.number == status.key.number
             ),
             None,
         )
-        if found is None or (reason := _TARGET_REASONS.get(found[1].state)) is None:
+        if found is None:
             return status
         record, target = found
-        if not self._state.policy.auto_enabled and target.state is not TargetState.EXHAUSTED:
-            return status
         now: datetime = self._clock()
+        reason: EpisodeReason | None = self._target_phase(record, target, now)
+        if reason is None or reason is EpisodeReason.SUBSCRIPTION_PAUSED:
+            return status if reason is None else replace(status, reason=reason)
         notices: tuple[TargetNotice, ...] = self._target_notices(record, target, now)
         if target.state is not TargetState.DUE:
             return replace(status, reason=reason, notices=notices)
@@ -5432,6 +5426,24 @@ class AutomationOwner:
             polish_skipped=skip_active(target),
             notices=notices,
         )
+
+    def _target_phase(  # noqa: PLR0911
+        self, record: SubscriptionRecord, target: SubscriptionTarget, now: datetime
+    ) -> EpisodeReason | None:
+        """Return the phase every view shows for *target*, or nothing while its transfers speak for it."""
+        if target.state is TargetState.EXHAUSTED:
+            return EpisodeReason.SUBSCRIPTION_EXHAUSTED
+        if target.state not in {TargetState.AWAITING_AIRING, TargetState.DUE}:
+            return None
+        if record.paused or not self._state.policy.auto_enabled:
+            return EpisodeReason.SUBSCRIPTION_PAUSED
+        if target.state is TargetState.AWAITING_AIRING:
+            return EpisodeReason.SUBSCRIPTION_AWAITING_AIRING
+        if self._polish_waiting(record, target, now) is not None:
+            return EpisodeReason.SUBSCRIPTION_AWAITING_POLISH
+        if target.blocker in {Blocker.NO_ADMISSIBLE, Blocker.THRESHOLD}:
+            return EpisodeReason.SUBSCRIPTION_NO_CERTAIN_RELEASE
+        return EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE
 
     def _target_notices(
         self, record: SubscriptionRecord, target: SubscriptionTarget, now: datetime
@@ -5623,15 +5635,19 @@ class AutomationOwner:
             key, "processing_failed" if batched == AdmissionConflict.TRANSFER_RECORDED else "not_ordered", batched
         )
 
-    def _batch_reasons(self) -> dict[EpisodeKey, str]:
-        """Return the reason of every episode's latest recorded batch result, decoding each batch once."""
+    def _batch_reasons(self) -> Mapping[EpisodeKey, str]:
+        """Return the reason of every episode's latest recorded batch result, decoding the receipts once per change."""
+        receipts: tuple[CommandReceipt, ...] = self._state.command_receipts
+        if self._batches is not None and self._batches[0] is receipts:
+            return self._batches[1]
         reasons: dict[EpisodeKey, str] = {}
-        for receipt in self._state.command_receipts:
+        for receipt in receipts:
             if receipt.outcome.get("kind") != "episode_download":
                 continue
             batch: EpisodeBatch = decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"])))
             reasons.update((item.key, item.reason) for item in batch.results)
-        return reasons
+        self._batches = (receipts, MappingProxyType(reasons))
+        return self._batches[1]
 
     def _legacy_episode_records(self, key: EpisodeKey) -> tuple[AcquisitionConfirmation, ...]:
         operations: frozenset[str] = frozenset(
@@ -8971,7 +8987,7 @@ class AutomationOwner:
             return
         with self._progress_lock:
             label: str = view.labels.get(event.group_id, event.group_id) if view is not None else event.group_id
-        self._publish_notification("Materiał wymaga uwagi", sanitize_event_message(label) or "Materiał", None)
+        self._publish_notification("Materiał do sprawdzenia", sanitize_event_message(label) or "Materiał", None)
 
     def _notify_ready_results(self, group_ids: Sequence[str], request_id: str | None = None) -> None:
         recorded: set[str] = {item.group_id for item in self._state.ready_groups}

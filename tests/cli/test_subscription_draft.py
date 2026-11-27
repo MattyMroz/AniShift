@@ -307,7 +307,7 @@ def test_a_draft_under_the_global_pause_says_when_it_starts_working() -> None:
     draft: SubscriptionDraft | None = subscription_draft(_listing(episodes=_weekly(0, 2)), _NOW, paused=True)
 
     assert draft is not None
-    assert draft.lines[-1] == "Automat jest wstrzymany · zacznę po wznowieniu"
+    assert draft.lines[-1] == "Automat wyłączony · zacznę po włączeniu"
 
 
 @pytest.mark.parametrize(
@@ -363,51 +363,94 @@ def _plain(text: str) -> SubscriptionState:
     return SubscriptionState(text, text)
 
 
+def _waiting(reason: str) -> dict[str, object]:
+    return {"due_state": "not_ordered", "due_reason": reason}
+
+
 @pytest.mark.parametrize(
     ("changes", "state"),
     [
         (
-            {"due_at": (_NOW + timedelta(minutes=30)).isoformat(), "due_number": 8, "due_state": "airing"},
-            _plain(f"E8 · dziś {clock_time((_NOW + timedelta(minutes=30)).isoformat())}"),
+            {
+                "due_at": (_NOW + timedelta(minutes=30)).isoformat(),
+                "due_number": 8,
+                **_waiting("subscription_awaiting_airing"),
+            },
+            _plain(f"E8 · Czeka na emisję · dziś {clock_time((_NOW + timedelta(minutes=30)).isoformat())}"),
         ),
         (
-            {"due_at": (_NOW + timedelta(days=2)).isoformat()},
-            _plain(f"Odcinek · {(_NOW + timedelta(days=2)).astimezone():%d.%m %H:%M}"),
-        ),
-        ({"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8}, _plain("E8 · szukam")),
-        (
-            {"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8, "due_state": "airing"},
-            _plain("E8 · szukam"),
-        ),
-        ({"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "polish"}, _plain("E8 · czekam na PL")),
-        ({"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "downloading"}, _plain("E8 · pobieram")),
-        ({"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "no_release"}, _plain("E8 · brak wydania")),
-        (
-            {"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "exhausted"},
-            SubscriptionState("E8 · nie udało się", "E8 · nie udało się pobrać · pobierz ręcznie w szczegółach"),
-        ),
-        ({"due_at": (_NOW - timedelta(hours=72, seconds=-1)).isoformat(), "due_number": 8}, _plain("E8 · szukam")),
-        (
-            {"due_at": (_NOW - timedelta(hours=72)).isoformat(), "due_number": 8, "due_state": "searching"},
-            SubscriptionState("E8 · szukam", "E8 · szukam · sprawdzam raz dziennie"),
+            {"due_at": (_NOW + timedelta(days=2)).isoformat(), **_waiting("subscription_awaiting_airing")},
+            _plain(f"Odcinek · Czeka na emisję · {(_NOW + timedelta(days=2)).astimezone():%d.%m %H:%M}"),
         ),
         (
-            {"due_at": (_NOW - timedelta(hours=96)).isoformat(), "due_number": 8, "due_state": "pending"},
-            _plain("E8 · szukam"),
+            {
+                "due_at": (_NOW - timedelta(minutes=5)).isoformat(),
+                "due_number": 8,
+                **_waiting("subscription_awaiting_release"),
+            },
+            _plain("E8 · Czeka na wydanie"),
         ),
+        (
+            {
+                "due_at": (_NOW - timedelta(minutes=5)).isoformat(),
+                "due_number": 8,
+                **_waiting("subscription_awaiting_airing"),
+            },
+            _plain("E8 · Czeka na emisję"),
+        ),
+        (
+            {"due_at": _NOW.isoformat(), "due_number": 8, **_waiting("subscription_awaiting_polish")},
+            _plain("E8 · Czeka na PL"),
+        ),
+        ({"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "downloading"}, _plain("E8 · Pobieranie")),
+        (
+            {"due_at": _NOW.isoformat(), "due_number": 8, **_waiting("subscription_no_certain_release")},
+            _plain("E8 · Brak pewnego wydania"),
+        ),
+        ({"due_at": _NOW.isoformat(), "due_number": 8, **_waiting("subscription_paused")}, _plain("E8 · Wstrzymane")),
+        (
+            {"due_at": _NOW.isoformat(), "due_number": 8, **_waiting("subscription_exhausted")},
+            SubscriptionState("E8 · Próby wyczerpane", "E8 · Próby wyczerpane · pobierz ręcznie w szczegółach"),
+        ),
+        (
+            {
+                "due_at": (_NOW - timedelta(hours=72, seconds=-1)).isoformat(),
+                "due_number": 8,
+                **_waiting("subscription_awaiting_release"),
+            },
+            _plain("E8 · Czeka na wydanie"),
+        ),
+        (
+            {
+                "due_at": (_NOW - timedelta(hours=72)).isoformat(),
+                "due_number": 8,
+                **_waiting("subscription_awaiting_release"),
+            },
+            SubscriptionState("E8 · Czeka na wydanie", "E8 · Czeka na wydanie · sprawdzam raz dziennie"),
+        ),
+        (
+            {
+                "due_at": (_NOW - timedelta(hours=96)).isoformat(),
+                "due_number": 8,
+                "due_pending": True,
+                **_waiting("subscription_awaiting_release"),
+            },
+            _plain("E8 · Czeka na wydanie"),
+        ),
+        ({"due_at": _NOW.isoformat(), "due_number": 8}, _plain("E8")),
         ({"catalog_status": "HIATUS"}, _plain("Przerwa w emisji")),
         ({"catalog_status": "RELEASING"}, _plain("Termin nieznany")),
         (
             {"review_pending": True, "due_at": _NOW.isoformat()},
-            SubscriptionState("Weryfikuję", "Sprawdzam przeniesioną subskrypcję"),
+            SubscriptionState("Weryfikacja", "Sprawdzam przeniesioną subskrypcję"),
         ),
         (
             {"paused": True, "pause_reason": "migrated_due", "review_pending": True},
-            SubscriptionState("Wstrzymana", "Wstrzymana — przeniesiona; zaległe odcinki · W wznów"),
+            SubscriptionState("Wstrzymane", "Wstrzymane — przeniesiona; zaległe odcinki · W wznów"),
         ),
         (
             {"paused": True, "pause_reason": "migrated_missing"},
-            SubscriptionState("Wstrzymana", "Wstrzymana — zakończona przez starą wersję · W wznów"),
+            SubscriptionState("Wstrzymane", "Wstrzymane — zakończona przez starą wersję · W wznów"),
         ),
         (
             {"problem": "catalog_conflict", "paused": True, "pause_reason": "user"},
@@ -420,32 +463,20 @@ def _plain(text: str) -> SubscriptionState:
             {"problem": "season_unrecognized"},
             SubscriptionState("Nie rozpoznano sezonu", "Nie rozpoznano sezonu — usuń i dodaj ponownie"),
         ),
-        ({"problem": "unknown_problem"}, _plain("Wymaga uwagi")),
+        ({"problem": "unknown_problem"}, _plain("Do sprawdzenia")),
         ({"episode_count": 4}, _plain("Termin nieznany")),
         (
             {"due_at": (_NOW - timedelta(hours=1)).isoformat(), "due_number": 3, "checking_number": 3},
-            _plain("E3 · sprawdzam plik"),
+            _plain("E3 · Sprawdzanie pliku"),
         ),
         (
             {"checking_number": 3, "paused": True, "pause_reason": "user"},
-            SubscriptionState("Wstrzymana", "Wstrzymana · W wznów"),
+            SubscriptionState("Wstrzymane", "Wstrzymane · W wznów"),
         ),
     ],
 )
 def test_a_row_shows_its_strongest_state(changes: Mapping[str, object], state: SubscriptionState) -> None:
-    assert row_state(_row("a", "Alpha", **changes), _NOW, idle=False) == state
-
-
-@pytest.mark.parametrize("due_state", ["searching", "pending", None])
-def test_an_idle_automation_never_claims_a_search_in_a_row(due_state: str | None) -> None:
-    due: dict[str, object] = {
-        "due_at": (_NOW - timedelta(hours=1)).isoformat(),
-        "due_number": 3,
-        "due_state": due_state,
-    }
-
-    assert row_state(_row("a", "Alpha", **due), _NOW, idle=True) == _plain("E3")
-    assert row_state(_row("a", "Alpha", **due), _NOW, idle=False).text == "E3 · szukam"
+    assert row_state(_row("a", "Alpha", **changes), _NOW) == state
 
 
 @pytest.mark.parametrize(
@@ -505,7 +536,7 @@ def test_a_draft_names_the_pause_whenever_the_status_line_does(
     _titles(panel)
     _keys(panel, "down", "enter", "text:s")
 
-    assert ("Automat jest wstrzymany · zacznę po wznowieniu" in _frame(panel)) is paused
+    assert ("Automat wyłączony · zacznę po włączeniu" in _frame(panel)) is paused
 
 
 def test_d_on_the_list_searches_and_s_on_an_announced_title_adds_and_highlights_it(
@@ -769,7 +800,7 @@ def test_episodes_the_owner_refuses_after_add_are_named_on_the_subscription_list
 
     _until(lambda: "Nie zlecono" in panel._notice)
     assert panel._tab == _Tab.SUBSCRIPTIONS
-    assert panel._notice.endswith("Nie zlecono E1\u2013E2: Brak wydania")
+    assert panel._notice.endswith("Nie zlecono E1\u2013E2: Brak pewnego wydania")
     assert _anime(panel)._pending_batch is None
 
 
@@ -842,16 +873,19 @@ def test_an_unknown_cut_point_shows_the_refusal_without_an_add_button(panel: Sta
     assert "\u276f Anuluj" in frame
 
 
-def test_the_list_turns_an_aired_episode_into_a_search_with_the_renderer_clock(
+def test_the_list_drops_the_airing_time_once_the_renderer_clock_passes_it(
     panel: StateController, clock: _Clock
 ) -> None:
     due: datetime = _NOW + timedelta(minutes=1)
-    panel._subscriptions = [_row("a", "Alpha", due_at=due.isoformat(), due_number=8, due_state="airing")]
-    assert f"E8 · dziś {clock_time(due.isoformat())}" in _frame(panel)
+    panel._subscriptions = [
+        _row("a", "Alpha", due_at=due.isoformat(), due_number=8, **_waiting("subscription_awaiting_airing"))
+    ]
+    assert f"E8 · Czeka na emisję · dziś {clock_time(due.isoformat())}" in _frame(panel)
 
     clock.now += timedelta(minutes=2)
 
-    assert "E8 · szukam" in _frame(panel)
+    assert "E8 · Czeka na emisję" in _frame(panel)
+    assert "E8 · Czeka na emisję · dziś" not in _frame(panel)
 
 
 def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
@@ -899,7 +933,7 @@ def test_the_status_row_ranks_a_monitoring_problem_over_the_shadow_mode_whatever
 
     labels: int = next(index for index, line in enumerate(lines) if line.strip().startswith("Tytuł"))
     assert lines[labels - 1].strip() == warning
-    assert ("Automat wstrzymany · O włącz" in lines[-1]) is not auto_enabled
+    assert ("Automat wyłączony · O włącz" in lines[-1]) is not auto_enabled
     assert "subskrypcje czekają" not in "\n".join(lines)
 
 
@@ -1344,9 +1378,12 @@ def _polish(owner: _Owner, monkeypatch: pytest.MonkeyPatch, states: dict[int, Ep
 
 
 def _due(number: int, **changes: object) -> EpisodeStatus:
-    status: EpisodeStatus = EpisodeStatus(
-        EpisodeKey(1, number), "not_ordered", EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE, polish="unknown"
+    reason: EpisodeReason = (
+        EpisodeReason.SUBSCRIPTION_AWAITING_POLISH
+        if "polish_wait_until" in changes
+        else EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE
     )
+    status: EpisodeStatus = EpisodeStatus(EpisodeKey(1, number), "not_ordered", reason, polish="unknown")
     return replace(status, **changes)  # type: ignore[arg-type]
 
 
@@ -1378,7 +1415,7 @@ def test_polish_state_per_target(panel: StateController, owner: _Owner, monkeypa
     joined: str = " ".join(frame.split())
 
     assert "Czeka na PL" in _row_of(frame, 3)
-    assert "Bez czekania PL" in _row_of(frame, 4)
+    assert "Czeka na wydanie" in _row_of(frame, 4)
     assert f"PL: nieznane · czekam do {clock_time(_WAITS)}" in joined
 
 
@@ -1406,7 +1443,7 @@ def test_polish_line_follows_the_highlighted_target(
         ("present", _WAITS, False, f"PL: zwykle jest · czekam do {clock_time(_WAITS)}"),
         ("absent", None, False, "PL: brak w poprzednim odcinku · pobieram od razu"),
         ("unknown", _WAITS, False, f"PL: nieznane · czekam do {clock_time(_WAITS)}"),
-        ("present", None, True, "PL: zwykle jest · pobieram bez czekania"),
+        ("present", None, True, "PL: zwykle jest · bez czekania na PL"),
     ],
 )
 def test_polish_line_names_the_history_and_the_wait(
@@ -1432,7 +1469,7 @@ def test_polish_state_refreshes_on_revision(
     panel._receive(session, {"event": "state_changed", "payload": {**panel._snapshot, "subscriptions_revision": 2}})
 
     assert "Czeka na PL" in unchanged
-    assert "Bez czekania PL" in _row_of(_frame(panel), 3)
+    assert "Czeka na wydanie" in _row_of(_frame(panel), 3)
 
 
 def test_download_now_refusal_refreshes(panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch) -> None:

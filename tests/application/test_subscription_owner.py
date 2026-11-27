@@ -62,6 +62,7 @@ from anishift.application.intents import RequestOrigin
 from anishift.application.release_quality import PolishClass, ResolutionClass
 from anishift.application.subscription_choice import release_hash
 from anishift.application.subscription_targets import (
+    MAX_ATTEMPTS,
     MAX_SUBSCRIPTIONS,
     Blocker,
     PauseReason,
@@ -78,6 +79,8 @@ from anishift.application.subscription_targets import (
     next_search_at,
 )
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
+from anishift.cli.interactive.anime_texts import episode_state
+from anishift.cli.interactive.subscription_texts import row_state
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.local_control import MAX_FRAME_BYTES, ControlErrorCode, ControlResponse
@@ -1013,7 +1016,10 @@ def test_the_owner_schedules_the_next_check_and_runs_it_once_the_clocks_reach_it
     assert idle is None
 
 
-@pytest.mark.parametrize(("auto", "reason"), [(True, EpisodeReason.SUBSCRIPTION_AWAITING_AIRING), (False, None)])
+@pytest.mark.parametrize(
+    ("auto", "reason"),
+    [(True, EpisodeReason.SUBSCRIPTION_AWAITING_AIRING), (False, EpisodeReason.SUBSCRIPTION_PAUSED)],
+)
 def test_an_episode_awaits_its_airing_only_while_automation_is_on(
     tmp_path: Path, auto: bool, reason: str | None
 ) -> None:
@@ -1030,6 +1036,73 @@ def test_an_episode_awaits_its_airing_only_while_automation_is_on(
         )
 
     assert status.reason == reason
+
+
+def _exhausted() -> SubscriptionTarget:
+    return SubscriptionTarget(
+        23, (_NOW - timedelta(hours=1)).isoformat(), TargetState.EXHAUSTED, attempts=MAX_ATTEMPTS, started=MAX_ATTEMPTS
+    )
+
+
+def _due(blocker: Blocker | None = None) -> SubscriptionTarget:
+    return SubscriptionTarget(23, (_NOW - timedelta(hours=1)).isoformat(), TargetState.DUE, blocker=blocker)
+
+
+def _listed_word(text: str) -> str:
+    parts: list[str] = text.split(" · ")
+    return parts[1] if len(parts) > 1 else parts[0]
+
+
+@pytest.mark.parametrize(
+    ("target", "auto", "paused", "word"),
+    [
+        (
+            SubscriptionTarget(23, (_NOW + timedelta(hours=2)).isoformat(), TargetState.AWAITING_AIRING),
+            True,
+            False,
+            "Czeka na emisję",
+        ),
+        (_due(), True, False, "Czeka na wydanie"),
+        (_due(Blocker.PENDING), True, False, "Czeka na wydanie"),
+        (_due(Blocker.NO_ADMISSIBLE), True, False, "Brak pewnego wydania"),
+        (_due(Blocker.THRESHOLD), True, False, "Brak pewnego wydania"),
+        (_exhausted(), True, False, "Próby wyczerpane"),
+        (_exhausted(), False, False, "Próby wyczerpane"),
+        (
+            SubscriptionTarget(23, (_NOW + timedelta(hours=2)).isoformat(), TargetState.AWAITING_AIRING),
+            False,
+            False,
+            "Wstrzymane",
+        ),
+        (_due(), False, False, "Wstrzymane"),
+        (_due(Blocker.NO_ADMISSIBLE), True, True, "Wstrzymane"),
+    ],
+)
+def test_the_list_and_the_episode_view_name_every_target_phase_with_one_word(
+    tmp_path: Path, target: SubscriptionTarget, *, auto: bool, paused: bool, word: str
+) -> None:
+    record: SubscriptionRecord = _followed(
+        checked_at=_NOW.isoformat(),
+        targets=(target,),
+        paused=paused,
+        pause_reason=PauseReason.USER if paused else None,
+    )
+    state: WatchState = WatchState(policy=AutomationPolicy(auto_enabled=auto), subscriptions=(record,))
+    with _following(tmp_path, state, _World()) as (owner, _):
+        listed, states = owner._on_owner(
+            lambda: (
+                owner._subscription_command(_request("subscriptions_list", command_id="list")).result,
+                owner._episode_states(
+                    _request("episode_states", {"anilist_id": _S4, "numbers": [23]}, command_id="states")
+                ).result,
+            )
+        )
+    rows: list[Mapping[str, object]] = cast("list[Mapping[str, object]]", listed["subscriptions"])
+    items: list[object] = cast("list[object]", states["items"])
+    status: EpisodeStatus = decode_view(EpisodeStatus, items[0])
+
+    assert _listed_word(row_state(rows[0], _NOW).text) == word
+    assert episode_state(status.state, status.reason) == word
 
 
 def test_a_globally_paused_owner_checks_nothing_on_its_own(tmp_path: Path) -> None:
@@ -1290,9 +1363,13 @@ def test_the_list_row_waits_for_polish_like_its_episode_while_no_release_is_foun
 
     assert record.targets[0].blocker is Blocker.NO_ADMISSIBLE
     assert status.polish_wait_until == (_NOW + timedelta(hours=1)).isoformat()
-    assert (waiting[0].due_number, waiting[0].due_state) == (23, "polish")
+    assert (status.reason, late.reason) == (
+        EpisodeReason.SUBSCRIPTION_AWAITING_POLISH,
+        EpisodeReason.SUBSCRIPTION_NO_CERTAIN_RELEASE,
+    )
+    assert (waiting[0].due_number, waiting[0].due_reason) == (23, status.reason)
     assert late.polish_wait_until is None
-    assert (over[0].due_number, over[0].due_state) == (23, "no_release")
+    assert (over[0].due_number, over[0].due_reason) == (23, late.reason)
 
 
 def test_download_now_admits_a_waiting_target_once_and_survives_a_restart(tmp_path: Path) -> None:

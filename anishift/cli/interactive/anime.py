@@ -69,7 +69,6 @@ from anishift.cli.interactive.anime_rows import (
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState, NoticeKind
 from anishift.cli.interactive.anime_texts import (
     COMMAND_FAILED,
-    EPISODE_REASON_LABELS,
     IN_PROGRESS_HINT,
     REPEATABLE_REASONS,
     UNAVAILABLE,
@@ -97,7 +96,7 @@ from anishift.errors import AniShiftError, ErrorCode
 from anishift.platform.local_control import ControlError, ControlErrorCode
 from anishift.utils.logger import get_logger
 
-__all__ = ["EPISODE_REASON_LABELS", "AnimeController", "AnimeResult"]
+__all__ = ["AnimeController", "AnimeResult"]
 
 logger = get_logger(__name__)
 
@@ -752,7 +751,7 @@ class AnimeController:
     def _subscription_facts(self) -> tuple[str, ...]:
         if self._screen is not _Screen.EPISODES or self._subscription is None:
             return ()
-        state: SubscriptionState = row_state(self._subscription, self._moment(), idle=self._paused)
+        state: SubscriptionState = row_state(self._subscription, self._moment())
         return (
             safe(str(self._subscription.get("title", ""))),
             f"{state.text} · {row_summary(self._subscription)}",

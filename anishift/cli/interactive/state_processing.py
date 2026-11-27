@@ -8,7 +8,7 @@ from typing import Final
 from anishift.application import EpisodeReason, HistoryEvent, RetryProposal
 from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
 from anishift.cli.interactive.progress import RichRunProgress
-from anishift.cli.interactive.state_texts import RESTORING, deleting_sets, rows, safe_text
+from anishift.cli.interactive.state_texts import deleting_sets, rows, safe_text, state_word
 from anishift.text.plural import plural
 
 __all__ = [
@@ -62,7 +62,7 @@ _READINESS_LABELS: Final[dict[str, str]] = {
     "image_missing": "Brak okładki",
     "ambiguous_image": "Kilka okładek",
     "place_starts_no_work": "Folder bez Auto",
-    "processing_failed": "Błąd",
+    "processing_failed": state_word("processing_failed"),
 }
 """Short Polish cause of a workspace material that waits for the user, not for a queue."""
 
@@ -104,11 +104,11 @@ _RETRY_LABELS: Final[dict[str, str]] = {
 """Only row of a local or remote retry proposal, by the owner's retry route."""
 
 _TRANSFER_LABELS: Final[dict[str, str]] = {
-    "queuedDL": "W kolejce",
-    "uploading": "Pobrane",
-    "stalledUP": "Pobrane",
-    "forcedUP": "Pobrane",
-    "queuedUP": "Pobrane",
+    "queuedDL": state_word(EpisodeReason.WAITING_PREVIOUS_TRANSFER),
+    "uploading": state_word("downloaded"),
+    "stalledUP": state_word("downloaded"),
+    "forcedUP": state_word("downloaded"),
+    "queuedUP": state_word("downloaded"),
     "moving": "Przenoszenie",
 }
 """Labels of the remaining torrent client states of a recorded download."""
@@ -201,17 +201,17 @@ def download_progress(  # noqa: PLR0911
     fraction: object = item.get("progress")
     measured: float | None = float(fraction) if isinstance(fraction, (int, float)) else None
     if item.get("restoring"):
-        return RESTORING, None
+        return state_word("restoring"), None
     if item.get("reason") == EpisodeReason.FINALIZATION_FAILED:
-        return "Błąd zapisu", None
+        return state_word(EpisodeReason.FINALIZATION_FAILED), None
     if item.get("attention"):
-        return _READINESS_LABELS.get(str(item.get("reason")), "Do sprawdzenia"), None
+        return _READINESS_LABELS.get(str(item.get("reason")), state_word("attention")), None
     if item.get("stage") == "waiting":
-        return ("Wstrzymane" if held(snapshot, item) else "Przygotowanie"), None
+        return (state_word("paused") if held(snapshot, item) else "Przygotowanie"), None
     if item.get("problem"):
-        return _DOWNLOAD_PROBLEMS.get(str(item.get("problem")), "Wymaga uwagi"), None
+        return _DOWNLOAD_PROBLEMS.get(str(item.get("problem")), state_word("attention")), None
     if item.get("reason") == EpisodeReason.WAITING_PREVIOUS_TRANSFER:
-        return "W kolejce", None
+        return state_word(EpisodeReason.WAITING_PREVIOUS_TRANSFER), None
     if not connected or snapshot.get("transfers_problem"):
         return "Brak połączenia", None
     state: object = item.get("state")
@@ -222,9 +222,9 @@ def download_progress(  # noqa: PLR0911
     if state is None:
         return "Łączenie", None
     if state in {"error", "missingFiles"}:
-        return "Błąd torrenta", None
+        return state_word(EpisodeReason.TRANSFER_FAILED), None
     if state in {"downloading", "forcedDL", "stalledDL"}:
-        return "Pobieranie", measured
+        return state_word("downloading"), measured
     return _TRANSFER_LABELS.get(str(state), "Sprawdzanie"), measured
 
 
@@ -318,10 +318,10 @@ def _download_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
 
 def _stopped_label(item: Mapping[str, object], snapshot: Mapping[str, object]) -> str:
     if item.get("action") == "stop" or held(snapshot, item):
-        return "Wstrzymane"
+        return state_word("paused")
     if item.get("state") in {"pausedUP", "stoppedUP"}:
-        return "Pobrane"
-    return "Wybór pliku" if _unstarted(item) else "Pobieranie"
+        return state_word("downloaded")
+    return "Wybór pliku" if _unstarted(item) else state_word("downloading")
 
 
 def _unstarted(item: Mapping[str, object]) -> bool:

@@ -21,7 +21,6 @@ from anishift.cli.interactive.state_texts import (
     LIBRARY_READY,
     LIBRARY_TO_CHECK,
     LIBRARY_UNRECOGNIZED,
-    RESTORING,
     deleted_sets,
     deleting_sets,
     rows,
@@ -89,6 +88,9 @@ _NO_VALUE: Final[str] = "—"
 
 _PROBLEM: Final[str] = "Problem"
 """State of a set whose owner problem has no Polish explanation."""
+
+_RESTORING: Final[str] = "Przywracam"
+"""State of a deleted set from Ctrl+Z until the owner finishes bringing its files back."""
 
 _TITLE_KEY: Final[Callable[[str], object]] = os_sort_keygen()
 """Order Library titles the way the system file browser orders names."""
@@ -187,7 +189,7 @@ def episode_row(item: Mapping[str, object], info: EpisodeInfo) -> AnimeRow:
         title,
         number=_label(item).episode_text,
         date=air_date(None if known is None else known[1]),
-        status=f"{RESTORING}…" if item.get("restoring") else problem or LIBRARY_READY,
+        status=f"{_RESTORING}…" if item.get("restoring") else problem or LIBRARY_READY,
         detail=problem,
     )
 
@@ -215,7 +217,7 @@ def title_entry(title: LibraryTitle) -> str:
 def set_entry(item: Mapping[str, object]) -> str:
     """Return the full label of one set for the narrow list."""
     label: str = safe_text(_label(item).text)
-    return f"{label} · {RESTORING}" if item.get("restoring") else label
+    return f"{label} · {_RESTORING}" if item.get("restoring") else label
 
 
 def library_row_id(item: Mapping[str, object]) -> str:

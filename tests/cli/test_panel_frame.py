@@ -41,7 +41,7 @@ _STATES: Final[tuple[tuple[Mapping[str, object], str], ...]] = (
         {"auto_enabled": True, "material_counts": {"downloading": 0, "processing": 0, "waiting": 0}},
         "Automat: bezczynny · O wyłącz",
     ),
-    ({"auto_enabled": False, "material_counts": _COUNTS}, "Automat wstrzymany · O włącz"),
+    ({"auto_enabled": False, "material_counts": _COUNTS}, "Automat wyłączony · O włącz"),
     (
         {"auto_enabled": False, "pausing": True, "material_counts": _COUNTS},
         "Automat: zatrzymywanie · pobiera 1 · przetwarza 2 · w kolejce 3 · O włącz",
@@ -612,8 +612,8 @@ def test_the_pause_shows_only_in_the_status_line_and_never_shifts_the_subscripti
     paused: list[str] = _lines(probe, columns, rows)
 
     assert _index(paused, "Tytuł") == _index(running, "Tytuł")
-    assert sum("Automat wstrzymany · O włącz" in line for line in paused) == 1
-    assert paused[-1].strip() == "Automat wstrzymany · O włącz"
+    assert sum("Automat wyłączony · O włącz" in line for line in paused) == 1
+    assert paused[-1].strip() == "Automat wyłączony · O włącz"
 
 
 @pytest.mark.parametrize(("columns", "rows"), _LOW_SIZES)

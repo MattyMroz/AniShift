@@ -57,13 +57,11 @@ def subscription_rows(
     subscriptions: list[Mapping[str, object]],
     checks: Mapping[str, tuple[str, str, datetime]],
     now: datetime,
-    *,
-    idle: bool,
 ) -> tuple[AnimeRow, ...]:
     """Return one table row per subscription, showing a recent check in place of its state."""
     states: list[SubscriptionState] = []
     for item in subscriptions:
-        state: SubscriptionState = row_state(item, now, idle=idle)
+        state: SubscriptionState = row_state(item, now)
         shown: tuple[str, str, datetime] | None = checks.get(str(item.get("subscription_id")))
         if shown is not None and now < shown[2]:
             state = SubscriptionState(shown[0], shown[1])
