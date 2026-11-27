@@ -65,10 +65,16 @@ narratora ani finalnego sidecara.
   `DocumentTtsEngine.validate_part`, dostaje `TtsInputError` przed odczytem; reszta
   batcha idzie dalej. Resume, tożsamość i commit są per kwestia jak w ścieżce zwykłej.
 - `accept_result` sprawdza własność nagrania i kolejność `PartTiming`, tnie nagranie
-  (`open_end = not ends_sentence(text)`) i waliduje każdy klip; błąd splittera albo
-  niezgodne czasy to `TtsClipValidationError`, więc dokument jest ponawiany w całości.
-  Pusty `PartTiming` (`spoken is False`) to część, której silnik nie wypowiedział: reszta
-  nagrania jest cięta i zatwierdzana od razu.
+  (`open_end = not ends_sentence(text)`) i waliduje każdy klip. Pusty `PartTiming` (`spoken is False`) to część,
+  której silnik nie wypowiedział: reszta nagrania jest cięta i zatwierdzana od razu.
+- Po odebraniu nagrania dokument nigdy nie jest nagrywany od nowa. Wynik niezgodny z kontraktem i wyjątek silnika
+  spoza `TtsError` to trwały `TtsRecordingSplitError` (`TTS_CLIP_INVALID`) dla jego kwestii, bez ponowienia. Nagranie,
+  którego nie dało się pociąć (błąd splittera, każdy wyjątek przy cięciu, anulowanie), zostaje w `clips/` jako
+  `document-<klucz>.mp3` z czasami w `document-<klucz>.json` (`kept_document_paths`; klucz z odcisków kwestii
+  dokumentu). Następna próba tego samego dokumentu, także ponowienie zadania w zachowanym przebiegu, tnie je zamiast
+  nagrywać; po przyjęciu oba pliki znikają. Nagranie bez ramek MPEG nie jest zachowywane, a podpowiedź mówi, że
+  kwestie będą nagrane od nowa. Błąd spoza `TtsError` w ścieżce zwykłej kwestii zostaje błędem przejściowym
+  schedulera, bo ponowienie jednej kwestii jest tanie.
 - Niewypowiedziane kwestie dokumentu `_read_lines` czyta od razu jeszcze raz: najpierw razem jako mniejszy dokument
   (tylko gdy jest ich więcej niż jedna i mniej niż w dokumencie), potem każdą wciąż cichą osobno (tylko gdy ostatni
   dokument miał więcej niż jedną kwestię). Dokument identyczny z już przeczytanym się nie powtarza, więc kwestia ma
@@ -79,7 +85,7 @@ narratora ani finalnego sidecara.
   ElevenReadera) trzyma silnik, nie wspólna warstwa TTS.
 - Identyfikator dokumentu `{scope_id}:document:{n}` bierze `n` z licznika `TtsService`, więc jest unikalny w
   całym przebiegu, także między batchami tego samego scope.
-- Nagranie i niezatwierdzone klipy są usuwane przed każdą kolejną próbą i po każdym
+- Nagranie (poza zachowanym) i niezatwierdzone klipy są usuwane przed każdą kolejną próbą i po każdym
   dokumencie. `provider_calls` i `retries` dokumentu liczą się na jego pierwszej kwestii.
 - `TtsScheduler` dostaje od silnika tylko `locality` (silnik `SYSTEM` ponawia bez
   opóźnienia); nie trzyma instancji silnika.

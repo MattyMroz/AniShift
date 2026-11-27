@@ -107,6 +107,18 @@ Decyzje prowadzącego po recenzji:
 - D2: wynik dokumentu niezgodny z kontraktem (inny request, głos, model, format albo inna lista części) był błędem
   przejściowym, więc scheduler nagrywał dokument od nowa. Teraz to trwały `TtsRecordingSplitError` z kodem
   `TTS_CLIP_INVALID` i podpowiedzią; linie przegrywają, nagrania się nie powtarza. `6727d990`.
+- F1 (druga runda recenzji): scheduler AniShift zamieniał każdy wyjątek spoza `TtsError` na przejściowy, więc błąd w
+  kodzie po nagraniu (splitter: `IndexError`, `wave.Error`; silnik po próbie głównej: `OSError`, `FileExistsError`)
+  nagrywał dokument od nowa do `tts_max_retries` razy. Teraz w drodze dokumentu (`_DocumentAttempt.call` i
+  `accept_result` w `tts/service.py`) taki wyjątek idzie do logu z tracebackiem i kończy kwestie trwałym
+  `TtsRecordingSplitError` (`TTS_CLIP_INVALID`), bez ponowienia. Droga pojedynczych kwestii zostaje bez zmian, bo
+  ponowienie jednej kwestii jest tanie. Sha w raporcie wykonawcy i w historii gałęzi.
+- F2 (druga runda recenzji): po dwóch nieudanych cięciach `finally: attempt.discard()` kasował opłacone nagranie, a
+  podpowiedź obiecywała nagranie od nowa. Teraz nagranie, którego nie dało się pociąć, zostaje w katalogu klipów
+  zadania (`clips/document-<klucz>.mp3` i czasy w `document-<klucz>.json`, klucz z odcisków kwestii dokumentu);
+  następna próba tego samego dokumentu, także ponowienie zadania w zachowanym przebiegu, tnie je bez nagrywania, a po
+  przyjęciu oba pliki znikają. Nagranie bez ramek MPEG nie jest zachowywane i podpowiedź mówi, że kwestie zostaną
+  nagrane od nowa. Pliki znikają też razem z katalogiem przebiegu.
 
 Poza listą: `host.mono_pcm` uruchamia FFmpeg z `CREATE_NO_WINDOW`, jak reszta wywołań w AniShift (`207c3a7b`, tylko
 `host.py` AniShift).
@@ -137,6 +149,10 @@ Reszta ElevenDownloaderPro:
   (wynik zostaje, znikają tylko próby, D1), porównania z `doc.take1.mp3` zamienione na `fills(...)`.
 - D2 dotyczy tylko `TtsService` AniShift; w ElevenDownloaderPro sprawdzić, czy `_retrying` nie nagrywa dokumentu od
   nowa po wyniku, którego nie przyjmuje.
+- F1 i F2 nie zmieniają plików wspólnych silnika (tylko `TtsService` i `TtsResumeRepository` AniShift). W
+  ElevenDownloaderPro sprawdzić to samo po swojej stronie: czy `_retrying` (albo inna pętla ponowień `edp record`)
+  traktuje wyjątek spoza typowanych błędów po nagraniu jako przejściowy i nagrywa dokument od nowa (F1), i czy
+  nagranie, którego `edp` nie umie przetworzyć po odbiorze, jest gdzieś kasowane zamiast zostać dla ponowienia (F2).
 - `AGENTS.md` silnika: sekcje „Wykrywanie i dogrywanie” i „Pliki nagrań” jak w AniShift.
 
 ## Sprawy otwarte
