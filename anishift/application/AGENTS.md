@@ -278,7 +278,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `_tts_config` (współbieżność z profilu jak dla innych silników, bez `asyncio.timeout` schedulera, bo silnik sam
   pilnuje terminu i sprzątania konta; dłuższy `shutdown_deadline_s`). `split_clip` dekoduje nagranie z jawnym `-f mp3`
   (obce bajty na początku zmylą rozpoznanie formatu), czasy ramek bierze z `utils.mp3_frames`, regułę cięcia z
-  `services/audio/segmentation.py`; granice bez pauzy idą do logu jako ostrzeżenie z liczbą. `tts_clips.py`
+  `utils/pauses.py`; granice bez pauzy idą do logu jako ostrzeżenie z liczbą. Nieudane cięcie albo zły klip
+  dokumentu to trwały `TtsRecordingSplitError` jego linii, bez nagrywania dokumentu od nowa. `tts_clips.py`
 - `build_narration_manifest` ocenia każdą kwestię osobno, nie status batcha: kwestia bez klipu kończy zadanie
   `ExecutionError` z kodem, treścią i sugestią `SpeechBatchResult.failure` (panel pokazuje tylko
   `context.message`, więc sugestia jest też w treści), szyld bez klipu (pominięty albo nieudany) wypada z manifestu z ostrzeżeniem z liczbą i grupami w

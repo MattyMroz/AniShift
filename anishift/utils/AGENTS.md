@@ -13,11 +13,12 @@ Portable utilities with no host application dependencies. The package facade exp
 - `_retry.py` — presety tenacity (`NETWORK_RETRY` dekorator, `build_retry()` per-call)
 - `device.py` — wybór CUDA>CPU bez importu torcha
 - `mp3_frames.py` — ramki MPEG Layer III: nagłówki, ID3v2, czas serwera, cięcie przed czasem, miejsca sklejeń i przeliczenie na oś zdekodowaną; jedyny parser ramek w repo
+- `pauses.py` — poziomy RMS ramek 10 ms (`frame_levels`), czasy ramek na osi serwera i reguła cięcia między kwestiami (`best_pause`, `silent_cut`, `cut_points`); jedyne źródło tej reguły w repo
 - `safe_fs.py` — `safe_rmtree`/`safe_move` z retry na `PermissionError`
 - `safe_path.py` — `safe_resolve` chroniący przed path traversal
 - `secrets.py` — niemutujące redagowanie sekretów w dictach
 - `timing.py` — `elapsed_ms_since` na zegarze monotonicznym
-- `_portable.py` — manifest przenośności (moduły, zależności, smoke-testy)
+- `_portable.py` — manifest przenośności (moduły, zależności, minimalny Python); `logger`, `timer` i `rich_console` kopiuj razem, bo dzielą helpery; smoke-test po skopiowaniu jako `portable_utils`: `python -c "from portable_utils.logger import get_logger; assert get_logger('smoke') is not None"`
 
 ## Pułapki
 

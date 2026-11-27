@@ -10,21 +10,22 @@ from tempfile import TemporaryDirectory
 from typing import Final
 
 from anishift.services.audio.commands import CommandRunner, join_clips_command, recording_pcm_command
-from anishift.services.audio.errors import AudioError
-from anishift.services.audio.levels import frame_levels
+from anishift.services.audio.errors import AudioCancelledError, AudioError
 from anishift.services.audio.probe import probe_audio, probe_decoded_mp3, probe_pcm_wav, validate_decode
-from anishift.services.audio.segmentation import (
+from anishift.services.audio.types import AudioFormat as RenderAudioFormat
+from anishift.services.tts.errors import TtsCancelledError
+from anishift.services.tts.types import ClipExpectation, ClipSpan, ClipValidation, SplitResult
+from anishift.utils.logger import get_logger
+from anishift.utils.mp3_frames import FrameHeader, iter_frames, splice_times, to_decoded
+from anishift.utils.pauses import (
     ENVELOPE_RATE,
     CutDecision,
     LineSpan,
     clip_ranges,
     cut_points,
+    frame_levels,
     server_frame_times,
 )
-from anishift.services.audio.types import AudioFormat as RenderAudioFormat
-from anishift.services.tts.types import ClipExpectation, ClipSpan, ClipValidation, SplitResult
-from anishift.utils.logger import get_logger
-from anishift.utils.mp3_frames import FrameHeader, iter_frames, splice_times, to_decoded
 
 __all__ = ["FfmpegClipService"]
 
@@ -173,6 +174,8 @@ class FfmpegClipService:
                 timeout_s=self._recording_timeout_s,
                 cancel=self._cancel,
             )
+        except AudioCancelledError as error:
+            raise TtsCancelledError(context=error.context) from error
         except AudioError as error:
             message: str = "TTS recording decode failed"
             raise RuntimeError(message) from error
