@@ -118,10 +118,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   zapisuje; owner szuka go w następnym wyszukiwaniu, najwcześniej `RECOGNITION_RETRY_S` po poprzednim. Serie i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
   puli I/O do katalogu podanego przez `run_resident(cover_dir=...)`; bez katalogu (testy) okładek nie ma. Snapshot
   `covers` to ID z plikiem w cache. Przed pierwszą pełną inwentaryzacją (`_library`) owner publikuje każdą okładkę
-  z dysku i pobiera brakujące według `_known_entries`; potem pobiera i trzyma tylko `_cover_entries` (zestawy Biblioteki,
-  wiersze Przetwarzania, subskrypcje, wyniki wyszukiwania sesji), a po tej inwentaryzacji
-  i przy każdym tytule, który z nich wypadł, jedyny sprząta `config/covers/` w puli I/O (`prune_covers`: jpg spoza
-  zbioru, `.six` bez jpg albo innej `COVER_ENCODING`, ich `.tmp`; plik, którego nie dało się usunąć, czeka na następne sprzątanie).
+  z dysku (odczyt przy starcie `serve`), potem tylko te z `_cover_entries`. Pobiera i trzyma tylko `_cover_entries`:
+  zestawy Biblioteki, które panel pokazuje (`_shown`, ta sama reguła co `_status`) albo Ctrl+Z przywróci
+  (`restorable_deletions`), wiersze Przetwarzania, subskrypcje, wyniki wyszukiwania sesji; nigdy samą historię
+  pobrań. Po tej inwentaryzacji i przy każdym tytule, który z nich wypadł, jedyny sprząta `config/covers/` w puli I/O
+  (`prune_covers`: jpg spoza zbioru, `.six` bez jpg albo innej `COVER_ENCODING`, ich `.tmp`; skasowany `.tmp` zwalnia
+  ID do ponownego pobrania; plik, którego nie dało się usunąć, czeka na następne sprzątanie), a po każdym udanym
+  sprzątaniu sprawdza zbiór ponownie, bo mógł się zmienić w trakcie.
   Testy: `test_library_series.py`.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli
   I/O, ponowne sprawdzenie przed przyjęciem). Undo zapisuje przyjęcie `PendingDeletion.restore` i start każdego

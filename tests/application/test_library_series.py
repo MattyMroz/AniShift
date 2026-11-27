@@ -30,9 +30,12 @@ from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
     AdmissionSource,
+    DeletionOutcome,
+    DeletionStatus,
     EpisodeAssignment,
     EpisodeChoice,
     LegacyScope,
+    PendingDeletion,
     ReadyGroup,
     TorrentioReference,
     WatchState,
@@ -57,6 +60,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlResponse
 from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
+from anishift.services.catalog.covers import prune_covers
 from anishift.services.http_requests import RequestControl
 
 _MOMENT: Final[str] = "2026-10-11T09:00:00+00:00"
@@ -847,6 +851,7 @@ def test_recognized_set_joins_its_series(tmp_path: Path) -> None:
 
 _COVER_A: Final[str] = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx101280.jpg"
 _COVER_B: Final[str] = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx106509.jpg"
+_COVER_C: Final[str] = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx108511.jpg"
 
 
 def _png() -> bytes:
@@ -855,17 +860,25 @@ def _png() -> bytes:
     return buffer.getvalue()
 
 
-def _cover_owner(tmp_path: Path, titles: _TitleCatalog) -> tuple[AutomationOwner, Path]:
+def _cover_owner(
+    tmp_path: Path,
+    titles: _TitleCatalog,
+    *,
+    acquisitions: tuple[AcquisitionConfirmation, ...] = (),
+    deletions: tuple[PendingDeletion, ...] = (),
+    followed: bool = True,
+) -> tuple[AutomationOwner, Path]:
     _, store, state = _completed_library(tmp_path)
     store.save(
         replace(
             state,
-            acquisitions=(_downloaded("set-01", _S1, 4),),
-            subscriptions=(_followed(_SLIME_OAD, "That Time I Got Reincarnated as a Slime OAD"),),
+            acquisitions=(_downloaded("set-01", _S1, 4), *acquisitions),
+            subscriptions=(_followed(_SLIME_OAD, "That Time I Got Reincarnated as a Slime OAD"),) if followed else (),
+            pending_deletions=deletions,
         )
     )
-    titles.covers = {_S1: _COVER_A, _SLIME_OAD: _COVER_B}
-    titles.files = {_COVER_A: _png(), _COVER_B: _png()}
+    titles.covers = {_S1: _COVER_A, _SLIME_OAD: _COVER_B, _SLIME_S2: _COVER_C}
+    titles.files = {_COVER_A: _png(), _COVER_B: _png(), _COVER_C: _png()}
     covers: Path = tmp_path / "config" / "covers"
     owner: AutomationOwner = AutomationOwner(
         _real_service(tmp_path, acquisition=_episode_service(tmp_path, titles)),
@@ -1056,6 +1069,259 @@ def test_owner_shows_every_stored_cover_while_the_first_inventory_runs(
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
     assert (early, loading, late) == ([999, _S1, _SLIME_OAD], True, [_S1, _SLIME_OAD])
+    assert titles.downloads == []
+
+
+def _gone(path: Path) -> bool:
+    deadline: float = time.monotonic() + _TIMEOUT_S
+    while time.monotonic() < deadline and path.exists():
+        time.sleep(0.01)
+    return not path.exists()
+
+
+def _inventoried(owner: AutomationOwner) -> None:
+    deadline: float = time.monotonic() + _TIMEOUT_S
+    while time.monotonic() < deadline and owner.handle(_request("status")).result["library_loading"]:
+        time.sleep(0.01)
+    assert owner.handle(_request("status")).result["library_loading"] is False
+
+
+def _stored(covers: Path, *anilist_ids: int) -> None:
+    covers.mkdir(parents=True, exist_ok=True)
+    for anilist_id in anilist_ids:
+        (covers / f"{anilist_id}.jpg").write_bytes(_png())
+
+
+def _without_set_files(tmp_path: Path) -> None:
+    for name in ("01.txt", "01.pl.txt"):
+        (tmp_path / "ready" / name).unlink()
+
+
+@pytest.mark.integration
+def test_owner_prunes_the_cover_of_a_set_gone_from_the_library(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored(covers, _S1, _SLIME_OAD)
+    _without_set_files(tmp_path)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        pruned: bool = _gone(covers / f"{_S1}.jpg")
+        cached: list[int] = _cached(owner, [_SLIME_OAD])
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (pruned, cached) == (True, [_SLIME_OAD])
+    assert titles.downloads == []
+
+
+@pytest.mark.integration
+def test_owner_keeps_the_cover_of_a_deleted_set_ctrl_z_restores(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    deleted: PendingDeletion = PendingDeletion(
+        "deleted",
+        "set-01",
+        _MOMENT,
+        (("ready/01.txt", 1, 2),),
+        recycled=("ready/01.txt",),
+        identities=(("ready/01.txt", 3, 4),),
+        outcomes=(DeletionOutcome("ready/01.txt", DeletionStatus.RECYCLED, "ok", "exact-receipt"),),
+        instance_id=_INSTANCE,
+    )
+    owner, covers = _cover_owner(tmp_path, titles, deletions=(deleted,))
+    _stored(covers, _S1, _SLIME_OAD, 999)
+    _without_set_files(tmp_path)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        pruned: bool = _gone(covers / "999.jpg")
+        cached: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (pruned, cached) == (True, [_S1, _SLIME_OAD])
+    assert sorted(item.name for item in covers.iterdir()) == [f"{_S1}.jpg", f"{_SLIME_OAD}.jpg"]
+    assert titles.downloads == []
+
+
+@pytest.mark.integration
+def test_owner_fetches_the_cover_again_for_a_restored_subscription(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored(covers, _S1)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        first: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+        _inventoried(owner)
+        removal: dict[str, object] = {"subscription_id": f"subscription-{_SLIME_OAD}"}
+        assert owner.handle(_request("subscription_remove", removal, command_id="remove-oad")).ok
+        pruned: bool = _gone(covers / f"{_SLIME_OAD}.jpg")
+        second: list[int] = _cached(owner, [_S1])
+        assert owner.handle(_request("subscription_restore", command_id="restore-oad")).ok
+        third: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (first, pruned, second, third) == ([_S1, _SLIME_OAD], True, [_S1], [_S1, _SLIME_OAD])
+    assert titles.downloads == [_COVER_B, _COVER_B]
+
+
+@pytest.mark.integration
+def test_owner_never_fetches_covers_of_titles_known_only_from_history(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles, acquisitions=(_legacy("gone", LegacyScope(_SLIME_S2, 1)),))
+    _stored(covers, _S1, _SLIME_OAD)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        _inventoried(owner)
+        cached: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+        requested: bool = owner._on_owner(lambda: _SLIME_S2 in owner._covers_requested)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (cached, requested) == ([_S1, _SLIME_OAD], False)
+    assert titles.downloads == []
+
+
+def _pruning(
+    monkeypatch: pytest.MonkeyPatch,
+    owner: AutomationOwner,
+    prune: Callable[[Path, frozenset[int]], tuple[frozenset[int], int]],
+) -> None:
+    acquisition: AcquisitionService | None = owner._service.acquisition
+    assert acquisition is not None
+    monkeypatch.setattr(acquisition, "prune_covers", prune)
+
+
+@pytest.mark.integration
+def test_owner_prunes_again_when_the_entries_change_during_pruning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored(covers, _S1, _SLIME_OAD)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    calls: list[frozenset[int]] = []
+
+    def held(directory: Path, kept: frozenset[int]) -> tuple[frozenset[int], int]:
+        calls.append(kept)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(_TIMEOUT_S)
+        return prune_covers(directory, kept)
+
+    _pruning(monkeypatch, owner, held)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        assert entered.wait(_TIMEOUT_S)
+        removal: dict[str, object] = {"subscription_id": f"subscription-{_SLIME_OAD}"}
+        assert owner.handle(_request("subscription_remove", removal, command_id="remove-oad")).ok
+        release.set()
+        pruned: bool = _gone(covers / f"{_SLIME_OAD}.jpg")
+        cached: list[int] = _cached(owner, [_S1])
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (pruned, cached) == (True, [_S1])
+    assert calls[:2] == [frozenset({_S1, _SLIME_OAD}), frozenset({_S1})]
+
+
+@pytest.mark.integration
+def test_owner_shows_only_listed_stored_covers_after_the_first_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored(covers, _S1, _SLIME_OAD)
+    searched: str = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx7.jpg"
+    titles.candidates = (
+        TitleCandidate(
+            7, "Searched", None, None, (), None, None, None, None, TitleStatus.UNKNOWN, (), cover_url=searched
+        ),
+    )
+    titles.files = {searched: _png()}
+    calls: list[frozenset[int]] = []
+
+    def kept(_directory: Path, entries: frozenset[int]) -> tuple[frozenset[int], int]:
+        calls.append(entries)
+        return frozenset(), 0
+
+    _pruning(monkeypatch, owner, kept)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        _inventoried(owner)
+        _cached(owner, [_S1, _SLIME_OAD])
+        _stored(covers, 998)
+        assert owner.handle(_request("acquisition", {"operation": "titles", "query": "searched"})).ok
+        cached: list[int] = _cached(owner, [7, _S1, _SLIME_OAD])
+        prunes: int = owner._on_owner(lambda: len(calls))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (cached, prunes) == ([7, _S1, _SLIME_OAD], 2)
+
+
+@pytest.mark.integration
+def test_owner_fetches_only_subscription_covers_before_the_first_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, _covers = _cover_owner(tmp_path, titles)
+    release: threading.Event = threading.Event()
+    inspect: Callable[..., None] = owner._inspect_library
+
+    def held(*arguments: object) -> None:
+        assert release.wait(_TIMEOUT_S)
+        inspect(*arguments)
+
+    monkeypatch.setattr(owner, "_inspect_library", held)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        early: list[int] = _cached(owner, [_SLIME_OAD])
+        fetched: list[str] = list(titles.downloads)
+        release.set()
+        late: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (early, fetched, late) == ([_SLIME_OAD], [_COVER_B], [_S1, _SLIME_OAD])
+    assert titles.downloads == [_COVER_B, _COVER_A]
+
+
+@pytest.mark.integration
+def test_owner_shows_stored_covers_at_start_without_any_wanted_title(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles, followed=False)
+    _stored(covers, _S1, 999)
+    release: threading.Event = threading.Event()
+    inspect: Callable[..., None] = owner._inspect_library
+
+    def held(*arguments: object) -> None:
+        assert release.wait(_TIMEOUT_S)
+        inspect(*arguments)
+
+    monkeypatch.setattr(owner, "_inspect_library", held)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        early: list[int] = _cached(owner, [999, _S1])
+        release.set()
+        late: list[int] = _cached(owner, [_S1])
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (early, late) == ([999, _S1], [_S1])
     assert titles.downloads == []
 
 

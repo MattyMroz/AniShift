@@ -95,6 +95,7 @@ from anishift.application.control import (
     record_request,
     release,
     reserve,
+    restorable_deletions,
     restore_gone,
     retain_deletions,
 )
@@ -1176,6 +1177,7 @@ class AutomationOwner:
         self._prepare_transfers()
         self._schedule_transfers()
         self._retry_ready()
+        self._request_covers(listing=True)
         try:
             self._loop()
         finally:
@@ -2006,11 +2008,7 @@ class AutomationOwner:
                 for group in library
                 if group.available
             ],
-            "library_problems": [
-                encode_view(group)
-                for group in library
-                if not group.available and any(item.identity is not None for item in group.files)
-            ],
+            "library_problems": [encode_view(group) for group in library if not group.available and _shown(group)],
             "covers": sorted(self._covers),
             "deletions": [
                 {
@@ -8784,9 +8782,12 @@ class AutomationOwner:
         return library_entries(self._state) | {value for value in self._recognized.values() if value is not None}
 
     def _cover_entries(self) -> frozenset[int]:
-        """Return the entries the panel can show: Library sets, processing rows, subscriptions and search results."""
+        """Return the entries of panel rows: Library sets shown or restorable, processing, subscriptions, search."""
+        restorable: frozenset[str] = frozenset(item.set_id for item in restorable_deletions(self._state))
         library: set[int] = {
-            item.anilist_id for item in self._named(self._ready_library) if item.anilist_id is not None
+            item.anilist_id
+            for item in self._named(self._ready_library)
+            if item.anilist_id is not None and (_shown(item) or item.set_id in restorable)
         }
         processing: set[int] = {
             entry for row in self._processing_materials() if isinstance(entry := row.get("anilist_id"), int)
@@ -8794,18 +8795,13 @@ class AutomationOwner:
         followed: set[int] = {item.anilist_id for item in self._state.subscriptions if item.anilist_id is not None}
         return frozenset(library | processing | followed | self._cover_urls.keys())
 
-    def _request_covers(self) -> None:
+    def _request_covers(self, *, listing: bool = False) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         directory: Path | None = self._cover_directory
         if acquisition is None or directory is None or self._shutting_down:
             return
-        entries: frozenset[int] = (
-            frozenset(self._known_entries() | self._cover_urls.keys())
-            if self._library is None
-            else self._cover_entries()
-        )
-        wanted: frozenset[int] = entries - self._covers - self._covers_requested
-        if not wanted:
+        wanted: frozenset[int] = self._cover_entries() - self._covers - self._covers_requested
+        if not wanted and not listing:
             return
         self._covers_requested.update(wanted)
         self._active_io += 1
@@ -8865,8 +8861,12 @@ class AutomationOwner:
         self._add_covers(frozenset(stored))
 
     def _add_covers(self, stored: frozenset[int]) -> None:
-        if stored - self._covers:
-            self._covers |= stored
+        shown: frozenset[int] = stored if self._library is None else stored & self._cover_entries()
+        if shown != stored:
+            self._covers_pruned = False
+            self._prune_covers()
+        if shown - self._covers:
+            self._covers |= shown
             self._publish_state()
 
     def _prune_covers(self) -> None:
@@ -8903,6 +8903,8 @@ class AutomationOwner:
         self._covers_requested -= removed
         if removed:
             self._publish_state()
+        elif not failed:
+            self._prune_covers()
 
     def _request_series(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
@@ -9209,6 +9211,11 @@ class _OwnerSink:
     def emit(self, event: RunEvent) -> None:
         """Publish one event without owning any workflow state."""
         self._publish(event)
+
+
+def _shown(group: LibrarySet) -> bool:
+    """Whether the panel shows *group*: an available set or an unavailable one with a file still on disk."""
+    return group.available or any(item.identity is not None for item in group.files)
 
 
 def _marked(
