@@ -6,14 +6,14 @@ import pytest
 
 _CONFIG_PATH: Path = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
 _TEMPLATES_DIR: Path = Path(__file__).resolve().parents[2] / ".github" / "ISSUE_TEMPLATE"
-_SCOPES_ARG: str = "- --scopes="
+_SCOPES_ARG: str = "--scopes="
 
 
 def _commit_scopes() -> list[str]:
     for line in _CONFIG_PATH.read_text(encoding="utf-8").splitlines():
-        stripped: str = line.strip()
-        if stripped.startswith(_SCOPES_ARG):
-            return stripped.removeprefix(_SCOPES_ARG).split(",")
+        for word in line.split():
+            if word.startswith(_SCOPES_ARG):
+                return word.removeprefix(_SCOPES_ARG).split(",")
     msg = f"No '--scopes=' argument in {_CONFIG_PATH.name}"
     raise ValueError(msg)
 

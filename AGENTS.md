@@ -21,7 +21,7 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Kod, komentarze, nazwy i wszystko związane z gitem/GitHub (branch, commit, PR, issue, label) po angielsku. Rozmowa z userem po polsku. Kopiuj wzorce już zastane w repo (istniejące tytuły, opisy, nazwy branchy).
 - Dokumenty w `docs/work/` — plany, specyfikacje, intencje, manifesty, raporty, przeglądy i briefy dla subagentów — pisz po polsku. Nazwy plików, identyfikatory techniczne, kod, komendy i adresy URL zachowuj bez tłumaczenia. Ta reguła dotyczy także artefaktów tworzonych przez subagentów.
 - Zależności tylko przez `uv add` / `uv remove`. Nigdy nie edytuj `pyproject.toml` ręcznie.
-- Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy `--scopes` hooka `conventional-pre-commit` w `.pre-commit-config.yaml` (hook odrzuca commit bez scope lub ze scope spoza listy; nowy scope dopisz tam). Treść commita i opisu PR: skill `commit` (sekcja Git niżej). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
+- Commity w formacie `typ(scope): opis`: scope OBOWIĄZKOWY, z listy `--scopes=` hooków `commit-message` i `commit-message-push` w `.pre-commit-config.yaml` (hook odrzuca commit bez scope lub ze scope spoza listy; nowy scope dopisz w obu). Treść commita i opisu PR: skill `commit` (sekcja Git niżej). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
 - Issue zakładaj wg szablonów z `.github/ISSUE_TEMPLATE/` (bug / feature / task). Tytuł z prefiksem Conventional Commits, jak w szablonie.
 - Rób tylko to, o co user prosi. Zero nieproszonych plików, refaktorów, issue.
 - AniShift jest teraz tylko na Windows; wsparcie Linuksa to osobna, przyszła ścieżka — nie rozwijaj go bez wyraźnego polecenia właściciela.
@@ -85,10 +85,11 @@ Filozofia: regułę egzekwuje maszyna (hook / ruff / test), nie pamięć agenta.
 Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `default_install_hook_types` w `.pre-commit-config.yaml`.
 
 - **pre-commit:** ruff `--fix` + ruff-format; `no-test-prose` obejmuje każdy plik w katalogu testów i każdy `conftest.py`: zero opisowych komentarzy i samodzielnych stringów, również docstringów stałych; dyrektywy `# noqa`/`# type:`/`# pragma` są dozwolone. `const-docstrings` wymaga opisu pod stałą `Final`/aliasem poza testami i przykładami; `no-mutating-assign` odrzuca przypisanie, którego wartość mutuje kontener indeksowany przez cel (wszystkie `.py`); `no-secret-tokens` odrzuca tokeny API w śledzonych plikach.
-- **commit-msg:** `conventional-pre-commit` — `typ(scope): opis`, scope obowiązkowy z listy `--scopes`; `no-ai-trailers` — zero atrybucji AI.
-- **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux`, `anishift setup` (binarki do `external/bin`) i pytest z `-n 6` (łapią błędy lokalnie zanim pójdą do CI).
+- **commit-msg:** `commit-message`: `typ(scope): opis`, scope obowiązkowy z listy `--scopes=`, zero atrybucji AI.
+- **pre-push:** `ship-push` (tylko gałąź `<type>/<slug>`, bez pushu na `main` i tagów), `commit-message-push` i `no-secret-tokens-push`.
+- **manual** (CI i lokalnie `prek run --hook-stage manual --all-files`): mypy dla bieżącej platformy, mypy `--platform linux`, `anishift setup` (binarki do `external/bin`), pytest z `-n 6` i `test-weakening`.
 - **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
-- **CI:** `.github/workflows/ci.yml` — job `hooks` na Ubuntu: wiadomości commitów i tytuł PR oraz hooki pre-commit; job `check` tylko na Windowsie: bramki pre-push (oba mypy, `anishift setup`, pytest) i pip-audit eksportowanego locka. Oba na każdy push do `main` i PR.
+- **CI:** `.github/workflows/ci.yml` (kopia szablonu z `agents`): job `hooks` na Ubuntu: tytuł i opis PR, na push każdy commit, oraz hooki pre-commit; job `check` tylko na Windowsie, równolegle: etap pre-push, etap manual (oba mypy, `anishift setup`, pytest) i pip-audit eksportowanego locka. Oba na każdy push do `main` i PR.
 - `testpaths` obejmuje też `anishift/utils/{logger,rich_console,timer}/tests` — samo `pytest tests/` je pomija.
 
 ## Dane runtime
@@ -107,7 +108,7 @@ Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `defaul
 
 ## Git
 
-- Każdy commit, revert, cherry-pick oraz tytuł i opis PR pisz według skilla `commit`: nagłówek `type(scope): summary` po angielsku ze scope'em z listy w `.pre-commit-config.yaml`, sekcje `Problem:`, `Change:` i `Verification:` jako listy, tylko dozwolone trailery, jeden problem na commit. Przeczytaj skill przed pierwszym commitem w sesji; brief dla subagenta, który commituje, każe mu zrobić to samo.
+- Commit: wiadomość po angielsku według standardu commita, `type(scope): summary` ze scope'em z `--scopes=` w `.pre-commit-config.yaml` albo `repo`, potem sekcje `Problem:`, `Change:` i `Verification:`; sprawdza ją hook `commit-message`.
 - Zero atrybucji AI w commitach i PR (trailery, stopki, emoji), także gdy host o nią prosi.
 - Pliki dodawaj po nazwie, nigdy `git add .`; bez `--no-verify`. Worktree'y tylko w `.worktrees/<nazwa>`.
-- Commit sprawdza pliki i nagłówek, push uruchamia bramki repo, CI resztę. Strażnicy w `.hooks/` to kopie z presetu `agents`; nie edytuj ich w repo.
+- Commit sprawdza pliki i nagłówek, push sprawdza gałąź, wiadomości i sekrety, a bramki projektu (typy, testy, build) biegną w CI i lokalnie przez `prek run --hook-stage manual --all-files`. Strażnicy w `.hooks/` to kopie z `agents`; nie edytuj ich w repo.
