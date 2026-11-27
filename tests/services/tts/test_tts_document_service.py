@@ -594,27 +594,23 @@ def test_document_batch_uncertain_boundaries_commits_every_line(tmp_path: Path) 
     assert len(engine.documents) == 1
 
 
-def test_document_batch_unowned_result_retries_without_split(tmp_path: Path) -> None:
-    engine = _DocumentEngine(wrong_voice_once=True)
+@pytest.mark.parametrize(
+    "engine",
+    [_DocumentEngine(wrong_voice_once=True), _DocumentEngine(drop_timing_once=True)],
+    ids=["unowned_result", "timing_count_mismatch"],
+)
+def test_document_batch_result_breaking_the_contract_fails_its_lines_without_recording_again(
+    tmp_path: Path, engine: _DocumentEngine
+) -> None:
     splitter = _Splitter()
 
     (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
 
-    assert result.status is SpeechBatchStatus.COMPLETED
-    assert len(engine.documents) == 2
-    assert len(splitter.calls) == 1
-    assert engine.stale_files == [[], []]
-
-
-def test_document_batch_timing_count_mismatch_retries_document(tmp_path: Path) -> None:
-    engine = _DocumentEngine(drop_timing_once=True)
-    splitter = _Splitter()
-
-    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
-
-    assert result.status is SpeechBatchStatus.COMPLETED
-    assert len(engine.documents) == 2
-    assert len(splitter.calls) == 1
+    assert _statuses(result) == [SynthesisStatus.FAILED, SynthesisStatus.FAILED]
+    assert [item.error_code for item in result.requests] == ["TTS_CLIP_INVALID", "TTS_CLIP_INVALID"]
+    assert len(engine.documents) == 1
+    assert splitter.calls == []
+    assert list((tmp_path / "episode").rglob(".clip-*")) == []
 
 
 def test_document_batch_quota_error_opens_circuit_for_next_document(tmp_path: Path) -> None:

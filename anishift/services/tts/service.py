@@ -440,11 +440,13 @@ class _DocumentAttempt:
             or result.provider_model_id != profile.provider_model_id
             or result.voice_id != profile.resolved_voice_id
         ):
-            raise _unowned_clip_error()
+            message: str = "TTS engine returned a document result for another request"
+            raise _document_result_error(message)
         if tuple(timing.request_id for timing in result.parts) != tuple(
             line.request.request_id for line in self._lines
         ):
-            raise _document_timing_error()
+            message = "TTS document timings do not match its lines"
+            raise _document_result_error(message)
         incomplete: frozenset[str] = frozenset(result.incomplete)
         spans: tuple[ClipSpan, ...] = tuple(
             ClipSpan(
@@ -1692,13 +1694,13 @@ def _incomplete_line_error() -> TtsInputError:
     return TtsInputError(context=context)
 
 
-def _document_timing_error() -> TtsClipValidationError:
+def _document_result_error(message: str) -> TtsRecordingSplitError:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_CLIP_INVALID,
-        message="TTS document timings do not match its lines",
-        suggestion="Retry the document; the recording was discarded.",
+        message=message,
+        suggestion="Report the engine error with the log; the task records its lines again only when retried.",
     )
-    return TtsClipValidationError(context=context)
+    return TtsRecordingSplitError(context=context)
 
 
 def _split_error() -> TtsRecordingSplitError:

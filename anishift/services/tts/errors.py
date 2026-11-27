@@ -107,7 +107,7 @@ class TtsClipValidationError(TtsError, TransientError):
 
 
 class TtsRecordingSplitError(TtsError, FatalError):
-    """A recorded document could not be cut into valid line clips; recording it again would not help."""
+    """A recorded document cannot become valid line clips; recording it again would not help."""
 
     error_code = ErrorCode.TTS_CLIP_INVALID
 
