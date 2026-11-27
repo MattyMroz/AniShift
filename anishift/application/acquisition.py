@@ -29,6 +29,7 @@ from anishift.application.episode_search import (
     sources_unavailable,
 )
 from anishift.application.episode_selection import (
+    MOVIE_FORMAT,
     AniZipMapping,
     EpisodeKey,
     EpisodeName,
@@ -185,9 +186,6 @@ _SCHEDULE_WARNING: Final[str] = "TITLE_CATALOG_FAILED"
 
 _UNKNOWN_STATUS: Final[str] = "UNKNOWN"
 """Status value used when no catalog source names one."""
-
-_MOVIE_FORMAT: Final[str] = "MOVIE"
-"""AniList format whose only row is fetched as a Torrentio movie."""
 
 _DONGHUA_COUNTRY: Final[str] = "CN"
 """AniList country of origin whose original audio also includes Chinese."""
@@ -537,7 +535,7 @@ def target_episode_name(title: str, number: int, target: Mapping[str, object]) -
         if isinstance(season, int) and isinstance(episode, int)
         else ListedEpisode(number)
     )
-    return EpisodeName(title, listed, film=target.get("type") == _MOVIE_FORMAT)
+    return EpisodeName(title, listed, film=target.get("type") == MOVIE_FORMAT)
 
 
 def _entry_title(entry: FranchiseEntry) -> str:
@@ -545,7 +543,7 @@ def _entry_title(entry: FranchiseEntry) -> str:
 
 
 def _movie(graph_movie: bool | None, mapping: AniZipMapping) -> bool:
-    return graph_movie if graph_movie is not None else mapping.catalog_type == _MOVIE_FORMAT
+    return graph_movie if graph_movie is not None else mapping.catalog_type == MOVIE_FORMAT
 
 
 def _bridge_failed(provider: str, error: AniShiftError | OSError | ValueError) -> None:
@@ -911,7 +909,7 @@ class AcquisitionService:
             logger.warning("Episode name listing unavailable", provider="anizip", error_class=type(error).__name__)
         else:
             episode = next((item for item in listing.episodes if item.number == number), episode)
-        return EpisodeName(_entry_title(entry), episode, film=entry.format == _MOVIE_FORMAT)
+        return EpisodeName(_entry_title(entry), episode, film=entry.format == MOVIE_FORMAT)
 
     def _catalogue_entry(self, anilist_id: int) -> FranchiseEntry:
         graph: FranchiseGraph
@@ -1101,7 +1099,7 @@ class AcquisitionService:
             code: ErrorCode | None = error.context.code if isinstance(error, AniShiftError) else None
             logger.warning("Listing franchise unavailable", provider="anilist", code=code)
             return None
-        return graph.nodes[anilist_id].get("format") == _MOVIE_FORMAT
+        return graph.nodes[anilist_id].get("format") == MOVIE_FORMAT
 
     def _anidb_numbering(self, mapping: AniZipMapping, ids: ArmIds | None) -> tuple[AniZipMapping, bool]:
         anidb: AniZipMapping | None = None
@@ -1254,7 +1252,7 @@ class AcquisitionService:
         now: float = self._clock()
         graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
         candidate: TitleCandidate = graph_candidate(graph, key.anilist_id)
-        movie: bool = candidate.format == _MOVIE_FORMAT
+        movie: bool = candidate.format == MOVIE_FORMAT
         if movie and key.number != 1:
             msg: str = "A movie has only its first row"
             raise ValueError(msg)
@@ -1319,7 +1317,7 @@ class AcquisitionService:
         now: float = self._clock()
         graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
         mapping: AniZipMapping = read.mapping
-        movie: bool = graph.nodes[key.anilist_id].get("format") == _MOVIE_FORMAT
+        movie: bool = graph.nodes[key.anilist_id].get("format") == MOVIE_FORMAT
         if movie and key.number != 1:
             msg = "A movie has only its first row"
             raise ValueError(msg)
@@ -1573,7 +1571,7 @@ def _numbered_target(
 ) -> tuple[dict[str, object], bool]:
     """Build the H1 target and whether it is numbered; a lone first season numbers itself without a mapping."""
     mapping: AniZipMapping = read.mapping
-    movie: bool = candidate.format == _MOVIE_FORMAT
+    movie: bool = candidate.format == MOVIE_FORMAT
     gap: str | None = numbering_gap(mapping, number, read.tvdb_season, movie=movie)
     if gap == "none" and _first_season(graph, candidate, read):
         mapping, gap = first_season_numbering(mapping, number), None

@@ -548,6 +548,26 @@ def test_a_season_batch_named_with_its_end_year_matches(year: int, *, matches: b
     assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
 
 
+@pytest.mark.parametrize(("year", "matches"), [(2022, True), (2023, False)])
+def test_a_sequel_that_started_later_in_the_same_year_lends_no_years(year: int, *, matches: bool) -> None:
+    graph: FranchiseGraph = _star_garden_graph()
+    nodes: dict[int, Any] = {
+        **graph.nodes,
+        1: {**graph.nodes[1], "seasonYear": 2022, "startDate": {"year": 2022, "month": 4, "day": 1}},
+        2: {
+            **graph.nodes[2],
+            "seasonYear": 2022,
+            "startDate": {"year": 2022, "month": 10, "day": 1},
+            "endDate": {"year": 2023, "month": 3, "day": 20},
+        },
+    }
+    mapping: AniZipMapping = _mapping({"5": {"seasonNumber": 1, "episodeNumber": 5, "absoluteEpisodeNumber": 5}})
+    target: dict[str, object] = identity_target(replace(graph, nodes=nodes), 1, mapping, 5, now=_NOW)
+    filename: str = f"[Grp] Star Garden ({year}) - 05.mkv"
+    candidate: dict[str, str | None] = {"release": filename[:-4], "path": filename, "filename": filename}
+    assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
+
+
 def test_a_movie_target_carries_no_airing_years() -> None:
     graph: FranchiseGraph = _graph(
         _node(7, "MOVIE", {"romaji": "Hoshi no Niwa Gekijouban"}, year=2022, edges=[_edge("PREQUEL", 1)]),

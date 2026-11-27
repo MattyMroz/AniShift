@@ -130,8 +130,8 @@ _YEAR_END_MONTH: Final[int] = 13
 _RELEASING: Final[str] = "RELEASING"
 """AniList status whose aired count comes from past schedule dates."""
 
-_MOVIE_FORMAT: Final[str] = "MOVIE"
-"""AniList format whose target carries no airing years, because releases name a film by its premiere anywhere."""
+MOVIE_FORMAT: Final[str] = "MOVIE"
+"""AniList format of a film; its H1 target carries no airing years."""
 
 _FINISHED: Final[str] = "FINISHED"
 """AniList status whose aired count is the AniList episode count."""
@@ -506,13 +506,20 @@ def identity_target(  # noqa: PLR0913 - the airing clock and the numbering stay 
         titles.extend(_titles(first_season))
     key: str = str(number)
     episode: JsonObject = (mapping.raw_episodes.get(key) or {}) if numbering else {}
-    own: range = (
-        range(0) if nodes[selected_id]["format"] == _MOVIE_FORMAT else _airing_years(nodes[selected_id], now.year)
-    )
-    seasons: list[range] = [
-        _airing_years(nodes[item], now.year) for item in chain if nodes[item]["format"] in SEASON_FORMATS
+    selected: JsonObject = nodes[selected_id]
+    earlier: list[JsonObject] = [
+        selected,
+        *(
+            nodes[item]
+            for item in chain
+            if nodes[item]["format"] in SEASON_FORMATS and _debut(nodes[item]) <= _debut(selected)
+        ),
     ]
-    years: set[int] = {year for season in (own, *seasons) if season and own and season[0] <= own[-1] for year in season}
+    years: set[int] = (
+        set()
+        if selected["format"] == MOVIE_FORMAT
+        else {year for node in earlier for year in _airing_years(node, now.year)}
+    )
     return {
         "aliases": list(dict.fromkeys(titles)),
         "years": sorted(years),
@@ -890,6 +897,11 @@ def _first_season(chain: Sequence[int], nodes: Mapping[int, JsonObject]) -> Json
         if identifier in nodes and nodes[identifier]["format"] in SEASON_FORMATS
     ]
     return min(seasons, key=_season_order, default=None)
+
+
+def _debut(node: JsonObject) -> tuple[bool, int, int, int]:
+    start: JsonObject = node.get("startDate") or {}
+    return premiere_order(start.get("year") or node.get("seasonYear"), _start_date(start))
 
 
 def _airing_years(node: JsonObject, current: int) -> range:
