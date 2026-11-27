@@ -272,7 +272,7 @@ def test_classify_episode_directories_and_unknown_season_accepted() -> None:
             is IdentityVerdict.MATCH
         )
     assert (
-        _assess(_target_for(year=2024), {"path": "Star Garden 2 (2024)/Star Garden - 05.mkv"}).verdict
+        _assess(_target_for(years=[2024]), {"path": "Star Garden 2 (2024)/Star Garden - 05.mkv"}).verdict
         is IdentityVerdict.INSUFFICIENT
     )
 
@@ -434,7 +434,19 @@ def test_classify_movie_year_collision_and_special_directory_rejected() -> None:
         {"filename": "Star Garden.mkv", "path": "OVA/Star Garden.mkv"},
         {"filename": "Star Garden.mkv", "path": "Specials/Star Garden.mkv"},
     ):
-        _assert_rejected({**target, "year": 2020}, candidate)
+        _assert_rejected({**target, "years": [2020]}, candidate)
+
+
+def test_classify_file_year_of_the_target_outweighs_another_package_year() -> None:
+    target: dict[str, Any] = _target_for("Berserk", episode=1, local_episode=1, absolute=1, years=[2016])
+    candidate: dict[str, Any] = {
+        "release": "[zza] Berserk (1997+Reboot) [1080p.x265][multisubs:eng fre][Vostfr]",
+        "path": "2016/[zza] Berserk (2016) - 01 [1080p.x265].mkv",
+        "filename": "[zza] Berserk (2016) - 01 [1080p.x265].mkv",
+    }
+    assert _assess(target, candidate).verdict is IdentityVerdict.MATCH
+    undated: str = "[zza] Berserk - 01 [1080p.x265].mkv"
+    _assert_rejected(target, {**candidate, "path": undated, "filename": undated})
 
 
 @pytest.mark.parametrize("marker", ["第5话", "第5話", "第5集", "Episode 5", "Ep 5", "E 5", "#5"])
@@ -568,11 +580,11 @@ def test_classify_context_markers_compatible_metadata_retained() -> None:
         "Star Garden S01E05",
     ):
         assert (
-            _assess(_target_for(year=2024), {"filename": "Star Garden - 05.mkv", "release": context}).verdict
+            _assess(_target_for(years=[2024]), {"filename": "Star Garden - 05.mkv", "release": context}).verdict
             is IdentityVerdict.MATCH
         )
     for context in ("Star Garden 2023", "Star Garden 第十期"):
-        _assert_rejected(_target_for(year=2024), {"filename": "Star Garden - 05.mkv", "release": context})
+        _assert_rejected(_target_for(years=[2024]), {"filename": "Star Garden - 05.mkv", "release": context})
 
 
 @pytest.mark.parametrize(

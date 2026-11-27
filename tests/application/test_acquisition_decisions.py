@@ -130,6 +130,11 @@ def test_decision_projection_excludes_unlisted_metadata() -> None:
 
 
 @pytest.mark.unit
+def test_decision_projection_keeps_the_airing_years() -> None:
+    assert acquisition_decisions.target_view({"years": [2023, 2024]}) == {"years": [2023, 2024]}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("field", ["path", "file_name"])
 @pytest.mark.parametrize(
     "value",

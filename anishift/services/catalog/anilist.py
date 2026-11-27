@@ -124,7 +124,7 @@ MAX_COVER_BYTES: Final[int] = 2 * 1024 * 1024
 
 _FRANCHISE_FIELDS: Final[str] = (
     "id type format status episodes countryOfOrigin seasonYear startDate { year month day }"
-    " title { romaji english native }"
+    " endDate { year month day } title { romaji english native }"
 )
 """Entry projection preserved at every franchise depth."""
 

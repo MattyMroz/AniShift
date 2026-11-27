@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 
 _TARGET_FIELDS: Final[tuple[str, ...]] = (
     "aliases",
+    "years",
     "type",
     "local_episode",
     "season",

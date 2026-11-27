@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import gzip
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import cache
 from pathlib import Path
@@ -41,6 +41,7 @@ from anishift.services.torrents import TorrentioSource, parse_release_name
 
 type Document = dict[str, Any]
 type RequestKey = tuple[str, str, str, tuple[tuple[str, str], ...], str | None]
+type Responder = Callable[[httpx.Request], httpx.Response]
 
 REFERENCE: Final[Path] = Path(__file__).resolve().parents[1] / "fixtures" / "acquisition" / "reference"
 BASELINE_PAIRS: Final[int] = 640
@@ -137,8 +138,8 @@ def case_key(document: Document) -> EpisodeKey:
 
 
 @contextmanager
-def _service(document: Document, replay: Replay) -> Iterator[AcquisitionService]:
-    control: RequestControl = controlled(replay)
+def _service(document: Document, respond: Responder) -> Iterator[AcquisitionService]:
+    control: RequestControl = controlled(respond)
     moment: float = captured_at(document).timestamp()
     with httpx.Client(transport=control) as http:
         anizip: AniZipCatalog = AniZipCatalog(http)
@@ -175,11 +176,14 @@ class Manual:
 def manual(case: str, dropped: frozenset[str] = frozenset()) -> Manual:
     document: Document = fixture(case)
     replay: Replay = Replay.of(document, "manual", dropped)
+    return Manual(manual_search(document, replay)[0], tuple(replay.misses))
+
+
+def manual_search(document: Document, respond: Responder) -> tuple[EpisodeOffer, dict[str, object]]:
     key: EpisodeKey = case_key(document)
-    with _service(document, replay) as service, service.episode_requests():
+    with _service(document, respond) as service, service.episode_requests():
         read: ListingRead = service.read_listing(key.anilist_id)
-        offer, _target = service.search_episode(key, SourceSwitches(), read=read)
-    return Manual(offer, tuple(replay.misses))
+        return service.search_episode(key, SourceSwitches(), read=read)
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,16 +216,20 @@ def _decide(search: SubscriptionSearch, due: datetime, history: PolishState, now
 def automatic(case: str) -> Automatic:
     document: Document = fixture(case)
     replay: Replay = Replay.of(document, "subscription")
+    return replace(subscription(document, replay), misses=tuple(replay.misses))
+
+
+def subscription(document: Document, respond: Responder) -> Automatic:
     key: EpisodeKey = case_key(document)
-    record: SubscriptionRecord = SubscriptionRecord("reference", key.anilist_id, case, _SUBSCRIBED_AT, 0)
-    with _service(document, replay) as service:
+    record: SubscriptionRecord = SubscriptionRecord("reference", key.anilist_id, document["case"], _SUBSCRIBED_AT, 0)
+    with _service(document, respond) as service:
         with service.episode_requests():
             read: ListingRead = service.read_listing(key.anilist_id, targets=(key.number,))
         target: SubscriptionTarget = next(
             item for item in merge_listing(record, read, captured_at(document)).targets if item.number == key.number
         )
         if target.state is not TargetState.DUE or target.due_at is None:
-            return Automatic(target, tuple(replay.misses))
+            return Automatic(target, ())
         due: datetime = datetime.fromisoformat(target.due_at)
         with service.episode_requests():
             search: SubscriptionSearch = service.subscription_check(
@@ -235,7 +243,7 @@ def automatic(case: str) -> Automatic:
     after: ChoiceDecision | None = (
         _decide(search, due, history, decision.wait_until) if decision.wait_until is not None else None
     )
-    return Automatic(target, tuple(replay.misses), search, history, decision, after)
+    return Automatic(target, (), search, history, decision, after)
 
 
 def proven_gone(pairs: Mapping[str, Any], case: str) -> frozenset[str]:

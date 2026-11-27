@@ -303,7 +303,7 @@ class _Target:
     episode: int | None
     season: int | None
     absolute: int | None
-    year: int | None
+    years: frozenset[int]
     named_season: int | None
     part: int | None
     count: int | None
@@ -500,11 +500,14 @@ def _target(target: Metadata, evidence: Metadata) -> _Target:
     )
     raw_kind: str = str(target.get("type") or catalog.get("format") or "")
     kind: MediaKind = cast("MediaKind", raw_kind) if raw_kind in MEDIA_KINDS else "UNKNOWN"
-    year: int | None = (
-        _integer(catalog.get("seasonYear") or target.get("year")) or _metadata_year(catalog) or _metadata_year(mappings)
+    years: frozenset[int] = frozenset(
+        value for year in target.get("years") or () if (value := _integer(year)) is not None
     )
-    if kind == "MOVIE":
-        year = year or _metadata_year(mapping)
+    archived: int | None = (
+        _metadata_year(catalog) or _metadata_year(mappings) or (_metadata_year(mapping) if kind == "MOVIE" else None)
+    )
+    if not years and archived is not None:
+        years = frozenset({archived})
     named: list[int] = [number for title in candidates if (number := _marker(title, "season")) is not None]
     parts: list[int] = [number for title in candidates if (number := _marker(title, "part")) is not None]
     other_episodes: tuple[str, ...] = tuple(sorted(set(_names(target.get("other_episode_titles"))) | others))
@@ -519,7 +522,7 @@ def _target(target: Metadata, evidence: Metadata) -> _Target:
         episode=episode,
         season=season,
         absolute=absolute,
-        year=year,
+        years=years,
         named_season=max(named) if named else season,
         part=max(parts) if parts else None,
         count=_integer(target.get("episodes") if target.get("episodes") is not None else catalog.get("episodes")),
@@ -682,13 +685,17 @@ def _similarity(text: str, title: str, threshold: float) -> float:
     return matcher.ratio()
 
 
+def _years(text: str) -> set[int]:
+    return {int(year) for year in re.findall(r"\b(?:19|20)\d{2}\b", text)}
+
+
 def _year(text: str, target: _Target) -> tuple[str, bool]:
-    years: set[int] = {int(year) for year in re.findall(r"\b(?:19|20)\d{2}\b", text)}
+    years: set[int] = _years(text)
     if not years:
         return text, True
     allowed: bool = (
-        years == {target.year}
-        if target.year is not None
+        years <= target.years
+        if target.years
         else (target.kind == "MOVIE" and len(years) == 1 and not years & target.neighbor_years)
     )
     return (re.sub(r"\b(?:19|20)\d{2}\b", " ", text).strip(), True) if allowed else (text, False)
@@ -894,7 +901,7 @@ def _multiple_works(text: str, target: _Target) -> bool:
     return any(re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", name) for title in target.neighbors)
 
 
-def _context_conflict(text: str, target: _Target, *, multiple: bool | None = None) -> str:
+def _context_conflict(text: str, target: _Target, *, multiple: bool | None = None, dated: bool = False) -> str:
     if _normalize(text) in PLEX_FOLDERS:
         return "Package directory explicitly identifies Plex extra material."
     prepared: str = _prepare(text)
@@ -923,7 +930,7 @@ def _context_conflict(text: str, target: _Target, *, multiple: bool | None = Non
         return "Package explicitly identifies a different part/cour."
     if re.search(r"\bfinal season\b", rest) and not any("final" in title for title in target.titles):
         return "Package explicitly identifies a different final season."
-    qualifier_conflict: str = _context_qualifier_conflict(rest, target, anchor=anchor, multiple=multiple)
+    qualifier_conflict: str = _context_qualifier_conflict(rest, target, anchor=anchor, multiple=multiple, dated=dated)
     return (
         qualifier_conflict
         or ("" if multiple else _language_context_conflict(rest, target))
@@ -1060,7 +1067,7 @@ def _language_context_conflict(text: str, target: _Target) -> str:
     return ""
 
 
-def _context_qualifier_conflict(rest: str, target: _Target, *, anchor: str, multiple: bool) -> str:
+def _context_qualifier_conflict(rest: str, target: _Target, *, anchor: str, multiple: bool, dated: bool) -> str:
     episode_rest: str = re.sub(r"^(?:s\d{1,2}\s*e|episode\s*|ep\s*|e)?\d{1,4}(?:v\d+)?\b", "", rest).strip()
     if not multiple and EXTRAS.search(_without_episode_title(episode_rest, target)[0]):
         return "Package explicitly identifies non-episode material."
@@ -1070,7 +1077,8 @@ def _context_qualifier_conflict(rest: str, target: _Target, *, anchor: str, mult
         )
         if target.kind != kind:
             return "Package explicitly identifies a different media type."
-    if not multiple and target.year is not None and not _year(rest, target)[1]:
+    named: set[int] = _years(rest)
+    if not multiple and not dated and target.years and named and not named & target.years:
         return "Package year conflicts with target metadata."
     if anchor and re.fullmatch(r"\d{1,2}", rest) and int(rest) != target.named_season:
         return "Package explicitly identifies a numbered sequel."
@@ -1176,13 +1184,14 @@ def _structural_decision(parsed: _Parsed, target: _Target, candidate: Metadata, 
     if conflict:
         return IdentityAssessment(IdentityVerdict.INSUFFICIENT, conflict)
     unnumbered: bool = target.season is None
+    dated: bool = bool(_years(f"{path} {selected}") & target.years)
     for text in contexts:
         context: str = (
             _episode_directory_context(text, target, parsed) if text in directories and not multiple[release] else text
         )
         if unnumbered:
             context = MAPPED_SEASON.sub(r"\1", context)
-        conflict = _context_conflict(context, target, multiple=multiple[text])
+        conflict = _context_conflict(context, target, multiple=multiple[text], dated=dated)
         if conflict:
             return IdentityAssessment(IdentityVerdict.INSUFFICIENT, conflict)
     if parsed.anchor:

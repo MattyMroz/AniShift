@@ -87,6 +87,7 @@ _TARGET_KEYS: Final[frozenset[str]] = frozenset(
         "other_series",
         "season",
         "type",
+        "years",
     }
 )
 
@@ -264,7 +265,9 @@ def _solo_leveling_s2e1() -> dict[str, object]:
 
 
 def test_identity_target_slime_s1e4_has_exactly_the_corpus_keys_and_mapping_values() -> None:
-    target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4)
+    target: dict[str, object] = identity_target(
+        _fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4, now=_NOW
+    )
     assert set(target) == _TARGET_KEYS
     assert target["aliases"] == [
         "That Time I Got Reincarnated as a Slime",
@@ -293,11 +296,11 @@ def test_identity_target_slime_s1e4_has_exactly_the_corpus_keys_and_mapping_valu
 def test_identity_target_carries_the_anilist_episode_count_of_the_selected_entry() -> None:
     graph: FranchiseGraph = _star_garden_graph()
     nodes: dict[int, Mapping[str, Any]] = {**graph.nodes, 2: {**graph.nodes[2], "episodes": 12}}
-    assert identity_target(replace(graph, nodes=nodes), 2, _mapping({}), 5)["episodes"] == 12
+    assert identity_target(replace(graph, nodes=nodes), 2, _mapping({}), 5, now=_NOW)["episodes"] == 12
 
 
 def test_identity_target_later_season_inherits_first_season_after_own_sorted_titles() -> None:
-    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping({}), 5)
+    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping({}), 5, now=_NOW)
     assert target["aliases"] == [
         "Star Garden Season 2",
         "星の庭 2",
@@ -310,7 +313,7 @@ def test_identity_target_later_season_inherits_first_season_after_own_sorted_tit
 
 
 def test_identity_target_incomplete_chain_keeps_only_own_aliases() -> None:
-    target: dict[str, object] = identity_target(_star_garden_graph(s1_expanded=False), 2, _mapping({}), 5)
+    target: dict[str, object] = identity_target(_star_garden_graph(s1_expanded=False), 2, _mapping({}), 5, now=_NOW)
     assert target["aliases"] == ["Star Garden Season 2", "星の庭 2", "Hoshi no Niwa 2"]
 
 
@@ -319,7 +322,7 @@ def test_identity_target_complete_root_with_incomplete_selected_leaf_keeps_only_
     graph: FranchiseGraph = _graph(root, *_star_garden_graph(s1_expanded=False).nodes.values(), root_id=10)
     assert graph.complete
     assert not franchise_view(graph, 2).complete
-    target: dict[str, object] = identity_target(graph, 2, _mapping({}), 5)
+    target: dict[str, object] = identity_target(graph, 2, _mapping({}), 5, now=_NOW)
     assert target["aliases"] == ["Star Garden Season 2", "星の庭 2", "Hoshi no Niwa 2"]
     other_series: object = target["other_series"]
     assert isinstance(other_series, list)
@@ -332,7 +335,7 @@ def test_identity_target_missing_mapping_entry_leaves_episode_fields_empty() -> 
         "S1": {"seasonNumber": 0, "episodeNumber": 1, "title": {"x-jat": "Extra: Recap `One`"}},
         "2": {"title": {"en": ""}},
     }
-    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 3)
+    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 3, now=_NOW)
     assert (target["season"], target["episode"], target["absolute"], target["episode_title"]) == (
         None,
         None,
@@ -347,8 +350,8 @@ def test_identity_target_without_numbering() -> None:
         "1": {"seasonNumber": 2, "episodeNumber": 1, "absoluteEpisodeNumber": 13, "title": {"en": "First Light"}},
         "2": {"seasonNumber": 2, "episodeNumber": 2, "absoluteEpisodeNumber": 14, "title": {"en": "Second Light"}},
     }
-    numbered: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 1)
-    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 1, numbering=False)
+    numbered: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 1, now=_NOW)
+    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 1, now=_NOW, numbering=False)
     assert numbered["episode_title"] == "First Light"
     assert target == numbered | {"season": None, "episode": None, "absolute": None, "episode_title": None}
     assert target["other_episode_titles"] == ["Second Light"]
@@ -457,7 +460,7 @@ def test_identity_target_special_key_is_excluded_only_for_its_own_number() -> No
         "1": {"seasonNumber": 1, "episodeNumber": 1, "absoluteEpisodeNumber": 13, "title": {"en": "First Light"}},
         "S1": {"title": {"en": "Recap"}},
     }
-    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 1)
+    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 1, now=_NOW)
     assert (target["season"], target["episode"], target["absolute"], target["episode_title"]) == (
         1,
         1,
@@ -472,7 +475,9 @@ def test_identity_target_movie_uses_first_local_episode_and_movie_type() -> None
         _node(7, "MOVIE", {"romaji": "Hoshi no Niwa Gekijouban", "english": "Star Garden Movie"}, year=2022, edges=[]),
         root_id=7,
     )
-    target: dict[str, object] = identity_target(graph, 7, _mapping({"1": {"title": {"en": "Star Garden Movie"}}}), 1)
+    target: dict[str, object] = identity_target(
+        graph, 7, _mapping({"1": {"title": {"en": "Star Garden Movie"}}}), 1, now=_NOW
+    )
     assert (target["type"], target["local_episode"], target["aliases"]) == (
         "MOVIE",
         1,
@@ -483,19 +488,109 @@ def test_identity_target_movie_uses_first_local_episode_and_movie_type() -> None
 def test_identity_target_does_not_depend_on_graph_root_or_root_completeness() -> None:
     graph: FranchiseGraph = _fixture_graph(_SLIME_S1)
     mapping: AniZipMapping = _fixture_mapping(_SLIME_S1)
-    expected: dict[str, object] = identity_target(graph, _SLIME_DIARIES, mapping, 4)
+    expected: dict[str, object] = identity_target(graph, _SLIME_DIARIES, mapping, 4, now=_NOW)
     for root_id in (_SLIME_DIARIES, _SLIME_OAD):
         moved: FranchiseGraph = replace(graph, root_id=root_id, complete=False)
-        assert identity_target(moved, _SLIME_DIARIES, mapping, 4) == expected
+        assert identity_target(moved, _SLIME_DIARIES, mapping, 4, now=_NOW) == expected
 
 
 def test_identity_target_returns_a_new_json_object_per_call() -> None:
     graph: FranchiseGraph = _star_garden_graph()
-    first: dict[str, object] = identity_target(graph, 2, _mapping({}), 5)
+    first: dict[str, object] = identity_target(graph, 2, _mapping({}), 5, now=_NOW)
     aliases: object = first["aliases"]
     assert isinstance(aliases, list)
     aliases.clear()
-    assert identity_target(graph, 2, _mapping({}), 5)["aliases"]
+    assert identity_target(graph, 2, _mapping({}), 5, now=_NOW)["aliases"]
+
+
+@pytest.mark.parametrize(
+    ("selected", "status", "end", "year", "matches"),
+    [
+        (1, "FINISHED", None, 2018, True),
+        (2, "FINISHED", None, 2018, True),
+        (2, "FINISHED", None, 2020, True),
+        (1, "FINISHED", None, 2020, False),
+        (1, "FINISHED", 2019, 2019, True),
+        (1, "FINISHED", None, 2019, False),
+        (1, "FINISHED", 2019, 2024, False),
+        (2, "RELEASING", None, 2026, True),
+        (2, "RELEASING", None, 2027, False),
+    ],
+)
+def test_a_year_in_the_file_name_matches_only_inside_the_airing_years(
+    selected: int, status: str, end: int | None, year: int, *, matches: bool
+) -> None:
+    filename: str = f"Star.Garden.{year}.S0{selected}E05.1080p.CR.WEB-DL.AAC2.0.H.264-AnoZu.mkv"
+    candidate: dict[str, str | None] = {"release": filename[:-4], "path": filename, "filename": filename}
+    target: dict[str, object] = _aired_target(selected, status, end)
+    assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
+
+
+@pytest.mark.parametrize(("years", "matches"), [("2018-2024", True), ("2021-2024", False)])
+def test_a_complete_series_pack_matches_when_its_years_meet_the_airing_years(years: str, *, matches: bool) -> None:
+    candidate: dict[str, str | None] = {
+        "release": f"Star Garden ({years}) Complete Series [BD 1080p]",
+        "path": "Star Garden - 05.mkv",
+        "filename": "Star Garden - 05.mkv",
+    }
+    target: dict[str, object] = _aired_target(1, "FINISHED", 2019)
+    assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
+
+
+@pytest.mark.parametrize(("year", "matches"), [(2018, True), (2019, True), (2024, False)])
+def test_a_season_batch_named_with_its_end_year_matches(year: int, *, matches: bool) -> None:
+    candidate: dict[str, str | None] = {
+        "release": f"[EMBER] Star Garden ({year}) (Season 1) [BDRip] [1080p] (Batch)",
+        "path": "S01E05 [32366A0C].mkv",
+        "filename": "S01E05 [32366A0C].mkv",
+    }
+    target: dict[str, object] = _aired_target(1, "FINISHED", 2019)
+    assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
+
+
+@pytest.mark.parametrize(("year", "matches"), [(2022, True), (2023, False)])
+def test_a_sequel_that_started_later_in_the_same_year_lends_no_years(year: int, *, matches: bool) -> None:
+    graph: FranchiseGraph = _star_garden_graph()
+    nodes: dict[int, Any] = {
+        **graph.nodes,
+        1: {**graph.nodes[1], "seasonYear": 2022, "startDate": {"year": 2022, "month": 4, "day": 1}},
+        2: {
+            **graph.nodes[2],
+            "seasonYear": 2022,
+            "startDate": {"year": 2022, "month": 10, "day": 1},
+            "endDate": {"year": 2023, "month": 3, "day": 20},
+        },
+    }
+    mapping: AniZipMapping = _mapping({"5": {"seasonNumber": 1, "episodeNumber": 5, "absoluteEpisodeNumber": 5}})
+    target: dict[str, object] = identity_target(replace(graph, nodes=nodes), 1, mapping, 5, now=_NOW)
+    filename: str = f"[Grp] Star Garden ({year}) - 05.mkv"
+    candidate: dict[str, str | None] = {"release": filename[:-4], "path": filename, "filename": filename}
+    assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
+
+
+def test_a_movie_target_carries_no_airing_years() -> None:
+    graph: FranchiseGraph = _graph(
+        _node(7, "MOVIE", {"romaji": "Hoshi no Niwa Gekijouban"}, year=2022, edges=[_edge("PREQUEL", 1)]),
+        _node(1, "TV", {"romaji": "Hoshi no Niwa"}, year=2018, edges=[_edge("SEQUEL", 7)]),
+        root_id=7,
+    )
+    target: dict[str, object] = identity_target(graph, 7, _mapping({}), 1, now=_NOW)
+    assert target["years"] == []
+    candidate: dict[str, str | None] = {
+        "release": None,
+        "path": None,
+        "filename": "Hoshi no Niwa Gekijouban (2023).mkv",
+    }
+    assert classify(target, candidate).verdict is IdentityVerdict.MATCH
+
+
+def _aired_target(selected: int, status: str, end: int | None) -> dict[str, object]:
+    graph: FranchiseGraph = _star_garden_graph()
+    ended: dict[str, int | None] = {"year": end, "month": end and 3, "day": end and 22}
+    nodes: dict[int, Any] = {**graph.nodes, selected: {**graph.nodes[selected], "status": status, "endDate": ended}}
+    episode: dict[str, int] = {"seasonNumber": selected, "episodeNumber": 5, "absoluteEpisodeNumber": 5}
+    mapping: AniZipMapping = _mapping({"5": episode})
+    return identity_target(replace(graph, nodes=nodes), selected, mapping, 5, now=_NOW)
 
 
 def test_identity_target_node_outside_view_joins_other_series_and_changes_verdict() -> None:
@@ -508,10 +603,12 @@ def test_identity_target_node_outside_view_joins_other_series_and_changes_verdic
     with_hidden: FranchiseGraph = _graph(selected, leaf, hidden)
     without_hidden: FranchiseGraph = _graph(selected, leaf)
     assert 3 not in {entry.anilist_id for entry in franchise_view(with_hidden, 1).entries}
-    target: dict[str, object] = identity_target(with_hidden, 1, mapping, 5)
+    target: dict[str, object] = identity_target(with_hidden, 1, mapping, 5, now=_NOW)
     assert target["other_series"] == ["Star Garden Moon", "Star Garden Zero"]
     candidate: dict[str, str | None] = {"release": "Star Garden Zero", "path": None, "filename": "Star Garden - 05.mkv"}
-    assert classify(identity_target(without_hidden, 1, mapping, 5), candidate).verdict is IdentityVerdict.MATCH
+    assert (
+        classify(identity_target(without_hidden, 1, mapping, 5, now=_NOW), candidate).verdict is IdentityVerdict.MATCH
+    )
     assert classify(target, candidate).verdict is not IdentityVerdict.MATCH
 
 
@@ -809,7 +906,9 @@ def test_rank_pack_row_carries_the_size_of_its_representative_file_not_of_the_pa
 
 
 def test_rank_torrentio_equivalent_to_conf_model() -> None:
-    target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4)
+    target: dict[str, object] = identity_target(
+        _fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4, now=_NOW
+    )
     streams: list[StreamCandidate] = _fixture_streams("torrentio__kitsu-41024-4.json")
     renamed: int = next(
         index
@@ -1047,7 +1146,7 @@ def test_list_order_unsupported_container_follows_supported_rows_of_its_group() 
 
 def test_rank_candidates_same_hash_files_form_one_row_on_the_matching_file() -> None:
     ranked: tuple[RankedCandidate, ...] = _rank(
-        identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4),
+        identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4, now=_NOW),
         [
             stream
             for stream in _fixture_streams("torrentio__kitsu-41024-4.json")
@@ -1528,7 +1627,9 @@ def test_season_dates_keep_dated_episodes_the_anilist_count_and_whether_anilist_
 
 
 def test_suggestion_slime_s4e23_stream_without_file_is_assessed_on_its_release_name() -> None:
-    target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S4, _fixture_mapping(_SLIME_S4), 23)
+    target: dict[str, object] = identity_target(
+        _fixture_graph(_SLIME_S1), _SLIME_S4, _fixture_mapping(_SLIME_S4), 23, now=_NOW
+    )
     streams: list[StreamCandidate] = _fixture_streams("torrentio__kitsu-49235-23.json")
     shincaps: StreamCandidate = streams[11]
     transport_stream: StreamCandidate = streams[37]
@@ -1546,7 +1647,9 @@ def test_suggestion_slime_s4e23_stream_without_file_is_assessed_on_its_release_n
 
 
 def test_rank_candidates_slime_s1e4_suggests_main_series_and_never_matches_diaries_or_oad() -> None:
-    target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4)
+    target: dict[str, object] = identity_target(
+        _fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4, now=_NOW
+    )
     ranked: tuple[RankedCandidate, ...] = _rank(target, _fixture_streams("torrentio__kitsu-41024-4.json"))
     shown: set[str] = {Path(file).name for candidate in ranked for file in candidate.files}
     assert shown >= _SLIME_NEIGHBOR_FILES
@@ -1576,7 +1679,7 @@ def _diaries_own_releases() -> list[StreamCandidate]:
 
 @pytest.mark.parametrize("root_id", [_SLIME_S1, _SLIME_DIARIES])
 def test_rank_candidates_diaries_target_rejects_main_series_and_keeps_own_releases(root_id: int) -> None:
-    target: dict[str, object] = identity_target(_fixture_graph(root_id), _SLIME_DIARIES, _mapping({}), 4)
+    target: dict[str, object] = identity_target(_fixture_graph(root_id), _SLIME_DIARIES, _mapping({}), 4, now=_NOW)
     own: list[StreamCandidate] = _diaries_own_releases()
     ranked: tuple[RankedCandidate, ...] = _rank(target, [*_fixture_streams("torrentio__kitsu-41024-4.json"), *own])
     matches: list[StreamCandidate] = [
@@ -1600,7 +1703,7 @@ def test_rank_candidates_diaries_target_rejects_main_series_and_keeps_own_releas
 
 @pytest.mark.parametrize("root_id", [_SLIME_S1, _SLIME_DIARIES])
 def test_rank_candidates_diaries_target_never_matches_a_shared_package_by_its_title(root_id: int) -> None:
-    target: dict[str, object] = identity_target(_fixture_graph(root_id), _SLIME_DIARIES, _mapping({}), 4)
+    target: dict[str, object] = identity_target(_fixture_graph(root_id), _SLIME_DIARIES, _mapping({}), 4, now=_NOW)
     package: list[StreamCandidate] = [
         stream
         for stream in _fixture_streams("torrentio__kitsu-41024-4.json")
