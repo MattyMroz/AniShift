@@ -9,10 +9,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Final
 
+from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import CommandRunner, join_clips_command, recording_pcm_command
-from anishift.services.audio.errors import AudioError
+from anishift.services.audio.errors import AudioCancelledError, AudioError
 from anishift.services.audio.probe import probe_audio, probe_decoded_mp3, probe_pcm_wav, validate_decode
 from anishift.services.audio.types import AudioFormat as RenderAudioFormat
+from anishift.services.tts.errors import TtsCancelledError, TtsTimeoutError
 from anishift.services.tts.types import ClipExpectation, ClipSpan, ClipValidation, SplitResult
 from anishift.utils.logger import get_logger
 from anishift.utils.mp3_frames import FrameHeader, iter_frames, splice_times, to_decoded
@@ -173,7 +175,11 @@ class FfmpegClipService:
                 timeout_s=self._recording_timeout_s,
                 cancel=self._cancel,
             )
+        except AudioCancelledError as error:
+            raise TtsCancelledError(context=error.context) from error
         except AudioError as error:
+            if error.context.code is ErrorCode.TIMEOUT:
+                raise _decode_timeout_error() from error
             message: str = "TTS recording decode failed"
             raise RuntimeError(message) from error
         return array("h", destination.read_bytes())
@@ -195,6 +201,15 @@ class FfmpegClipService:
             channels=probe.channels,
             duration_ms=probe.duration_ms,
         )
+
+
+def _decode_timeout_error() -> TtsTimeoutError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_TIMEOUT,
+        message="TTS recording decode timed out",
+        suggestion="Retry the task; close other heavy programs if FFmpeg keeps running out of time.",
+    )
+    return TtsTimeoutError(context=context)
 
 
 def _sample_index(decoded_ms: float) -> int:

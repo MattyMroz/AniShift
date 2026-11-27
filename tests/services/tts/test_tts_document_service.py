@@ -37,12 +37,14 @@ from anishift.services.tts import (
     SynthesisProfile,
     SynthesisRequest,
     SynthesisStatus,
+    TtsCancelledError,
     TtsClipValidationError,
     TtsConfig,
     TtsError,
     TtsInputError,
     TtsQuotaError,
     TtsService,
+    TtsTimeoutError,
     TtsUnsupportedError,
     VoiceInfo,
 )
@@ -197,14 +199,14 @@ class _Splitter:
     def __init__(
         self,
         *,
-        failures: int = 0,
-        invalid_clip_once: bool = False,
+        failures: tuple[Exception, ...] = (),
+        invalid_clip: str = "",
         missing_clip_once: bool = False,
         uncertain_boundaries: int = 0,
     ) -> None:
         self.calls: list[tuple[ClipSpan, ...]] = []
-        self.failures: int = failures
-        self.invalid_clip_once: bool = invalid_clip_once
+        self.failures: list[Exception] = list(failures)
+        self.invalid_clip: str = invalid_clip
         self.missing_clip_once: bool = missing_clip_once
         self.uncertain_boundaries: int = uncertain_boundaries
         self.service: TtsService | None = None
@@ -215,12 +217,9 @@ class _Splitter:
         assert expectation.format is AudioFormat.WAV
         self.calls.append(spans)
         if self.failures:
-            self.failures -= 1
-            message = "cut failed"
-            raise RuntimeError(message)
+            raise self.failures.pop(0)
         for span in spans:
-            span.destination.write_bytes(b"invalid" if self.invalid_clip_once else b"valid")
-        self.invalid_clip_once = False
+            span.destination.write_bytes(b"invalid" if span.request_id == self.invalid_clip else b"valid")
         if self.cancel_after_split and self.service is not None:
             self.service.cancel()
         written: tuple[str, ...] = tuple(span.request_id for span in spans)
@@ -502,8 +501,8 @@ def test_document_batch_without_any_spoken_part_fails_its_lines_without_split(tm
 
 @pytest.mark.parametrize(
     "splitter",
-    [_Splitter(failures=1), _Splitter(missing_clip_once=True), _Splitter(invalid_clip_once=True)],
-    ids=["split_failure", "missing_clip", "invalid_clip"],
+    [_Splitter(failures=(RuntimeError("cut failed"),)), _Splitter(missing_clip_once=True)],
+    ids=["split_failure", "missing_clip"],
 )
 def test_document_batch_recording_that_cannot_be_cut_fails_its_lines_without_recording_again(
     tmp_path: Path, splitter: _Splitter
@@ -517,6 +516,39 @@ def test_document_batch_recording_that_cannot_be_cut_fails_its_lines_without_rec
     assert len(engine.documents) == 1
     assert len(splitter.calls) == 1
     assert not any(span.destination.exists() for span in splitter.calls[0])
+
+
+def test_document_batch_invalid_clip_fails_only_its_line_without_recording_again(tmp_path: Path) -> None:
+    engine = _DocumentEngine()
+
+    (result,) = _run(tmp_path, engine, _Splitter(invalid_clip="line-0"), _batch("Raz dwa.", "Trzy cztery."))
+
+    assert _statuses(result) == [SynthesisStatus.FAILED, SynthesisStatus.SYNTHESIZED]
+    assert result.requests[0].error_code == "TTS_CLIP_INVALID"
+    assert result.requests[1].speech_clip is not None
+    assert result.requests[1].speech_clip.path.read_bytes() == b"valid"
+    assert len(engine.documents) == 1
+
+
+def test_document_batch_split_cancelled_by_decoder_ends_as_cancellation(tmp_path: Path) -> None:
+    engine = _DocumentEngine()
+    splitter = _Splitter(failures=(TtsCancelledError("decode cancelled"),))
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
+
+    assert [item.error_code for item in result.requests] == ["CANCELLED", "CANCELLED"]
+    assert len(engine.documents) == 1
+
+
+def test_document_batch_split_decode_timeout_records_the_document_again(tmp_path: Path) -> None:
+    engine = _DocumentEngine()
+    splitter = _Splitter(failures=(TtsTimeoutError("decode timed out"),))
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert len(engine.documents) == 2
+    assert len(splitter.calls) == 2
 
 
 def test_document_batch_uncertain_boundaries_commits_every_line(tmp_path: Path) -> None:

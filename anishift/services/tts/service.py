@@ -454,7 +454,8 @@ class _DocumentAttempt:
                 self._expectation,
             )
             if receipt is None:
-                raise _split_error()
+                logger.warning("TTS document line clip is not valid audio; only its line fails")
+                continue
             receipts[span.request_id] = receipt
         self._receipts = receipts
         self._incomplete = incomplete

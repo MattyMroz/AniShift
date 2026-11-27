@@ -14,7 +14,7 @@ from anishift.application.tts_clips import FfmpegClipService
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.binaries import Binary, require_binary, resolve_binary
 from anishift.services.audio.commands import CommandResult, SubprocessRunner
-from anishift.services.audio.errors import AudioProcessError
+from anishift.services.audio.errors import AudioCancelledError, AudioError, AudioProcessError
 from anishift.services.tts import (
     AudioFormat,
     AvailabilityProbeKind,
@@ -39,8 +39,11 @@ from anishift.services.tts import (
     SpeechRetryProgress,
     SynthesisProfile,
     SynthesisRequest,
+    TtsCancelledError,
     TtsConfig,
+    TtsError,
     TtsService,
+    TtsTimeoutError,
     TtsUnsupportedError,
     VoiceInfo,
 )
@@ -63,6 +66,11 @@ WAV: Final[ClipExpectation] = ClipExpectation(AudioFormat.WAV)
 
 
 class _FailingRunner:
+    def __init__(self, error: AudioError | None = None) -> None:
+        self.error: AudioError = error or AudioProcessError(
+            context=ErrorContext(code=ErrorCode.AUDIO_FAILED, message="decode failed")
+        )
+
     def run(
         self,
         command: tuple[str, ...],
@@ -73,7 +81,7 @@ class _FailingRunner:
         on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
         del command, operation, timeout_s, cancel, on_stdout_line
-        raise AudioProcessError(context=ErrorContext(code=ErrorCode.AUDIO_FAILED, message="decode failed"))
+        raise self.error
 
 
 class _Progress:
@@ -274,6 +282,25 @@ def test_split_clip_decode_failure_raises_runtime_error(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="decode"):
         _clips(runner=_FailingRunner()).split_clip(source, _spans(tmp_path), WAV)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "raised"),
+    [
+        (AudioCancelledError(context=ErrorContext(code=ErrorCode.CANCELLED, message="cancelled")), TtsCancelledError),
+        (AudioProcessError(context=ErrorContext(code=ErrorCode.TIMEOUT, message="timed out")), TtsTimeoutError),
+    ],
+    ids=["cancelled", "timeout"],
+)
+def test_split_clip_decode_cancel_or_timeout_raises_its_tts_error(
+    tmp_path: Path, error: AudioError, raised: type[TtsError]
+) -> None:
+    source: Path = tmp_path / "recording.mp3"
+    source.write_bytes(bytes.fromhex("fffb90c4") + bytes(413) + bytes.fromhex("fffb90c4") + bytes(413))
+
+    with pytest.raises(raised):
+        _clips(runner=_FailingRunner(error)).split_clip(source, _spans(tmp_path), WAV)
 
 
 @pytest.mark.integration
