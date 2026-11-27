@@ -8881,9 +8881,12 @@ class AutomationOwner:
             return
         self._pruning_covers = True
         self._active_io += 1
-        self._pool.submit(self._remove_covers, acquisition, directory, entries)
+        stale: frozenset[int] = frozenset(self._covers - entries)
+        self._pool.submit(self._remove_covers, acquisition, directory, entries, stale)
 
-    def _remove_covers(self, acquisition: AcquisitionService, directory: Path, entries: frozenset[int]) -> None:
+    def _remove_covers(
+        self, acquisition: AcquisitionService, directory: Path, entries: frozenset[int], stale: frozenset[int]
+    ) -> None:
         removed: frozenset[int] = frozenset()
         failed: int = 0
         try:
@@ -8893,14 +8896,16 @@ class AutomationOwner:
             logger.warning("Library covers were not pruned", error_class=type(error).__name__)
         finally:
             logger.info("Library covers pruned", kept=len(entries), removed=len(removed), failed=failed)
-            self._queue.put(lambda: self._record_pruned(entries, removed, failed))
+            self._queue.put(lambda: self._record_pruned(entries, stale, removed, failed))
 
-    def _record_pruned(self, entries: frozenset[int], removed: frozenset[int], failed: int) -> None:
+    def _record_pruned(
+        self, entries: frozenset[int], stale: frozenset[int], removed: frozenset[int], failed: int
+    ) -> None:
         self._active_io -= 1
         self._pruning_covers = False
         self._covers_pruned = not failed
-        gone: frozenset[int] = removed if failed else removed | (self._covers - entries)
-        self._covers_requested -= removed
+        gone: frozenset[int] = removed if failed else removed | stale
+        self._covers_requested -= gone
         if removed or gone & self._covers:
             self._covers -= gone
             self._publish_state()

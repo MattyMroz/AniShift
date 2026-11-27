@@ -1057,6 +1057,66 @@ def test_owner_prunes_once_a_cover_already_gone_from_disk(tmp_path: Path, monkey
 
 
 @pytest.mark.integration
+def test_a_cover_fetched_while_pruning_stays_shown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored_cover_files(covers)
+    prune = AcquisitionService.prune_covers
+    gate: threading.Event = threading.Event()
+    entered: threading.Event = threading.Event()
+    armed: list[bool] = [False]
+
+    def held(directory: Path, keep: frozenset[int]) -> tuple[frozenset[int], int]:
+        result: tuple[frozenset[int], int] = prune(directory, keep)
+        if armed[0]:
+            armed[0] = False
+            entered.set()
+            assert gate.wait(_TIMEOUT_S)
+        return result
+
+    monkeypatch.setattr(AcquisitionService, "prune_covers", staticmethod(held))
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        _cached(owner, [_S1, _SLIME_OAD])
+        armed[0] = True
+        removal: dict[str, object] = {"subscription_id": f"subscription-{_SLIME_OAD}"}
+        assert owner.handle(_request("subscription_remove", removal, command_id="remove-oad")).ok
+        assert entered.wait(_TIMEOUT_S)
+        owner._on_owner(lambda: owner._want_covers({_SLIME_S2: _COVER_C}))
+        _cached(owner, [_S1, _SLIME_OAD, _SLIME_S2])
+        gate.set()
+        final: list[int] = _cached(owner, [_S1, _SLIME_S2])
+    finally:
+        gate.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert final == [_S1, _SLIME_S2]
+    assert (covers / f"{_SLIME_S2}.jpg").exists()
+
+
+@pytest.mark.integration
+def test_a_cover_gone_from_disk_is_fetched_when_its_title_returns(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored_cover_files(covers)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        _cached(owner, [_S1, _SLIME_OAD])
+        (covers / f"{_SLIME_OAD}.jpg").unlink()
+        removal: dict[str, object] = {"subscription_id": f"subscription-{_SLIME_OAD}"}
+        assert owner.handle(_request("subscription_remove", removal, command_id="remove-oad")).ok
+        _cached(owner, [_S1])
+        owner._on_owner(lambda: owner._want_covers({_SLIME_OAD: _COVER_B}))
+        back: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert back == [_S1, _SLIME_OAD]
+
+
+@pytest.mark.integration
 def test_owner_keeps_every_cover_before_the_first_full_inventory(tmp_path: Path) -> None:
     titles: _TitleCatalog = _slime_titles()
     owner, covers = _cover_owner(tmp_path, titles)
