@@ -13,7 +13,7 @@ from typing import Final
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from anishift.cli.interactive.native_image import NativeImage, encode_sixel
-from anishift.paths import cover_name, covers_dir
+from anishift.paths import COVER_PAYLOADS, cover_name, cover_payload_name, covers_dir
 from anishift.utils.logger import get_logger
 
 __all__ = ["COVER_ASPECT", "COVER_ROWS", "CROP_TOLERANCE", "CoverImages", "cover_payload", "filled_cover"]
@@ -42,12 +42,6 @@ _BACKDROP_BLUR: Final[float] = 0.06
 
 _BACKDROP_BRIGHTNESS: Final[float] = 0.6
 """Brightness factor of the blurred backdrop, dim enough for the whole cover to stand out."""
-
-_STORE_NAME: Final[str] = "sixel"
-"""Directory beside the cover images holding their encoded SIXEL payloads."""
-
-_ENCODING_VERSION: Final[int] = 1
-"""Version of the cover encoding in every stored payload name; a new version leaves the old payloads unread."""
 
 _SIXEL_START: Final[str] = "\x1bP"
 """Device control string opening every SIXEL payload."""
@@ -185,8 +179,7 @@ class CoverImages:
             self._worker = None
 
     def _stored(self, anilist_id: int, cell: tuple[int, int]) -> Path:
-        name: str = f"{anilist_id}-{cell[0]}x{cell[1]}-v{_ENCODING_VERSION}.six"
-        return self._directory() / _STORE_NAME / name
+        return self._directory() / COVER_PAYLOADS / cover_payload_name(anilist_id, cell)
 
     def _read(self, anilist_id: int, cell: tuple[int, int]) -> str | None:
         stored: Path = self._stored(anilist_id, cell)

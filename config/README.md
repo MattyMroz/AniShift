@@ -21,7 +21,8 @@ the code:
   one `<anilist_id>.jpg` per entry, written by the resident and shown in the panel.
   Deleting a file only makes the resident download it again. `covers/sixel/` keeps the panel's encoded SIXEL
   payloads of those images, one per cover, cell size and encoding version; deleting them only makes the panel
-  encode them again.
+  encode them again. The resident deletes the cover of a title no longer in the Library, processing,
+  subscriptions or this session's search results, and payloads without their cover or of an older encoding.
 
 `ANISHIFT_CONFIG_DIR` replaces this directory entirely, so a test or a second
 account can keep its own preferences and watch state elsewhere.

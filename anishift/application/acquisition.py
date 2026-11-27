@@ -960,6 +960,13 @@ class AcquisitionService:
 
         return stored_covers(directory)
 
+    @staticmethod
+    def prune_covers(directory: Path, kept: frozenset[int]) -> tuple[frozenset[int], int]:
+        """Delete the cached covers outside *kept* and stale payloads; return deleted IDs and failures."""
+        from anishift.services.catalog.covers import prune_covers  # noqa: PLC0415
+
+        return prune_covers(directory, kept)
+
     def _franchise_graph(self, anilist_id: int, cancel: CancellationToken | None = None) -> FranchiseGraph:
         now: float = self._clock()
         with self._memory_lock:

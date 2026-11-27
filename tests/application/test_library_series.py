@@ -54,6 +54,7 @@ from anishift.application.library import (
 from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlResponse
 from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
 from anishift.services.http_requests import RequestControl
@@ -963,6 +964,7 @@ def test_searched_titles_get_covers_from_the_search_addresses(tmp_path: Path) ->
     titles.files = {searched: _png()}
     thread: threading.Thread = _serving(owner)
     try:
+        assert owner.handle(_request("library_refresh")).ok
         assert owner.handle(_request("acquisition", {"operation": "titles", "query": "searched"})).ok
         cached: list[int] = _cached(owner, [7, _S1, _SLIME_OAD])
     finally:
@@ -971,6 +973,61 @@ def test_searched_titles_get_covers_from_the_search_addresses(tmp_path: Path) ->
     assert cached == [7, _S1, _SLIME_OAD]
     assert titles.downloads == [searched]
     assert [7] not in titles.cover_reads
+
+
+def _stored_cover_files(covers: Path) -> None:
+    (covers / "sixel").mkdir(parents=True)
+    for anilist_id in (_S1, _SLIME_OAD, 999):
+        (covers / f"{anilist_id}.jpg").write_bytes(_png())
+        (covers / "sixel" / f"{anilist_id}-10x20-v1.six").write_bytes(b"x")
+    (covers / "notes.txt").write_bytes(b"x")
+
+
+def _cover_names(covers: Path) -> list[str]:
+    return sorted(item.relative_to(covers).as_posix() for item in covers.rglob("*") if item.is_file())
+
+
+@pytest.mark.integration
+def test_owner_prunes_covers_of_titles_gone_from_library_and_subscriptions(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored_cover_files(covers)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        first: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+        deadline: float = time.monotonic() + _TIMEOUT_S
+        while time.monotonic() < deadline and (covers / "999.jpg").exists():
+            time.sleep(0.01)
+        removal: dict[str, object] = {"subscription_id": f"subscription-{_SLIME_OAD}"}
+        assert owner.handle(_request("subscription_remove", removal, command_id="remove-oad")).ok
+        second: list[int] = _cached(owner, [_S1])
+        deadline = time.monotonic() + _TIMEOUT_S
+        while time.monotonic() < deadline and (covers / f"{_SLIME_OAD}.jpg").exists():
+            time.sleep(0.01)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (first, second) == ([_S1, _SLIME_OAD], [_S1])
+    assert _cover_names(covers) == [f"{_S1}.jpg", "notes.txt", f"sixel/{_S1}-10x20-v1.six"]
+    assert titles.downloads == []
+
+
+@pytest.mark.integration
+def test_owner_keeps_every_cover_before_the_first_full_inventory(tmp_path: Path) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored_cover_files(covers)
+    before: list[str] = _cover_names(covers)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("acquisition", {"operation": "titles", "query": "searched"})).ok
+        _cached(owner, [_SLIME_OAD])
+        owner._on_owner(lambda: None)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert _cover_names(covers) == before
 
 
 class _SlowTitles(_TitleCatalog):

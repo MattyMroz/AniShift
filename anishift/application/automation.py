@@ -1001,6 +1001,8 @@ class AutomationOwner:
         self._covers: set[int] = set()
         self._covers_requested: set[int] = set()
         self._cover_urls: dict[int, str] = {}
+        self._covers_pruned: bool = False
+        self._pruning_covers: bool = False
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
@@ -5067,7 +5069,7 @@ class AutomationOwner:
 
     def _want_covers(self, urls: Mapping[int, str]) -> None:
         self._cover_urls.update(urls)
-        self._request_covers()
+        self._request_covers(self._cover_entries())
 
     def _franchise_read(self, request: ControlRequest, acquisition: AcquisitionService) -> ControlResponse:
         token: EventCancellationToken = EventCancellationToken()
@@ -8677,7 +8679,9 @@ class AutomationOwner:
     def _publish_state(self) -> None:
         self._request_recognition()
         self._request_series()
-        self._request_covers()
+        entries: frozenset[int] = self._cover_entries()
+        self._request_covers(entries)
+        self._prune_covers(entries)
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
     def _project_ready(self, groups: tuple[SourceGroup, ...]) -> None:
@@ -8780,14 +8784,23 @@ class AutomationOwner:
     def _known_entries(self) -> frozenset[int]:
         return library_entries(self._state) | {value for value in self._recognized.values() if value is not None}
 
-    def _request_covers(self) -> None:
+    def _cover_entries(self) -> frozenset[int]:
+        """Return the entries the panel can show: Library sets, processing rows, subscriptions and search results."""
+        library: set[int] = {
+            item.anilist_id for item in self._named(self._ready_library) if item.anilist_id is not None
+        }
+        processing: set[int] = {
+            entry for row in self._processing_materials() if isinstance(entry := row.get("anilist_id"), int)
+        }
+        followed: set[int] = {item.anilist_id for item in self._state.subscriptions if item.anilist_id is not None}
+        return frozenset(library | processing | followed | self._cover_urls.keys())
+
+    def _request_covers(self, entries: frozenset[int]) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         directory: Path | None = self._cover_directory
         if acquisition is None or directory is None or self._shutting_down:
             return
-        wanted: frozenset[int] = (
-            (self._known_entries() | self._cover_urls.keys()) - self._covers - self._covers_requested
-        )
+        wanted: frozenset[int] = entries - self._covers - self._covers_requested
         if not wanted:
             return
         self._covers_requested.update(wanted)
@@ -8850,6 +8863,38 @@ class AutomationOwner:
     def _add_covers(self, stored: frozenset[int]) -> None:
         if stored - self._covers:
             self._covers |= stored
+            self._publish_state()
+
+    def _prune_covers(self, entries: frozenset[int]) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        directory: Path | None = self._cover_directory
+        if acquisition is None or directory is None or self._shutting_down or self._pruning_covers:
+            return
+        if self._library is None or (self._covers_pruned and self._covers <= entries):
+            return
+        self._pruning_covers = True
+        self._active_io += 1
+        self._pool.submit(self._remove_covers, acquisition, directory, entries)
+
+    def _remove_covers(self, acquisition: AcquisitionService, directory: Path, entries: frozenset[int]) -> None:
+        removed: frozenset[int] = frozenset()
+        failed: int = 0
+        try:
+            removed, failed = acquisition.prune_covers(directory, entries)
+        except OSError as error:
+            failed = 1
+            logger.warning("Library covers were not pruned", error_class=type(error).__name__)
+        finally:
+            logger.info("Library covers pruned", kept=len(entries), removed=len(removed), failed=failed)
+            self._queue.put(lambda: self._record_pruned(removed, failed))
+
+    def _record_pruned(self, removed: frozenset[int], failed: int) -> None:
+        self._active_io -= 1
+        self._pruning_covers = False
+        self._covers_pruned = not failed
+        self._covers -= removed
+        self._covers_requested -= removed
+        if removed:
             self._publish_state()
 
     def _request_series(self) -> None:
