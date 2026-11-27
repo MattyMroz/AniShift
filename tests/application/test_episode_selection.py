@@ -509,6 +509,7 @@ def test_identity_target_returns_a_new_json_object_per_call() -> None:
         (1, "FINISHED", None, 2018, True),
         (2, "FINISHED", None, 2018, True),
         (2, "FINISHED", None, 2020, True),
+        (1, "FINISHED", None, 2020, True),
         (1, "FINISHED", 2019, 2019, True),
         (1, "FINISHED", None, 2019, False),
         (1, "FINISHED", 2019, 2024, False),
@@ -525,7 +526,7 @@ def test_a_year_in_the_file_name_matches_only_inside_the_airing_years(
     assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
 
 
-@pytest.mark.parametrize(("years", "matches"), [("2018-2024", True), ("2020-2024", False)])
+@pytest.mark.parametrize(("years", "matches"), [("2018-2024", True), ("2021-2024", False)])
 def test_a_complete_series_pack_matches_when_its_years_meet_the_airing_years(years: str, *, matches: bool) -> None:
     candidate: dict[str, str | None] = {
         "release": f"Star Garden ({years}) Complete Series [BD 1080p]",

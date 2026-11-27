@@ -504,8 +504,9 @@ def identity_target(  # noqa: PLR0913 - the airing clock and the numbering stay 
     key: str = str(number)
     episode: JsonObject = (mapping.raw_episodes.get(key) or {}) if numbering else {}
     years: set[int] = set(_airing_years(nodes[selected_id], now.year))
-    if first_season is not None:
-        years.update(_airing_years(first_season, now.year))
+    for identifier in chain:
+        if identifier in nodes and nodes[identifier]["format"] in SEASON_FORMATS:
+            years.update(_airing_years(nodes[identifier], now.year))
     return {
         "aliases": list(dict.fromkeys(titles)),
         "years": sorted(years),
