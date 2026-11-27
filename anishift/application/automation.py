@@ -5069,7 +5069,7 @@ class AutomationOwner:
 
     def _want_covers(self, urls: Mapping[int, str]) -> None:
         self._cover_urls.update(urls)
-        self._request_covers(self._cover_entries())
+        self._request_covers()
 
     def _franchise_read(self, request: ControlRequest, acquisition: AcquisitionService) -> ControlResponse:
         token: EventCancellationToken = EventCancellationToken()
@@ -8679,9 +8679,8 @@ class AutomationOwner:
     def _publish_state(self) -> None:
         self._request_recognition()
         self._request_series()
-        entries: frozenset[int] = self._cover_entries()
-        self._request_covers(entries)
-        self._prune_covers(entries)
+        self._request_covers()
+        self._prune_covers()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
     def _project_ready(self, groups: tuple[SourceGroup, ...]) -> None:
@@ -8795,11 +8794,16 @@ class AutomationOwner:
         followed: set[int] = {item.anilist_id for item in self._state.subscriptions if item.anilist_id is not None}
         return frozenset(library | processing | followed | self._cover_urls.keys())
 
-    def _request_covers(self, entries: frozenset[int]) -> None:
+    def _request_covers(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         directory: Path | None = self._cover_directory
         if acquisition is None or directory is None or self._shutting_down:
             return
+        entries: frozenset[int] = (
+            frozenset(self._known_entries() | self._cover_urls.keys())
+            if self._library is None
+            else self._cover_entries()
+        )
         wanted: frozenset[int] = entries - self._covers - self._covers_requested
         if not wanted:
             return
@@ -8815,8 +8819,8 @@ class AutomationOwner:
         failures: dict[str, int] = {}
         skipped: int = 0
         try:
-            stored |= acquisition.stored_covers(directory) & set(anilist_ids)
-            cached: frozenset[int] = frozenset(stored)
+            cached: frozenset[int] = acquisition.stored_covers(directory)
+            stored |= cached & set(anilist_ids)
             self._queue.put(lambda: self._add_covers(cached))
             missing: list[int] = [anilist_id for anilist_id in anilist_ids if anilist_id not in stored]
             urls: dict[int, str] = {item: known[item] for item in missing if item in known}
@@ -8865,12 +8869,15 @@ class AutomationOwner:
             self._covers |= stored
             self._publish_state()
 
-    def _prune_covers(self, entries: frozenset[int]) -> None:
+    def _prune_covers(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         directory: Path | None = self._cover_directory
         if acquisition is None or directory is None or self._shutting_down or self._pruning_covers:
             return
-        if self._library is None or (self._covers_pruned and self._covers <= entries):
+        if self._library is None:
+            return
+        entries: frozenset[int] = self._cover_entries()
+        if self._covers_pruned and self._covers <= entries:
             return
         self._pruning_covers = True
         self._active_io += 1

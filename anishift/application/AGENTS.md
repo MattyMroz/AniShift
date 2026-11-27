@@ -117,8 +117,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   (`RequestControl.cooling`). Tytuł spoza budżetu albo z nieudanego zapytania nie wraca w wyniku i niczego nie
   zapisuje; owner szuka go w następnym wyszukiwaniu, najwcześniej `RECOGNITION_RETRY_S` po poprzednim. Serie i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
   puli I/O do katalogu podanego przez `run_resident(cover_dir=...)`; bez katalogu (testy) okładek nie ma. Snapshot
-  `covers` to ID z plikiem w cache. Okładki trzyma i pobiera owner tylko dla `_cover_entries` (zestawy Biblioteki,
-  wiersze Przetwarzania, subskrypcje, wyniki wyszukiwania sesji), a po pierwszej pełnej inwentaryzacji (`_library`)
+  `covers` to ID z plikiem w cache. Przed pierwszą pełną inwentaryzacją (`_library`) owner publikuje każdą okładkę
+  z dysku i pobiera brakujące według `_known_entries`; potem pobiera i trzyma tylko `_cover_entries` (zestawy Biblioteki,
+  wiersze Przetwarzania, subskrypcje, wyniki wyszukiwania sesji), a po tej inwentaryzacji
   i przy każdym tytule, który z nich wypadł, jedyny sprząta `config/covers/` w puli I/O (`prune_covers`: jpg spoza
   zbioru, `.six` bez jpg albo innej `COVER_ENCODING`, ich `.tmp`; plik, którego nie dało się usunąć, czeka na następne sprzątanie).
   Testy: `test_library_series.py`.

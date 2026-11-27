@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -964,7 +964,6 @@ def test_searched_titles_get_covers_from_the_search_addresses(tmp_path: Path) ->
     titles.files = {searched: _png()}
     thread: threading.Thread = _serving(owner)
     try:
-        assert owner.handle(_request("library_refresh")).ok
         assert owner.handle(_request("acquisition", {"operation": "titles", "query": "searched"})).ok
         cached: list[int] = _cached(owner, [7, _S1, _SLIME_OAD])
     finally:
@@ -1022,12 +1021,42 @@ def test_owner_keeps_every_cover_before_the_first_full_inventory(tmp_path: Path)
     thread: threading.Thread = _serving(owner)
     try:
         assert owner.handle(_request("acquisition", {"operation": "titles", "query": "searched"})).ok
-        _cached(owner, [_SLIME_OAD])
+        _cached(owner, [999, _S1, _SLIME_OAD])
         owner._on_owner(lambda: None)
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
     assert _cover_names(covers) == before
+
+
+@pytest.mark.integration
+def test_owner_shows_every_stored_cover_while_the_first_inventory_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored_cover_files(covers)
+    release: threading.Event = threading.Event()
+    inspect: Callable[..., None] = owner._inspect_library
+
+    def held(*arguments: object) -> None:
+        assert release.wait(_TIMEOUT_S)
+        inspect(*arguments)
+
+    monkeypatch.setattr(owner, "_inspect_library", held)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        early: list[int] = _cached(owner, [999, _S1, _SLIME_OAD])
+        loading: object = owner.handle(_request("status")).result["library_loading"]
+        release.set()
+        late: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert (early, loading, late) == ([999, _S1, _SLIME_OAD], True, [_S1, _SLIME_OAD])
+    assert titles.downloads == []
 
 
 class _SlowTitles(_TitleCatalog):
