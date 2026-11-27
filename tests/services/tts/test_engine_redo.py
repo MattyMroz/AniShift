@@ -508,20 +508,18 @@ def test_page_call_hanging_into_the_deadline_keeps_the_speech_and_reads_only_the
     assert result.incomplete == ()
 
 
-def test_redo_failing_to_join_with_any_error_keeps_the_recording(
+def test_redo_join_failing_on_a_bug_raises_it_instead_of_leaving_the_redo_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken(recording: Path) -> array[int]:
-        message: str = f"no frames in {recording.name}"
+        message: str = f"bug while decoding {recording.name}"
         raise ValueError(message)
 
     monkeypatch.setattr(redo, "mono_pcm", broken)
     site = Site(script=drop_words(2, "trzy "))
 
-    result = record(tmp_path, site, Redo.LINE)
-
-    assert result.incomplete == ("part-2",)
-    assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+    with pytest.raises(ValueError, match="bug while decoding"):
+        record(tmp_path, site, Redo.LINE)
 
 
 def test_cancel_during_a_redo_stops_and_keeps_every_take(tmp_path: Path) -> None:

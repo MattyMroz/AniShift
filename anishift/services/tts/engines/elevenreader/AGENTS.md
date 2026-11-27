@@ -42,8 +42,9 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
   jako `incomplete_cause`, żeby niepełne części dostały jego kod i podpowiedź. Nigdy nie nagrywa się całego dokumentu od nowa po
   odebraniu dźwięku.
 - Sklejanie (`splice`) tnie w ciszy wykrytej w dźwięku (`best_pause` między częścią przed i po szwie, w niej
-  `silent_cut`), a nie według czasów serwera. Błąd dekodowania albo brak pauzy zostawia nagranie bez wklejenia, a
-  części bloku trafiają do `incomplete`. Dogranie zaczyna się tyle przed pierwszą głośną ramką (`NOISE_DBFS`), ile pauzy
+  `silent_cut`), a nie według czasów serwera. Błąd odczytu lub dekodowania (`OSError`, także z `mono_pcm`) albo
+  brak pauzy zostawia nagranie bez wklejenia, a części bloku trafiają do `incomplete`; każdy inny wyjątek to błąd
+  w kodzie i wychodzi na zewnątrz. Dogranie zaczyna się tyle przed pierwszą głośną ramką (`NOISE_DBFS`), ile pauzy
   ucięto po stronie nagrania głównego, i kończy tyle po ostatniej; blok na początku albo końcu dokumentu bierze
   dogranie od jego początku albo do końca. Brak pauzy przy szwie: blok nie jest wklejany. Tekst i czasy znaków
   wynikowego nagrania powstają z odcinków obu nagrań przesuniętych na nową oś.
