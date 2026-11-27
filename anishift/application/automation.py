@@ -154,7 +154,7 @@ from anishift.application.episode_selection import (
 )
 from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
 from anishift.application.history import HistoryEvent, HistoryJournal, HistoryKind
-from anishift.application.inspection import InspectedWorkspace
+from anishift.application.inspection import InspectedWorkspace, workspace_page
 from anishift.application.intents import (
     AutoPreset,
     ExternalAudioRole,
@@ -1805,7 +1805,7 @@ class AutomationOwner:
             case "release":
                 return self._release(request)
             case "discover":
-                return ControlResponse.succeeded(encode_view(self._recorded_library(self._service.discover())))
+                return self._discover_page(request)
             case (
                 "library_refresh"
                 | "library_open"
@@ -3559,6 +3559,13 @@ class AutomationOwner:
             workspace,
             groups=tuple(_group_with_target(group, recorded.get(group.group_id)) for group in workspace.groups),
         )
+
+    def _discover_page(self, request: ControlRequest) -> ControlResponse:
+        offset: object = request.payload.get("offset")
+        if type(offset) is not int or offset < 0:
+            return _invalid("A discovery page needs a non-negative integer `offset`")
+        workspace: InspectedWorkspace = self._recorded_library(self._service.discover())
+        return ControlResponse.succeeded(encode_view(workspace_page(workspace, offset)))
 
     def _recovered_intents(self, intents: tuple[GroupIntent, ...]) -> tuple[GroupIntent, ...]:
         """Restore the target of a finished set from its record, because ``ready`` names no target of its own."""

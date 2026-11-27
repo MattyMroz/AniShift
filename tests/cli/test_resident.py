@@ -59,6 +59,48 @@ _CLOSE_REFUSED: Final[str] = "The private torrent client did not finish shutting
 _WATCH_STUCK: Final[str] = "The workspace watcher did not finish closing"
 
 
+def _paged_discovery(tmp_path: Path, revisions: Iterator[str]) -> tuple[ResidentSession, ControlServer, list[int]]:
+    offsets: list[int] = []
+
+    def handle(request: ControlRequest) -> ControlResponse:
+        offset: int = cast("int", request.payload["offset"])
+        offsets.append(offset)
+        page: dict[str, object] = {"groups": [], "warnings": [], "next_offset": None if offset else 1}
+        return ControlResponse.succeeded({**page, "revision": next(revisions)})
+
+    endpoint: str = control_endpoint(tmp_path)
+    server: ControlServer = ControlServer(endpoint, b"discover-test", handle)
+    return ResidentSession(tmp_path, lambda: ControlClient(endpoint, b"discover-test")), server, offsets
+
+
+@pytest.mark.integration
+def test_discover_rereads_pages_that_came_from_different_revisions(tmp_path: Path) -> None:
+    session, server, offsets = _paged_discovery(tmp_path, iter(("a", "b", "c", "c")))
+    try:
+        workspace: InspectedWorkspace = session.discover()
+    finally:
+        session.close()
+        server.close()
+
+    assert workspace.groups == ()
+    assert offsets == [0, 1, 0, 1]
+
+
+@pytest.mark.integration
+def test_discover_refuses_a_workspace_that_changes_between_every_page(tmp_path: Path) -> None:
+    session, server, offsets = _paged_discovery(tmp_path, (str(number) for number in range(100)))
+    try:
+        with pytest.raises(ControlError) as refusal:
+            session.discover()
+    finally:
+        session.close()
+        server.close()
+
+    assert refusal.value.code is ControlErrorCode.REFUSED
+    assert not refusal.value.connection_lost
+    assert offsets == [0, 1, 0, 1, 0, 1]
+
+
 @pytest.mark.integration
 def test_offer_start_releases_catalog_lock(tmp_path: Path) -> None:
     endpoint: str = control_endpoint(tmp_path)

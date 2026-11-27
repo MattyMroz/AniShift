@@ -2349,7 +2349,7 @@ def test_a_real_panel_closes_itself_when_the_resident_announces_its_end(
         if request.kind == "subscriptions_list":
             return ControlResponse.succeeded({"subscriptions": []})
         if request.kind == "discover":
-            return ControlResponse.succeeded({"groups": [], "warnings": []})
+            return ControlResponse.succeeded({"groups": [], "warnings": [], "next_offset": None, "revision": ""})
         return ControlResponse.succeeded({})
 
     renderers: list[_PanelRenderer] = []
