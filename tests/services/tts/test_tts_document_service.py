@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -120,6 +121,7 @@ class _DocumentEngine:
     ) -> None:
         self.recording: bytes = recording
         self.fault: Exception | None = fault
+        self.on_recorded: Callable[[], None] | None = None
         self.speaks_up_to: dict[str, int] = speaks_up_to or {}
         self.incomplete: frozenset[str] = incomplete
         self.incomplete_cause: ErrorContext | None = incomplete_cause
@@ -176,6 +178,8 @@ class _DocumentEngine:
         request.recording.with_name(f"{head}.stream.txt").write_text("result", encoding="utf-8")
         if self.fault is not None:
             raise self.fault
+        if self.on_recorded is not None:
+            self.on_recorded()
         total: int = sum(len(part.text) for part in request.parts)
         if request.progress is not None:
             await request.progress(total // 2, total)
@@ -611,6 +615,32 @@ def test_document_batch_recording_that_cannot_be_cut_is_kept_and_cut_on_retry_wi
     assert splitter.sources == [kept[1]]
     assert list((tmp_path / "episode").rglob("document-*")) == []
     assert list((tmp_path / "episode").rglob(".clip-*")) == []
+
+
+def test_document_batch_cancelled_during_redo_keeps_the_recording_and_the_retry_cuts_it(tmp_path: Path) -> None:
+    engine = _DocumentEngine(incomplete=frozenset({"Trzy cztery."}))
+    batch: SpeechBatch = _batch("Raz dwa.", "Trzy cztery.")
+
+    with _service(tmp_path, engine, _Splitter()) as service:
+        engine.on_recorded = service.cancel
+        cancelled: SpeechBatchResult = service.synthesize(batch, callbacks=_Progress())
+    kept: list[Path] = sorted((tmp_path / "episode").rglob("document-*"))
+    engine.on_recorded = None
+    engine.incomplete = frozenset()
+    splitter = _Splitter()
+    (retried,) = _run(tmp_path, engine, splitter, batch)
+    leftover: list[Path] = list((tmp_path / "episode").rglob("document-*"))
+    (redone,) = _run(tmp_path, engine, _Splitter(), batch)
+
+    assert cancelled.status is SpeechBatchStatus.CANCELLED
+    assert _statuses(cancelled) == [SynthesisStatus.CANCELLED, SynthesisStatus.CANCELLED]
+    assert [path.suffix for path in kept] == [".json", ".mp3"]
+    assert _statuses(retried) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED]
+    assert splitter.sources == [kept[1]]
+    assert leftover == []
+    assert list((tmp_path / "episode").rglob(".clip-*")) == []
+    assert _statuses(redone) == [SynthesisStatus.RESUME_HIT, SynthesisStatus.SYNTHESIZED]
+    assert engine.documents == [("line-0", "line-1"), ("line-1",)]
 
 
 def test_document_batch_recording_without_audio_is_not_kept_and_is_recorded_on_retry(tmp_path: Path) -> None:

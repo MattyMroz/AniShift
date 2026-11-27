@@ -39,7 +39,8 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
   łączą się w jeden. Każdy blok nagrywa się raz; dogranie z brakującym słowem albo błędem nie jest wklejane i nie ma
   kolejnych ponowień, a jego części są w wyniku jako `incomplete`. Trwały błąd dogrania (`FatalError`: logowanie,
   App Check, kredyty, głos) kończy dogrywanie: reszta bloków nie jest nagrywana, a `ErrorContext` tego błędu wraca
-  jako `incomplete_cause`, żeby niepełne części dostały jego kod i podpowiedź. Nigdy nie nagrywa się całego dokumentu od nowa po
+  jako `incomplete_cause`, żeby niepełne części dostały jego kod i podpowiedź. Anulowanie w dogrywaniu też je kończy,
+  bez `incomplete_cause`: silnik zwraca wynik z tym, co ma, a o anulowaniu decyduje wywołujący po swoim tokenie. Nigdy nie nagrywa się całego dokumentu od nowa po
   odebraniu dźwięku.
 - Sklejanie (`splice`) tnie w ciszy wykrytej w dźwięku (`best_pause` między częścią przed i po szwie, w niej
   `silent_cut`), a nie według czasów serwera. Błąd odczytu lub dekodowania (`OSError`, także z `mono_pcm`) albo

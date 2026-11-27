@@ -250,7 +250,9 @@ class ElevenReaderTtsEngine(EngineSurface):
             try:
                 take: Take = await self._take(request, parts, voice, cancel, recording=recording, progress=None)
             except TtsCancelledError:
-                raise
+                _discard(recording)
+                logger.info("ElevenReader redo cancelled; the blocks left stay incomplete", first=first)
+                return redone, None
             except FatalError as error:
                 _discard(recording)
                 logger.warning(

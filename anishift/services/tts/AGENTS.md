@@ -69,7 +69,9 @@ narratora ani finalnego sidecara.
   której silnik nie wypowiedział: reszta nagrania jest cięta i zatwierdzana od razu.
 - Po odebraniu nagrania dokument nigdy nie jest nagrywany od nowa. Wynik niezgodny z kontraktem i wyjątek silnika
   spoza `TtsError` to trwały `TtsRecordingSplitError` (`TTS_CLIP_INVALID`) dla jego kwestii, bez ponowienia. Nagranie,
-  którego nie dało się pociąć (błąd splittera, każdy wyjątek przy cięciu, anulowanie), zostaje w `clips/` jako
+  którego nie dało się pociąć (błąd splittera, każdy wyjątek przy cięciu, anulowanie, także w dogrywaniu silnika,
+  bo wtedy silnik zwraca wynik, a `accept_result` przy anulowanym tokenie zachowuje nagranie i kończy jako
+  anulowane), zostaje w `clips/` jako
   `document-<klucz>.mp3` z czasami w `document-<klucz>.json` (`kept_document_paths`; klucz z odcisków kwestii
   dokumentu). Następna próba tego samego dokumentu, także ponowienie zadania w zachowanym przebiegu, tnie je zamiast
   nagrywać; po przyjęciu oba pliki znikają. Nagranie bez ramek MPEG nie jest zachowywane, a podpowiedź mówi, że

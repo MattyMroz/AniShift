@@ -149,6 +149,11 @@ Reszta ElevenDownloaderPro:
   (wynik zostaje, znikają tylko próby, D1), porównania z `doc.take1.mp3` zamienione na `fills(...)`.
 - D2 dotyczy tylko `TtsService` AniShift; w ElevenDownloaderPro sprawdzić, czy `_retrying` nie nagrywa dokumentu od
   nowa po wyniku, którego nie przyjmuje.
+- R2 zmienia plik wspólny `service.py`: `_redo` przy `TtsCancelledError` usuwa swoje dogranie i zwraca
+  `(redone, None)` zamiast rzucać, więc silnik oddaje wynik z pierwszym nagraniem i częściami `incomplete`. Skopiować
+  1:1 razem z testem `test_cancel_during_a_redo_stops_it_and_keeps_the_first_recording_as_the_result` (zastępuje
+  `test_cancel_during_a_redo_stops_and_keeps_every_take`). W ElevenDownloaderPro `edp record` musi po powrocie
+  `synthesize_document` sprawdzić swoje anulowanie: zachować wynik i zakończyć jako anulowane, nie jako sukces.
 - F1 i F2 nie zmieniają plików wspólnych silnika (tylko `TtsService` i `TtsResumeRepository` AniShift). W
   ElevenDownloaderPro sprawdzić to samo po swojej stronie: czy `_retrying` (albo inna pętla ponowień `edp record`)
   traktuje wyjątek spoza typowanych błędów po nagraniu jako przejściowy i nagrywa dokument od nowa (F1), i czy

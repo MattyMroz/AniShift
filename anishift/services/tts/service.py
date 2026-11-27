@@ -481,6 +481,8 @@ class _DocumentAttempt:
         return result
 
     async def _cut(self, result: EngineDocumentResult) -> None:
+        if self._cancel.is_cancelled:
+            raise _document_cancelled_error()
         incomplete: frozenset[str] = frozenset(result.incomplete)
         spans: tuple[ClipSpan, ...] = tuple(
             ClipSpan(
@@ -514,6 +516,8 @@ class _DocumentAttempt:
         self._unspoken = frozenset(
             timing.request_id for timing in result.parts if not timing.spoken and timing.request_id not in incomplete
         )
+        if self._cancel.is_cancelled:
+            raise _document_cancelled_error()
 
     async def _split(self, recording: Path, spans: tuple[ClipSpan, ...]) -> None:
         try:
@@ -1797,6 +1801,15 @@ def _split_error(*, kept: bool) -> TtsRecordingSplitError:
         suggestion=suggestion,
     )
     return TtsRecordingSplitError(context=context)
+
+
+def _document_cancelled_error() -> TtsCancelledError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.CANCELLED,
+        message="TTS document was cancelled after its recording arrived",
+        suggestion="Run synthesis again; it cuts a kept recording instead of recording the lines again.",
+    )
+    return TtsCancelledError(context=context)
 
 
 def _kept_payload(result: EngineDocumentResult) -> dict[str, object]:

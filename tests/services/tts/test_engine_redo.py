@@ -19,7 +19,6 @@ from anishift.services.tts.engines.elevenreader.host import (
     REFUSED_HINT,
     Cancellation,
     ErrorCode,
-    TtsCancelledError,
     TtsProviderUnavailableError,
     frames_duration_ms,
     iter_frames,
@@ -567,7 +566,7 @@ def test_redo_join_failing_on_a_bug_logs_it_as_a_bug_and_keeps_the_first_recordi
     assert not any("is not joined" in message for message in captured)
 
 
-def test_cancel_during_a_redo_stops_and_keeps_every_take(tmp_path: Path) -> None:
+def test_cancel_during_a_redo_stops_it_and_keeps_the_first_recording_as_the_result(tmp_path: Path) -> None:
     cancel = Cancellation()
 
     def cancel_redo(take: int) -> None:
@@ -576,8 +575,10 @@ def test_cancel_during_a_redo_stops_and_keeps_every_take(tmp_path: Path) -> None
 
     site = Site(script=drop_words(2, "trzy "), on_upload=cancel_redo)
 
-    with pytest.raises(TtsCancelledError):
-        record(tmp_path, site, Redo.LINE, cancel)
+    result = record(tmp_path, site, Redo.LINE, cancel)
 
-    assert fills(tmp_path / "out" / "doc.take1.mp3") == [1, 2, 3, 4, 5]
-    assert not (tmp_path / "out" / "doc.mp3").exists()
+    assert cancel.is_cancelled
+    assert result.incomplete == ("part-2",)
+    assert result.incomplete_cause is None
+    assert fills(result.recording) == [1, 2, 3, 4, 5]
+    assert sorted(path.name for path in (tmp_path / "out").iterdir()) == ["doc.mp3", "doc.stream.txt"]
