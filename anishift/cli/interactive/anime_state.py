@@ -135,6 +135,7 @@ class AnimeSnapshot:
     field_selection: tuple[int, int] | None = None
     query_focused: bool = True
     editing_range: bool = False
+    field_label: str = "Zakres"
     selection: tuple[TextPoint, TextPoint] | None = None
     controls: tuple[str, ...] = ()
     global_status: str = ""
@@ -144,6 +145,8 @@ class AnimeSnapshot:
     crumbs: tuple[str, ...] = ()
     fill: bool = False
     bluray: bool = False
+    cover: tuple[int, int] | None = None
+    highlight: int | None = None
 
 
 @dataclass(slots=True)
@@ -172,6 +175,8 @@ class AnimeViewState:
     crumbs: tuple[str, ...] = ()
     fill: bool = False
     bluray: bool = False
+    cover: tuple[int, int] | None = None
+    highlight: int | None = None
 
     def snapshot(self, width: int = 80) -> AnimeSnapshot:
         """Freeze local values without changing state or reading a clock."""
@@ -206,6 +211,8 @@ class AnimeViewState:
             crumbs=self.crumbs,
             fill=self.fill,
             bluray=self.bluray,
+            cover=self.cover,
+            highlight=self.highlight,
         )
 
     def toggle(self) -> None:

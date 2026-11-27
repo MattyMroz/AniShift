@@ -146,6 +146,11 @@ class Gesture:
     selection: tuple[TextPoint, TextPoint] | None
     click: TextPoint | None = None
 
+    @property
+    def pressed(self) -> bool:
+        """Report a bare press, which changes nothing on screen until it becomes a click or a drag."""
+        return self.selection is None and self.click is None
+
 
 class PointerGesture:
     """Tell a drag that selects painted text from a click and a double click on one row."""
@@ -193,7 +198,7 @@ class PointerGesture:
 
     def resolve(self, frame: Text, gesture: Gesture) -> Click:
         """Name what ``gesture`` asks of the view painted as ``frame``; a quick second click on one screen row opens."""
-        if gesture.click is None and gesture.selection is None:
+        if gesture.pressed:
             pressed: Click = Click() if self._anchor is None else click_at(frame, self._anchor)
             self._field = (
                 None
@@ -238,6 +243,14 @@ class FrameSelection:
         self._frame = frame
         return frame
 
+    def hovered_row(self) -> int | None:
+        """Return the index of the list row the hover lights, or None when it lights no list row."""
+        bands: tuple[tuple[int, int, int], ...] = hovered(self._frame, self._hover)
+        if not bands:
+            return None
+        row: Click | None = _line_row(self._frame.split("\n", allow_blank=True)[bands[0][0]])
+        return None if row is None else row.value
+
     def hover(self, point: TextPoint) -> bool:
         """Follow a move with no button pressed and report whether it changed the lit target."""
         before: tuple[tuple[int, int, int], ...] = hovered(self._frame, self._hover)
@@ -257,8 +270,10 @@ class FrameSelection:
         gesture: Gesture | None = self._gesture.track(event)
         if gesture is None:
             return Click()
-        self.notice = ""
         click: Click = self._gesture.resolve(self._frame, gesture)
+        if gesture.pressed:
+            return click
+        self.notice = ""
         self._selection = None if click.anchor is not None else gesture.selection
         return click
 

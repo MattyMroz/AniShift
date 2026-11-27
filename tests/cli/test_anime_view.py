@@ -830,15 +830,21 @@ def test_up_and_down_wrap_around_the_episode_list() -> None:
 
 
 @pytest.mark.parametrize("width", [50, 80, 120])
-def test_changing_episode_states_never_shift_the_table(width: int) -> None:
-    starts: set[int] = set()
-    for status in ("", "Zlecono", "Przetwarzam", "Nie wyemitowano"):
-        items: tuple[AnimeRow, ...] = (replace(rows()[1], status=status), rows()[0])
-        for searching in (frozenset(), frozenset({"three"})):
-            snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items, searching=searching)
-            frame: AnimeFrame = render_anime(snapshot, width, 24, 0)
-            starts.add(frame.text.plain.splitlines()[frame.first_row].index("A Pro"))
-    assert len(starts) == 1
+def test_episode_states_shift_the_table_only_when_the_longest_state_changes(width: int) -> None:
+    def start(status: str, searching: frozenset[str] = frozenset()) -> int:
+        items: tuple[AnimeRow, ...] = (replace(rows()[1], status=status), rows()[3])
+        snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items, searching=searching)
+        frame: AnimeFrame = render_anime(snapshot, width, 24, 0)
+        return frame.text.plain.splitlines()[frame.first_row].index("A P")
+
+    shorter: set[int] = {
+        start(status, searching)
+        for status in ("", "Zlecono", "Przetwarzam", "Nie wyemitowano")
+        for searching in (frozenset(), frozenset({"three"}))
+    }
+
+    assert len(shorter) == 1
+    assert (start("Nie wyemitowano · jeszcze") < shorter.pop()) == (width > 50)
 
 
 def test_selection_summary_joins_consecutive_numbers_into_ranges() -> None:

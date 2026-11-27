@@ -90,6 +90,12 @@ TASK_DIRECTORIES: Final[tuple[str, ...]] = (
 )
 """The one collection of workspace task folders, beside the data areas ``ready`` and ``tmp``."""
 
+COVER_PAYLOADS: Final[str] = "sixel"
+"""Directory beside the cover images holding their encoded SIXEL payloads."""
+
+COVER_ENCODING: Final[int] = 1
+"""Version of the cover encoding in every stored payload name; payloads of another version are deleted."""
+
 
 def repo_root() -> Path:
     """Return the single repository anchor used by the application layout."""
@@ -127,6 +133,21 @@ def watch_dir() -> Path:
 def elevenreader_dir() -> Path:
     """Return the ElevenReader browser profile and session-check root."""
     return config_dir() / "elevenreader"
+
+
+def covers_dir() -> Path:
+    """Return the cache of AniList cover images of Library and subscription titles."""
+    return config_dir() / "covers"
+
+
+def cover_name(anilist_id: int) -> str:
+    """Return the file name of the cached cover of one AniList entry."""
+    return f"{anilist_id}.jpg"
+
+
+def cover_payload_name(anilist_id: int, cell: tuple[int, int]) -> str:
+    """Return the file name of the SIXEL payload of one cover encoded for one terminal cell size."""
+    return f"{anilist_id}-{cell[0]}x{cell[1]}-v{COVER_ENCODING}.six"
 
 
 def torrent_profile_dir() -> Path:

@@ -40,9 +40,9 @@ from anishift.application.control_views import (
     encode_view,
 )
 from anishift.cli.exit_codes import EXIT_SUCCESS
-from anishift.cli.interactive import anime_view, state_library, state_texts
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
+from anishift.cli.interactive import state_library, state_texts
 from anishift.cli.interactive.anime import _Screen
 from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.progress import RichRunProgress
@@ -253,6 +253,84 @@ def test_processing_toggles_one_download_with_w(
         assert hint in controller.render(120, 40).plain
         controller.handle_key("text:w")
         assert calls == [("transfer", {"info_hash": "hash", "action": action})]
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+_BLUE_BOX: Final[dict[str, object]] = {
+    "anilist_id": 7,
+    "series": "Blue Box",
+    "entry_title": "Blue Box Season 2",
+    "season": 2,
+    "episode": 2,
+}
+
+
+def test_processing_names_a_keyed_row_after_its_entry_and_episode_and_another_after_its_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
+    controller._connected = True
+    controller._episode_info = {7: {2: ("Admiration", None)}}
+    download: dict[str, object] = {
+        "material_id": "download",
+        "info_hash": "hash",
+        "stage": "download",
+        "acquisition_state": "accepted",
+        "state": "downloading",
+        "progress": 0.5,
+    }
+    view: RunProgressSnapshot = _live_snapshot(
+        "run",
+        {"local": "Blue Box - S02E03 - Kiss.mkv"},
+        (RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="local", task_id="tts-local"),),
+    )
+    controller._runs = {"run": (view.preview.preview_id, RichRunProgress.from_snapshot(view, lambda: None))}
+    controller._snapshot = {
+        "materials": [
+            {**download, **_BLUE_BOX, "name": "[Grp] Ao no Hako - 26.mkv"},
+            {**download, "material_id": "hand", "info_hash": "other", "name": "Hand.mkv"},
+            {**_live_material("local"), **_BLUE_BOX, "episode": 3},
+        ],
+        "requests": [{"request_id": "run", "state": "running"}],
+    }
+    try:
+        frame: str = controller.render(160, 40).plain
+        assert "Blue Box Season 2 · S02E02 · Admiration" in frame
+        assert "Blue Box Season 2 · S02E03" in frame
+        assert "Hand.mkv" in frame
+        assert "Ao no Hako" not in frame
+        assert "Kiss" not in frame
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def test_processing_asks_once_for_the_episode_titles_of_each_keyed_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    asked: list[list[object]] = []
+    monkeypatch.setattr(controller, "_load_episodes", lambda ids, key=None: asked.append(sorted(ids)))
+    controller._snapshot = {
+        "materials": [
+            {
+                "material_id": "download",
+                "stage": "download",
+                "acquisition_state": "accepted",
+                "name": "a.mkv",
+                **_BLUE_BOX,
+            },
+            {"material_id": "hand", "stage": "download", "acquisition_state": "accepted", "name": "Hand.mkv"},
+        ]
+    }
+    try:
+        controller.show_processing()
+        controller._switch_tab(state_module._Tab.FILES)
+        controller.show_processing()
+        assert asked == [[7], []]
     finally:
         controller.close()
         controller._thread.join(5)
@@ -1242,7 +1320,7 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
         controller.handle_key("tab")
         frame = controller.render(80, 24).plain
         assert "Biblioteka" in frame
-        assert "\u276f Episode" in frame
+        assert "\u276f Nie rozpoznano" in frame
         assert "○" not in frame
         assert frame.splitlines()[0].strip() == "PANEL"
         assert not any(item.kind in {"transfer", "download", "set_auto"} for item in calls)
@@ -1372,6 +1450,7 @@ def test_library_details_refresh_preserves_selection_without_reopening_or_discon
     controller._snapshot = {
         "library": [{"set_id": "set-2", "name": "Episode 2"}, {"set_id": "set-10", "name": "Episode 10"}]
     }
+    controller._library_title = state_library.UNRECOGNIZED_KEY
     controller._detail_selection = 1
     controller._details = details
     payload: dict[str, object] = {"library": [{"set_id": "set-10", "name": "Episode 10"}]}
@@ -1389,7 +1468,7 @@ def test_library_details_refresh_preserves_selection_without_reopening_or_discon
             assert controller._details is None
             assert "Esc wróć do biblioteki" not in frame
         assert controller._selected == 0
-        assert "\u276f Episode 10" in controller.render(120, 35).plain
+        assert any("\u276f" in line and "Episode 10" in line for line in controller.render(120, 35).plain.splitlines())
     finally:
         controller.close()
         controller._thread.join(5)
@@ -1527,6 +1606,7 @@ def test_merged_library_is_naturally_ordered_and_preserves_missing_selection(
         "library": [{"set_id": "2", "name": "Episode 2"}, {"set_id": "10", "name": "Episode 10"}],
         "library_problems": [{"set_id": "3", "name": "Episode 3", "available": False}],
     }
+    controller._library_title = state_library.UNRECOGNIZED_KEY
     try:
         assert [row["set_id"] for row in state_library.library_rows(controller._snapshot)] == ["2", "3", "10"]
         controller._selected = 1
@@ -1545,7 +1625,7 @@ def test_merged_library_is_naturally_ordered_and_preserves_missing_selection(
 
 @pytest.mark.parametrize(
     "problem",
-    ["library_ownership_unknown", "library_result_changed", "library_result_missing", "library_source_missing"],
+    ["library_result_changed", "library_result_missing", "library_source_missing"],
 )
 def test_library_details_keep_provenance_without_missing_result_header(
     monkeypatch: pytest.MonkeyPatch, problem: str
@@ -1553,12 +1633,10 @@ def test_library_details_keep_provenance_without_missing_result_header(
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
     controller._tab = state_module._Tab.FILES
-    controller._details = LibrarySet(
-        "set", "group", "Episode", None, "ready/01.txt", (), problem == "library_ownership_unknown", problem
-    )
+    controller._details = LibrarySet("set", "group", "Episode", None, "ready/01.txt", (), False, problem)
     try:
         frame: str = controller.render(120, 40).plain
-        assert (state_texts.LIBRARY_PROBLEMS[problem] in frame) is (problem == "library_ownership_unknown")
+        assert state_texts.LIBRARY_PROBLEMS[problem] not in frame
         assert state_texts.LIBRARY_PROBLEMS["library_result_missing"] not in frame
     finally:
         controller.close()
@@ -1572,11 +1650,11 @@ def test_library_deletion_snapshot_removes_ghost_and_restore_returns_material(mo
     controller._tab = state_module._Tab.FILES
     controller._connected = True
     controller._notice = ""
-    material: dict[str, object] = {"set_id": "set-B", "name": "Episode B"}
+    material: dict[str, object] = {"set_id": "set-B", "name": "[Grp] Episode B - 01"}
     deletion: dict[str, object] = {
         "operation_id": "delete-B",
         "set_id": "set-B",
-        "name": "Episode B",
+        "name": "[Grp] Episode B - 01",
         "total": 3,
         "recycled": 3,
     }
@@ -1828,7 +1906,9 @@ def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_ref
     )
     controller: StateController = StateController(session, lambda: None)
     controller._tab = state_module._Tab.FILES
-    library: list[dict[str, object]] = [{"set_id": f"set-{index}", "name": f"Episode {index}"} for index in range(40)]
+    library: list[dict[str, object]] = [
+        {"set_id": f"set-{index}", "name": f"[Grp] Episode {index:02} - 01"} for index in range(40)
+    ]
     controller._snapshot = {"library": library}
     controller._connected = True
     controller.set_notice("")
@@ -1849,7 +1929,7 @@ def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_ref
         controller._receive(session, {"event": "state_changed", "payload": {"library": library[1:]}})
         controller._switch_tab(state_module._Tab.FILES)
         assert controller._selected == 38
-        assert state_library.library_rows(controller._snapshot)[controller._selected]["set_id"] == "set-39"
+        assert controller._titles()[controller._selected].sets[0]["set_id"] == "set-39"
         controller.handle_key("up")
         assert "\u276f Episode 38" in controller.render(80, 24).plain
     finally:
@@ -2447,9 +2527,6 @@ def test_every_list_tab_pins_heading_and_keys_and_centers_its_content(
         assert "Subskrypcje" in lines[2]
         assert not lines[crumb].strip()
         assert abs((crumb - 4) - (keys - content[-1] - 1)) <= 1
-        if tab == 1:
-            header: str = next(line for line in lines if "Tytuł" in line)
-            right = columns - header.index("Stan") - anime_view._SUBSCRIPTION_STATUS_WIDTH
         assert abs(left - right) <= 1
     finally:
         controller.close()

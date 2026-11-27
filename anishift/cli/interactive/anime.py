@@ -40,6 +40,7 @@ from anishift.application import (
     TitleCandidate,
     TitleStatus,
     decode_view,
+    entry_title,
     parse_query,
     premiere_order,
     rank_offer,
@@ -77,7 +78,7 @@ from anishift.cli.interactive.anime_texts import (
     safe,
     stated,
 )
-from anishift.cli.interactive.anime_view import WIDE_COLUMNS, overflows, shown_rows
+from anishift.cli.interactive.anime_view import WIDE_COLUMNS, highlighted_row, overflows, shown_rows
 from anishift.cli.interactive.pointer import Click, ClickKind
 from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
@@ -529,12 +530,12 @@ class AnimeController:
     def _draft_source(self) -> tuple[int | None, str, EpisodeListing | None]:
         if self._screen is _Screen.TITLES and self._candidates:
             candidate: TitleCandidate = self._candidates[self._highlighted]
-            return candidate.anilist_id, candidate.english or candidate.romaji, None
+            return candidate.anilist_id, entry_title(candidate.english, candidate.romaji), None
         if self._screen is _Screen.ENTRIES and self._franchise is not None and self._franchise.entries:
             entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
-            return entry.anilist_id, entry.english or entry.romaji, None
+            return entry.anilist_id, entry_title(entry.english, entry.romaji), None
         if self._screen is _Screen.EPISODES and self._listing is not None and self._entry is not None:
-            return self._listing.anilist_id, self._entry.english or self._entry.romaji, self._listing
+            return self._listing.anilist_id, entry_title(self._entry.english, self._entry.romaji), self._listing
         return None, "", None
 
     def _load_draft(self, anilist_id: int, generation: int) -> None:
@@ -839,11 +840,14 @@ class AnimeController:
             self._notice = ""
             self._follow_cursor = False
 
-    def render(self, columns: int, rows: int) -> Text:
-        """Render ``rows`` lines: a table overflowing its centered layout fills them."""
+    def render(
+        self, columns: int, rows: int, *, cover: tuple[int, int] | None = None, hovered: int | None = None
+    ) -> Text:
+        """Render ``rows`` lines: a table overflowing its centered layout fills them, the cover slot left of it."""
         with self._lock:
             self._columns = min(columns - 4, WIDE_COLUMNS)
             self._sync_view()
+            self._view.cover = cover
             self._view.fill = overflows(self._view.screen, len(self._view.items), rows)
             self._visible_count = max(shown_rows(self._view.snapshot(columns), columns, rows), 1)
             offset: int = min(
@@ -855,7 +859,30 @@ class AnimeController:
             self._view.offset = offset
             if not self._details_open:
                 self._offsets[self._screen] = offset
+            shown: range = range(offset, min(offset + self._visible_count, len(self._view.items)))
+            self._view.highlight = highlighted_row(hovered, self._view.cursor, shown, self.cover_ids())
             return self._panel.frame(columns, rows)
+
+    def cover_ids(self) -> tuple[int | None, ...]:
+        """Return the AniList entry of each shown row: its own on the title lists, the opened title on episodes."""
+        with self._lock:
+            self._sync_view()
+            items: tuple[AnimeRow, ...] = self._view.items
+            if self._details_open:
+                return ()
+            if self._screen in {_Screen.TITLES, _Screen.ENTRIES}:
+                return tuple(int(item.key) if item.key.isdecimal() else None for item in items)
+            if self._screen is not _Screen.EPISODES:
+                return ()
+            opened: object = (
+                self._entry.anilist_id if self._entry is not None else (self._subscription or {}).get("anilist_id")
+            )
+            return (opened if isinstance(opened, int) else None,) * len(items)
+
+    def highlighted(self) -> int | None:
+        """Return the row the last frame centered the cover slot on, None when it centered on the whole list."""
+        with self._lock:
+            return self._view.highlight
 
     def mouse(self, event: MouseEvent) -> Click:
         """Delegate text selection and row clicks to the shared Anime panel and name what the click asks for."""
@@ -2209,7 +2236,7 @@ class AnimeController:
     def _store_titles(self, candidates: tuple[TitleCandidate, ...], franchise: Franchise | None) -> None:
         self._candidates = tuple(
             sorted(
-                natsorted(candidates, key=lambda item: (item.english or item.romaji).casefold()),
+                natsorted(candidates, key=lambda item: entry_title(item.english, item.romaji).casefold()),
                 key=lambda item: premiere_order(item.year, item.start),
                 reverse=True,
             )
@@ -2296,7 +2323,7 @@ class AnimeController:
         entry: FranchiseEntry | None = self._shown_entry
         if entry is None:
             return ()
-        return ("Anime", f"{safe(entry.english or entry.romaji)} ({entry.year or '—'})")
+        return ("Anime", f"{safe(entry_title(entry.english, entry.romaji))} ({entry.year or '—'})")
 
 
 def _ready_set(status: EpisodeStatus | None) -> str | None:

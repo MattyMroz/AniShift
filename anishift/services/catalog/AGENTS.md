@@ -6,9 +6,13 @@ statusu na polski; te decyzje należą do warstwy aplikacyjnej.
 
 ## Pliki
 
-- `types.py` — `TitleCandidate` (frozen, slots) z `aliases()` i `folder_title()`, `TitleStatus`
+- `types.py` — `TitleCandidate` (frozen, slots) z `aliases()`, `TitleStatus`; wyświetlany tytuł wpisu daje jedno `application.entry_title`
 - `errors.py` — `TitleCatalogError` (transient)
-- `anilist.py` — `AniListCatalog`: title search, prequels, airing schedules and full franchise graphs
+- `anilist.py` — `AniListCatalog`: title search, prequels, airing schedules, full franchise graphs, the batched
+  `library_graph` of many entries, `cover_urls` (`coverImage.extraLarge`, 50 IDs per request) and `cover`
+  (only `https://s4.anilist.co`, no redirects, at most `MAX_COVER_BYTES`)
+- `covers.py` — `store_cover` (Pillow verify, RGB JPEG, temporary file and replace), `stored_covers` and `prune_covers`;
+  file names come only from `paths.cover_name(anilist_id)` and `paths.cover_payload_name`
 - `anizip.py` — `AniZipCatalog.mapping`, `mapping_by_anidb` and `parse_mapping`: episode metadata with raw identity fields
 - `arm.py` — `ArmCatalog.ids`: AniDB ID and `thetvdb-season` from arm-server (404 → both `None`)
 - `kitsu.py` — `KitsuCatalog.kitsu_id`: one Kitsu anime confirmed by its own mappings, at most two requests,

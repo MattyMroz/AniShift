@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 import wave
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
@@ -20,7 +20,13 @@ from conftest import hidden_window_options
 from anishift.application.acquisition import AcquisitionService
 from anishift.application.automation import AutomationOwner
 from anishift.application.cancellation import CancellationToken
-from anishift.application.episode_selection import AniZipMapping, FranchiseGraph, ListedEpisode, StreamCandidate
+from anishift.application.episode_selection import (
+    AniZipMapping,
+    FranchiseGraph,
+    LibraryGraph,
+    ListedEpisode,
+    StreamCandidate,
+)
 from anishift.application.handlers import ExecutionHandlers, TranslationTaskHandler, TtsTaskHandler
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot
@@ -252,6 +258,9 @@ class Catalog:
     def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
         raise AssertionError((text, limit))
 
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
+        raise AssertionError((texts, limit))
+
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         return ()
 
@@ -276,6 +285,18 @@ class Catalog:
             frozenset({anilist_id}),
             True,
         )
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        graphs: list[FranchiseGraph] = [self.franchise(anilist_id) for anilist_id in anilist_ids]
+        return LibraryGraph(
+            {key: node for graph in graphs for key, node in graph.nodes.items()}, frozenset(anilist_ids)
+        )
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        return {}
+
+    def cover(self, url: str) -> bytes:
+        raise AssertionError(url)
 
     def mapping(self, anilist_id: int) -> AniZipMapping:
         return AniZipMapping(

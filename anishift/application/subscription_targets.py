@@ -729,8 +729,6 @@ def _lagging(record: SubscriptionRecord) -> SubscriptionTarget | None:
 def _due_state(target: SubscriptionTarget) -> str:
     if target.state is TargetState.DUE:
         blocker: Blocker | None = target.blocker
-        if blocker is Blocker.WAITING_POLISH:
-            return "polish"
         if blocker is Blocker.PENDING:
             return "pending"
         return "no_release" if blocker in {Blocker.NO_ADMISSIBLE, Blocker.THRESHOLD} else "searching"

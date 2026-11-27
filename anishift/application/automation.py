@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum, auto
 from functools import partial
@@ -95,6 +95,7 @@ from anishift.application.control import (
     record_request,
     release,
     reserve,
+    restorable_deletions,
     restore_gone,
     retain_deletions,
 )
@@ -142,9 +143,11 @@ from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_search import SourceSwitches
 from anishift.application.episode_selection import (
     EpisodeKey,
+    EpisodeName,
     EpisodeOffer,
     RankedCandidate,
     StreamCandidate,
+    entry_title,
     numbering_gap,
     rank_offer,
     suggestion,
@@ -162,16 +165,22 @@ from anishift.application.intents import (
     SubtitleOutputFormat,
 )
 from anishift.application.library import (
-    EpisodeName,
+    DownloadedEpisode,
+    LibrarySeries,
     assigned_files,
+    downloaded_episodes,
+    episode_entry,
     episode_file_stem,
     file_identity,
+    hand_titles,
+    library_entries,
+    library_series,
     name_series,
     project_library,
+    recognize,
     unrecorded_group,
     unrecorded_set,
     unrecorded_set_id,
-    untitled_series,
 )
 from anishift.application.planner import auto_group_products
 from anishift.application.planning import ExecutionPlan, TaskState
@@ -245,6 +254,7 @@ from anishift.application.transfers import (
     video_sidecars,
 )
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
+from anishift.application.watch_state import load_recognized, save_recognized
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import cleanup_orphaned_tmp, run_tmp_dir
 from anishift.errors import AniShiftError, ErrorCode, ExecutionError, MediaProbeError, UnsupportedMediaError
@@ -281,6 +291,7 @@ if TYPE_CHECKING:
     from anishift.application.service import AppService
     from anishift.application.watch_state import WatchStateStore
     from anishift.config.user_settings import UserSettings
+    from anishift.services.http_requests import RequestControl
     from anishift.services.media.probe import MediaProbe
     from anishift.services.media.types import MediaCatalog
     from anishift.services.torrents import TorrentFile, TorrentInfo
@@ -302,6 +313,18 @@ IO_THREAD_PREFIX: Final[str] = "anishift-owner-io"
 
 IO_WORKERS: Final[int] = 2
 """Slow commands performed beside each other while the owner keeps answering."""
+
+_RECOGNITION_THREAD: Final[str] = "anishift-owner-recognition"
+"""Thread searching hand-added Library titles, kept off the I/O pool that deletion and Ctrl+Z wait on."""
+
+RECOGNITION_RETRY_S: Final[float] = 60.0
+"""Wait after each search of hand-added titles before the next one, so it spends one AniList minute at most."""
+
+_RECOGNITION_COOLDOWN_POLL_S: Final[float] = 0.5
+"""Interval at which a waiting hand-added search checks whether the AniList cooldown ended."""
+
+_RECOGNITION_ATTEMPTS: Final[int] = 3
+"""Searches of the same hand-added titles while AniList answers with a cooldown."""
 
 TRANSFER_CHECK_INTERVAL_S: Final[float] = 10.0
 """Delay between shared client reads while accepted transfers need completion proof."""
@@ -839,9 +862,11 @@ class AutomationOwner:
         restorer: Callable[[], AbstractContextManager[RestoreStep]] | None = None,
         subscription_shadow: bool = False,
         media_probe: MediaProbe | None = None,
+        cover_directory: Path | None = None,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
+        self._cover_directory: Path | None = cover_directory
         self._admits: bool = not subscription_shadow
         self._media_probe: MediaProbe | None = media_probe
         self._check_retries: dict[str, float] = {}
@@ -934,6 +959,7 @@ class AutomationOwner:
         self._shutting_down: bool = False
         self._serving: bool = False
         self._active_io: int = 0
+        self._recognizing: int = 0
         self._transfers: TransferInspector | None = (
             TransferInspector(service.acquisition, service.workspace_root) if service.acquisition is not None else None
         )
@@ -965,8 +991,19 @@ class AutomationOwner:
         self._library: InspectedWorkspace | None = None
         self._subtitles_missing: frozenset[str] = frozenset()
         self._ready_library: tuple[LibrarySet, ...] = ()
-        self._series_titles: dict[int, str] = {}
+        self._ready_groups: tuple[SourceGroup, ...] = ()
+        self._series: dict[int, LibrarySeries] = {}
         self._series_requested: set[int] = set()
+        self._recognized: dict[tuple[str, int], int | None] = load_recognized(store.recognition_path())
+        self._recognition_requested: set[tuple[str, int]] = set(self._recognized)
+        self._recognition_retry_s: float = RECOGNITION_RETRY_S
+        self._recognition_retry_at: float | None = None
+        self._stopping: threading.Event = threading.Event()
+        self._covers: set[int] = set()
+        self._covers_requested: set[int] = set()
+        self._cover_urls: dict[int, str] = {}
+        self._covers_pruned: bool = False
+        self._pruning_covers: bool = False
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
@@ -1140,6 +1177,7 @@ class AutomationOwner:
         self._prepare_transfers()
         self._schedule_transfers()
         self._retry_ready()
+        self._request_covers(listing=True)
         try:
             self._loop()
         finally:
@@ -1219,6 +1257,7 @@ class AutomationOwner:
                         self._inspection_at,
                         self._subscriptions_at,
                         self._ready_retry_at,
+                        self._recognition_retry_at,
                     )
                     if deadline is not None
                 )
@@ -1230,6 +1269,7 @@ class AutomationOwner:
                 self._poll_transfers()
                 self._poll_subscriptions()
                 self._poll_ready()
+                self._poll_recognition()
                 continue
             except KeyboardInterrupt:
                 item = None
@@ -1253,13 +1293,20 @@ class AutomationOwner:
             self._poll_transfers()
             self._poll_subscriptions()
             self._poll_ready()
+            self._poll_recognition()
             if self._drained():
                 return
 
     def _drained(self) -> bool:
         if not self._shutting_down:
             return False
-        return not self._pending and not self._service.active_run_ids() and not self._inspecting and not self._active_io
+        return (
+            not self._pending
+            and not self._service.active_run_ids()
+            and not self._inspecting
+            and not self._active_io
+            and not self._recognizing
+        )
 
     def _record_inspection(
         self, workspace: InspectedWorkspace | None, journals: tuple[tuple[ProcessingRequest, RunJournal], ...] = ()
@@ -1271,9 +1318,7 @@ class AutomationOwner:
         if workspace is not None:
             self._library = workspace
             self._report_missing_subtitles(workspace)
-            self._ready_library = project_library(
-                self._state, self._service.workspace_root, tuple(group.source for group in workspace.groups)
-            )
+            self._project_ready(tuple(group.source for group in workspace.groups))
             with self._files_lock:
                 self._fresh_sources.intersection_update(
                     artifact.path for group in workspace.groups for artifact in group.artifacts
@@ -1438,7 +1483,7 @@ class AutomationOwner:
     def _record_ready_inventory(self, groups: tuple[SourceGroup, ...] | None) -> None:
         self._inspecting = False
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
             self._publish_state()
         self._inspect_changes()
 
@@ -1845,7 +1890,7 @@ class AutomationOwner:
         pausing: bool = self._pausing()
         incomplete: bool = not pausing and self._pause_incomplete()
         materials: list[dict[str, object]] = self._processing_materials()
-        library: tuple[LibrarySet, ...] = name_series(self._ready_library, self._state, self._series_titles)
+        library: tuple[LibrarySet, ...] = self._named(self._ready_library)
         return {
             "instance_id": self._instance_id,
             "notification_problem": self._notification_problem,
@@ -1956,22 +2001,22 @@ class AutomationOwner:
                     "series": group.series,
                     "season": group.season,
                     "episode": group.episode,
+                    "anilist_id": group.anilist_id,
+                    "entry_title": group.entry_title,
+                    "title_source": group.title_source.value,
                 }
                 for group in library
                 if group.available
             ],
-            "library_problems": [
-                encode_view(group)
-                for group in library
-                if not group.available and any(item.identity is not None for item in group.files)
-            ],
+            "library_problems": [encode_view(group) for group in library if not group.available and _shown(group)],
+            "covers": sorted(self._covers),
             "deletions": [
                 {
                     "operation_id": item.operation_id,
                     "set_id": item.set_id,
                     "name": next(
                         (group.stem for group in self._state.ready_groups if group.set_id == item.set_id),
-                        item.set_id if unrecorded_group(item.set_id) is None else Path(item.files[0][0]).stem,
+                        Path(item.files[0][0]).stem,
                     ),
                     "remaining": len(item.files) - len(item.recycled),
                     "can_confirm": (item.restore is None or (not item.restore.completed and not item.restore.unsettled))
@@ -1992,6 +2037,13 @@ class AutomationOwner:
                     "retryable": self._deletion_retry_current(item),
                     "restoring": item.operation_id in self._restoring,
                     "unrecorded": unrecorded_group(item.set_id) is not None,
+                    "returned": any(
+                        file.identity is not None
+                        and (file.path, file.identity.size, file.identity.modified_ns) not in item.files
+                        for group in self._ready_library
+                        if group.set_id == item.set_id
+                        for file in group.files
+                    ),
                     "restored": item.restore is not None and item.restore.completed,
                     "gone": restore_gone(item),
                     "restore_problem": next(
@@ -2029,6 +2081,10 @@ class AutomationOwner:
         }
         completed: dict[str, frozenset[str]] = {}
         failed: frozenset[str] = self._failed_sources()
+        episodes: dict[str, DownloadedEpisode] = downloaded_episodes(self._state)
+        ready: dict[str, DownloadedEpisode] = {
+            record.group_id: episodes[record.set_id] for record in self._state.ready_groups if record.set_id in episodes
+        }
         for group_id, request in requests.items():
             if request.request_id not in completed:
                 completed[request.request_id] = self._succeeded_groups(request)
@@ -2046,6 +2102,8 @@ class AutomationOwner:
                 problem=request.problem,
                 automatic=request.automatic,
             )
+            if "anilist_id" not in row and group_id in ready:
+                row.update(self._entry_fields(ready[group_id]))
             if group_id in failed:
                 row.update(stage="waiting", reason="processing_failed", attention=True)
                 if self._outside_library(group_id):
@@ -2192,6 +2250,7 @@ class AutomationOwner:
             "active": active and acquisition.state is AcquisitionState.ACCEPTED and not acquisition.problem,
             "problem": acquisition.problem,
             "automatic": not acquisition.manual,
+            **self._scope_fields(acquisition.legacy_scope),
         }
         release: str = (
             (transfer.name if transfer is not None and transfer.name != acquisition.info_hash else None)
@@ -2298,6 +2357,7 @@ class AutomationOwner:
             )
             rows[identity] = {
                 **common,
+                **self._entry_fields(DownloadedEpisode(assignment.choice.anilist_id, assignment.choice.number)),
                 "material_id": identity,
                 "group_id": group_id,
                 "admission_id": assignment.admission_id,
@@ -2312,12 +2372,21 @@ class AutomationOwner:
             }
         return rows
 
+    def _entry_fields(self, episode: DownloadedEpisode) -> dict[str, object]:
+        record: SubscriptionRecord | None = next(
+            (item for item in self._state.subscriptions if item.anilist_id == episode.anilist_id), None
+        )
+        return asdict(episode_entry(episode, self._series, record))
+
+    def _scope_fields(self, scope: LegacyScope | None) -> dict[str, object]:
+        return {} if scope is None else self._entry_fields(DownloadedEpisode(scope.anilist_id, scope.number))
+
     def _library_details(self, request: ControlRequest) -> ControlResponse:
         identifier: str | None = _text(request.payload, "set_id")
         group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == identifier), None)
         if group is None:
             return self._library_refusal("library_set_missing")
-        return ControlResponse.succeeded(encode_view(name_series((group,), self._state, self._series_titles)[0]))
+        return ControlResponse.succeeded(encode_view(self._named((group,))[0]))
 
     def _inspect_library_command(self, request: ControlRequest) -> ControlResponse:
         groups: tuple[SourceGroup, ...] = self._service.library_inventory()
@@ -2346,12 +2415,12 @@ class AutomationOwner:
             if scoped is None:
                 return self._library_refusal("library_set_missing")
             return self._deletion_preview(request, scoped, released)
-        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        self._project_ready(groups)
         self._publish_state()
         if request.kind == "deletion_undo":
             return self._start_restore(request, released)
         if request.kind == "library_refresh":
-            named: tuple[LibrarySet, ...] = name_series(self._ready_library, self._state, self._series_titles)
+            named: tuple[LibrarySet, ...] = self._named(self._ready_library)
             return ControlResponse.succeeded({"sets": [encode_view(item) for item in named]})
         if request.kind == "deletion_retry":
             return self._retry_deletion(request, released)
@@ -2383,22 +2452,15 @@ class AutomationOwner:
             return self._library_refusal(group.problem or "library_result_missing")
         if (
             not playback
-            or group.target is not WorkflowTarget.VIDEO
+            or group.target not in {WorkflowTarget.VIDEO, None}
             or Path(group.main_result).suffix.casefold() in {".mkv", ".mp4"}
         ):
             return ControlResponse.succeeded({"path": group.main_result})
-        record: ReadyGroup | None = next(
-            (item for item in self._state.ready_groups if item.set_id == group.set_id), None
-        )
-        sources: set[str] = (
-            {
-                name
-                for name in (*record.sources, *record.pending_sources)
-                if Path(name).suffix.casefold() in {".mkv", ".mp4"}
-            }
-            if record is not None
-            else set()
-        )
+        sources: set[str] = {
+            item.path
+            for item in group.files
+            if item.role in {"source", "pending_source"} and Path(item.path).suffix.casefold() in {".mkv", ".mp4"}
+        }
         if not sources:
             return ControlResponse.succeeded({"path": group.main_result})
         sources = {name for name in sources if Path(name).suffix.casefold() == ".mkv"} or sources
@@ -2461,8 +2523,6 @@ class AutomationOwner:
         record: ReadyGroup | None = next(
             (item for item in self._state.ready_groups if item.set_id == group.set_id), None
         )
-        if record is None and unrecorded_group(group.set_id) is None:
-            return "library_ownership_unknown"
         if (record is not None and record.pending_sources) or self._torrent_owns_set(group, released):
             return "library_source_held"
         return None
@@ -2484,25 +2544,27 @@ class AutomationOwner:
         return unrecorded_set(group.group_id, group.stem, paths, root)
 
     def _deletion_set(self, operation: PendingDeletion) -> LibrarySet | None:
-        """Return the Library set a pending deletion names, or its failed workspace group projected from its files."""
+        """Return the recorded Library set a deletion names, or project its set without a record from its files."""
         group_id: str | None = unrecorded_group(operation.set_id)
-        if group_id is None:
+        if group_id is None and any(item.set_id == operation.set_id for item in self._state.ready_groups):
             return next((item for item in self._ready_library if item.set_id == operation.set_id), None)
-        return unrecorded_set(
-            group_id,
+        projected: LibrarySet = unrecorded_set(
+            group_id or operation.set_id,
             Path(operation.files[0][0]).stem,
             (name for name, _size, _stamp in operation.files),
             self._service.workspace_root,
         )
+        return projected if group_id is not None else replace(projected, set_id=operation.set_id)
 
     def _projected_set(self, set_id: str, groups: tuple[SourceGroup, ...]) -> LibrarySet | None:
         """Project from *groups* only the Library set *set_id*, exactly as the whole Library would show it."""
         group_id: str = next((item.group_id for item in self._state.ready_groups if item.set_id == set_id), set_id)
+        shown: set[str] = {group_id, *(item.group_id for item in self._ready_library if item.set_id == set_id)}
         state: WatchState = replace(
             self._state, ready_groups=tuple(item for item in self._state.ready_groups if item.group_id == group_id)
         )
         projected: tuple[LibrarySet, ...] = project_library(
-            state, self._service.workspace_root, tuple(group for group in groups if group.group_id == group_id)
+            state, self._service.workspace_root, tuple(group for group in groups if group.group_id in shown)
         )
         return next((item for item in projected if item.set_id == set_id), None)
 
@@ -2719,7 +2781,7 @@ class AutomationOwner:
     def _settle_restore(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
         if operation is not None and operation.restore is not None:
             complete: bool = all(item.status == "restored" for item in operation.restore.outcomes)
             self._save(
@@ -2926,7 +2988,7 @@ class AutomationOwner:
 
     def _settle_deletion(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
         self._deleting.pop(operation_id, None)
         self._active_io -= 1
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
@@ -3715,10 +3777,8 @@ class AutomationOwner:
         if finished.origin is RequestOrigin.USER and finished.state is not RequestState.PAUSED and products:
             candidate = _marked(candidate, finished, products, self._now())
         saved: bool = self._save(candidate)
-        if saved and self._library is not None:
-            self._ready_library = project_library(
-                candidate, self._service.workspace_root, tuple(group.source for group in self._library.groups)
-            )
+        if saved:
+            self._project_ready(self._ready_groups)
         self._ledger.mark_finished(recorded.group_ids)
         groups: tuple[InspectedSourceGroup, ...] = self._run_groups.pop(completion.request_id, ())
         if saved and completion.result is not None:
@@ -3889,6 +3949,7 @@ class AutomationOwner:
         if self._shutting_down:
             return
         self._shutting_down = True
+        self._stopping.set()
         self._settle_at = None
         self._transfers_at = None
         self._inspection_at = None
@@ -4559,8 +4620,15 @@ class AutomationOwner:
         )
 
     def _disk_row(self, record: SubscriptionRecord, index: _EpisodeIndex, disk: _DiskInventory) -> SubscriptionRow:
-        """Project *record* with the episodes its inventory proves ready."""
+        """Project *record* with the episodes its inventory proves ready and the Polish wait its episode shows."""
         row: SubscriptionRow = subscription_row(record)
+        due: SubscriptionTarget | None = next((item for item in record.targets if item.number == row.due_number), None)
+        if (
+            due is not None
+            and self._state.policy.auto_enabled
+            and self._polish_waiting(record, due, self._clock()) is not None
+        ):
+            row = replace(row, due_state="polish")
         if record.anilist_id is None:
             return row
         ready: set[int] = set()
@@ -4955,6 +5023,8 @@ class AutomationOwner:
             else acquisition.requests("user")
         )
         with budget, acquisition.observe_decisions(partial(self._record_decision, command_id=request.command_id)):
+            if payload.get("operation") == "titles":
+                return self._titles_read(acquisition, str(payload.get("query", "")))
             read: ControlResponse | None = (
                 self._franchise_read(request, acquisition)
                 if payload.get("operation") == "franchise"
@@ -4987,6 +5057,17 @@ class AutomationOwner:
                     )
                 )
             )
+
+    def _titles_read(self, acquisition: AcquisitionService, query: str) -> ControlResponse:
+        found: tuple[TitleCandidate, ...] = acquisition.find_titles(query)
+        urls: dict[int, str] = {item.anilist_id: item.cover_url for item in found if item.cover_url is not None}
+        if urls:
+            self._queue.put(lambda: self._want_covers(urls))
+        return ControlResponse.succeeded({"items": [encode_view(item) for item in found]})
+
+    def _want_covers(self, urls: Mapping[int, str]) -> None:
+        self._cover_urls.update(urls)
+        self._request_covers()
 
     def _franchise_read(self, request: ControlRequest, acquisition: AcquisitionService) -> ControlResponse:
         token: EventCancellationToken = EventCancellationToken()
@@ -8594,34 +8675,273 @@ class AutomationOwner:
         )
 
     def _publish_state(self) -> None:
-        self._request_series_titles()
+        self._request_recognition()
+        self._request_series()
+        self._request_covers()
+        self._prune_covers()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
-    def _request_series_titles(self) -> None:
+    def _project_ready(self, groups: tuple[SourceGroup, ...]) -> None:
+        self._ready_groups = groups
+        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+
+    def _named(self, sets: tuple[LibrarySet, ...]) -> tuple[LibrarySet, ...]:
+        return name_series(sets, self._state, self._series, self._recognized)
+
+    def _request_recognition(self) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None or self._shutting_down or self._recognizing or self._recognition_retry_at is not None:
+            return
+        titles: dict[tuple[str, int], tuple[str, int | None]] = hand_titles(self._ready_library, self._state)
+        wanted: dict[tuple[str, int], tuple[str, int | None]] = {
+            key: title for key, title in titles.items() if key not in self._recognition_requested
+        }
+        if not wanted:
+            return
+        self._recognition_requested.update(wanted)
+        self._recognizing += 1
+        threading.Thread(
+            target=self._read_recognition, args=(acquisition, wanted), name=_RECOGNITION_THREAD, daemon=True
+        ).start()
+
+    def _poll_recognition(self) -> None:
+        if self._recognition_retry_at is None or time.monotonic() < self._recognition_retry_at:
+            return
+        self._recognition_retry_at = None
+        self._request_recognition()
+
+    def _read_recognition(
+        self, acquisition: AcquisitionService, wanted: dict[tuple[str, int], tuple[str, int | None]]
+    ) -> None:
+        found: dict[tuple[str, int], int | None] = {}
+        failures: dict[str, int] = {}
+        try:
+            with acquisition.episode_requests():
+                candidates: dict[str, tuple[TitleCandidate, ...]] | None = self._search_hand_titles(
+                    acquisition, tuple(title for title, _highest in wanted.values()), failures
+                )
+            if candidates is not None:
+                found = {
+                    key: recognize(candidates[title], key[0], key[1], highest)
+                    for key, (title, highest) in wanted.items()
+                    if title in candidates
+                }
+        finally:
+            logger.info(
+                "Hand-added Library titles searched",
+                provider="anilist",
+                requested=len(wanted),
+                searched=len(found),
+                recognized=sum(value is not None for value in found.values()),
+                failed=sum(failures.values()),
+                error_classes=sorted(failures),
+            )
+            self._queue.put(lambda: self._record_recognition(tuple(wanted), found))
+
+    def _search_hand_titles(
+        self, acquisition: AcquisitionService, texts: tuple[str, ...], failures: dict[str, int]
+    ) -> dict[str, tuple[TitleCandidate, ...]] | None:
+        for _attempt in range(_RECOGNITION_ATTEMPTS):
+            if not self._anilist_free(acquisition):
+                return None
+            try:
+                return acquisition.find_many_titles(texts)
+            except (AniShiftError, OSError, ValueError) as error:
+                failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
+                if not _cooling(acquisition):
+                    return None
+        return None
+
+    def _anilist_free(self, acquisition: AcquisitionService) -> bool:
+        waited: bool = False
+        while _cooling(acquisition):
+            if not waited:
+                logger.info("Hand-added Library search waits for the AniList cooldown", provider="anilist")
+                waited = True
+            if self._stopping.wait(_RECOGNITION_COOLDOWN_POLL_S):
+                return False
+        return not self._shutting_down
+
+    def _record_recognition(
+        self, wanted: tuple[tuple[str, int], ...], found: dict[tuple[str, int], int | None]
+    ) -> None:
+        self._recognizing -= 1
+        self._recognition_requested -= set(wanted) - found.keys()
+        self._recognition_retry_at = time.monotonic() + self._recognition_retry_s
+        if not found:
+            return
+        self._recognized.update(found)
+        try:
+            save_recognized(self._store.recognition_path(), self._recognized)
+        except OSError as problem:
+            logger.warning("The hand-added Library title cache was not saved", error_class=type(problem).__name__)
+        if any(value is not None for value in found.values()):
+            self._publish_state()
+
+    def _known_entries(self) -> frozenset[int]:
+        return library_entries(self._state) | {value for value in self._recognized.values() if value is not None}
+
+    def _cover_entries(self) -> frozenset[int]:
+        """Return the entries of panel rows: Library sets shown or restorable, processing, subscriptions, search."""
+        restorable: frozenset[str] = frozenset(item.set_id for item in restorable_deletions(self._state))
+        library: set[int] = {
+            item.anilist_id
+            for item in self._named(self._ready_library)
+            if item.anilist_id is not None and (_shown(item) or item.set_id in restorable)
+        }
+        processing: set[int] = {
+            entry for row in self._processing_materials() if isinstance(entry := row.get("anilist_id"), int)
+        }
+        followed: set[int] = {item.anilist_id for item in self._state.subscriptions if item.anilist_id is not None}
+        return frozenset(library | processing | followed | self._cover_urls.keys())
+
+    def _request_covers(self, *, listing: bool = False) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        directory: Path | None = self._cover_directory
+        if acquisition is None or directory is None or self._shutting_down:
+            return
+        wanted: frozenset[int] = self._cover_entries() - self._covers - self._covers_requested
+        if not wanted and not listing:
+            return
+        self._covers_requested.update(wanted)
+        self._active_io += 1
+        known: dict[int, str] = {item: self._cover_urls[item] for item in wanted if item in self._cover_urls}
+        self._pool.submit(self._read_covers, acquisition, directory, tuple(sorted(wanted)), known)
+
+    def _read_covers(
+        self, acquisition: AcquisitionService, directory: Path, anilist_ids: tuple[int, ...], known: dict[int, str]
+    ) -> None:
+        stored: set[int] = set()
+        failures: dict[str, int] = {}
+        skipped: int = 0
+        try:
+            cached: frozenset[int] = acquisition.stored_covers(directory)
+            stored |= cached & set(anilist_ids)
+            self._queue.put(lambda: self._add_covers(cached))
+            missing: list[int] = [anilist_id for anilist_id in anilist_ids if anilist_id not in stored]
+            urls: dict[int, str] = {item: known[item] for item in missing if item in known}
+            unknown: list[int] = [item for item in missing if item not in urls]
+            if unknown and not self._shutting_down:
+                with acquisition.episode_requests():
+                    urls |= acquisition.cover_urls(unknown)
+            for anilist_id in missing:
+                if self._shutting_down:
+                    break
+                url: str | None = urls.get(anilist_id)
+                skipped += url is None
+                if url is not None and self._save_cover(acquisition, directory, anilist_id, url, failures):
+                    stored.add(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
+        finally:
+            logger.info(
+                "Library covers read",
+                provider="anilist",
+                requested=len(anilist_ids),
+                stored=len(stored),
+                skipped=skipped,
+                failed=sum(failures.values()),
+                error_classes=sorted(failures),
+            )
+            self._queue.put(lambda: self._record_covers(stored))
+
+    @staticmethod
+    def _save_cover(
+        acquisition: AcquisitionService, directory: Path, anilist_id: int, url: str, failures: dict[str, int]
+    ) -> bool:
+        try:
+            acquisition.save_cover(anilist_id, url, directory)
+        except (AniShiftError, OSError, ValueError) as error:
+            failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
+            return False
+        return True
+
+    def _record_covers(self, stored: set[int]) -> None:
+        self._active_io -= 1
+        self._add_covers(frozenset(stored))
+
+    def _add_covers(self, stored: frozenset[int]) -> None:
+        shown: frozenset[int] = stored if self._library is None else stored & self._cover_entries()
+        if shown != stored:
+            self._covers_pruned = False
+            self._prune_covers()
+        if shown - self._covers:
+            self._covers |= shown
+            self._publish_state()
+
+    def _prune_covers(self) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        directory: Path | None = self._cover_directory
+        if acquisition is None or directory is None or self._shutting_down or self._pruning_covers:
+            return
+        if self._library is None:
+            return
+        entries: frozenset[int] = self._cover_entries()
+        if self._covers_pruned and self._covers <= entries:
+            return
+        self._pruning_covers = True
+        self._active_io += 1
+        stale: frozenset[int] = frozenset(self._covers - entries)
+        self._pool.submit(self._remove_covers, acquisition, directory, entries, stale)
+
+    def _remove_covers(
+        self, acquisition: AcquisitionService, directory: Path, entries: frozenset[int], stale: frozenset[int]
+    ) -> None:
+        removed: frozenset[int] = frozenset()
+        failed: int = 0
+        try:
+            removed, failed = acquisition.prune_covers(directory, entries)
+        except OSError as error:
+            failed = 1
+            logger.warning("Library covers were not pruned", error_class=type(error).__name__)
+        finally:
+            logger.info("Library covers pruned", kept=len(entries), removed=len(removed), failed=failed)
+            self._queue.put(lambda: self._record_pruned(entries, stale, removed, failed))
+
+    def _record_pruned(
+        self, entries: frozenset[int], stale: frozenset[int], removed: frozenset[int], failed: int
+    ) -> None:
+        self._active_io -= 1
+        self._pruning_covers = False
+        self._covers_pruned = not failed
+        gone: frozenset[int] = removed if failed else removed | stale
+        self._covers_requested -= gone
+        if removed or gone & self._covers:
+            self._covers -= gone
+            self._publish_state()
+        elif not failed and self._cover_entries() != entries:
+            self._prune_covers()
+
+    def _request_series(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None or self._shutting_down:
             return
-        wanted: frozenset[int] = untitled_series(self._state, self._series_titles) - self._series_requested
+        wanted: frozenset[int] = self._known_entries() - self._series.keys() - self._series_requested
         if not wanted:
             return
         self._series_requested.update(wanted)
         self._active_io += 1
-        self._pool.submit(self._read_series_titles, acquisition, tuple(sorted(wanted)))
+        self._pool.submit(self._read_series, acquisition, tuple(sorted(wanted)))
 
-    def _read_series_titles(self, acquisition: AcquisitionService, anilist_ids: tuple[int, ...]) -> None:
-        titles: dict[int, str] = {}
+    def _read_series(self, acquisition: AcquisitionService, anilist_ids: tuple[int, ...]) -> None:
+        found: dict[int, LibrarySeries] = {}
         try:
-            for anilist_id in anilist_ids:
-                title: str | None = _series_title(acquisition, anilist_id)
-                if title is not None:
-                    titles[anilist_id] = title
+            with acquisition.episode_requests():
+                found = library_series(acquisition.library_graph(anilist_ids), anilist_ids)
+        except (AniShiftError, OSError, ValueError) as error:
+            logger.warning(
+                "Library series unavailable",
+                provider="anilist",
+                entries=len(anilist_ids),
+                error_class=type(error).__name__,
+            )
         finally:
-            self._queue.put(lambda: self._record_series_titles(titles))
+            self._queue.put(lambda: self._record_series(found))
 
-    def _record_series_titles(self, titles: dict[int, str]) -> None:
+    def _record_series(self, found: dict[int, LibrarySeries]) -> None:
         self._active_io -= 1
-        self._series_titles.update(titles)
-        if titles:
+        self._series.update(found)
+        if found:
             self._publish_state()
 
     def _progress_views(self) -> list[dict[str, object]]:
@@ -8685,7 +9005,7 @@ class AutomationOwner:
         self._active_io -= 1
         if groups is None:
             return
-        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        self._project_ready(groups)
         self._offer_ready_results(group_ids, request_id)
 
     def _offer_ready_results(self, group_ids: Sequence[str], request_id: str | None) -> None:
@@ -8870,6 +9190,7 @@ class AutomationOwner:
             if item.restore is not None and item.restore.unsettled and item.operation_id != restoring
         }
         groups: set[str] = {item.group_id for item in self._state.ready_groups if item.set_id in protected}
+        groups.update(item.group_id for item in self._ready_library if item.set_id in protected)
         groups.update(group for set_id in protected if (group := unrecorded_group(set_id)) is not None)
         return protected | groups
 
@@ -8896,6 +9217,11 @@ class _OwnerSink:
     def emit(self, event: RunEvent) -> None:
         """Publish one event without owning any workflow state."""
         self._publish(event)
+
+
+def _shown(group: LibrarySet) -> bool:
+    """Whether the panel shows *group*: an available set or an unavailable one with a file still on disk."""
+    return group.available or any(item.identity is not None for item in group.files)
 
 
 def _marked(
@@ -9615,13 +9941,9 @@ def _subscription_details(record: SubscriptionRecord, row: SubscriptionRow) -> d
     }
 
 
-def _series_title(acquisition: AcquisitionService, anilist_id: int) -> str | None:
-    try:
-        with acquisition.episode_requests():
-            return acquisition.catalogue_title(anilist_id)
-    except (AniShiftError, OSError, ValueError) as error:
-        logger.warning("Library series title unavailable", provider="anilist", error_class=type(error).__name__)
-        return None
+def _cooling(acquisition: AcquisitionService) -> bool:
+    control: RequestControl | None = acquisition.request_control
+    return control is not None and control.cooling("anilist")
 
 
 def _subscription_draft(read: ListingRead, entry: FranchiseEntry | None, now: datetime) -> SubscriptionRecord | str:
@@ -9633,7 +9955,11 @@ def _subscription_draft(read: ListingRead, entry: FranchiseEntry | None, now: da
     if not read.live or entry is None:
         return EpisodeReason.SOURCE_FAILED
     record: SubscriptionRecord = SubscriptionRecord(
-        token_hex(_ID_BYTES), entry.anilist_id, entry.english or entry.romaji, now.astimezone(UTC).isoformat(), cut
+        token_hex(_ID_BYTES),
+        entry.anilist_id,
+        entry_title(entry.english, entry.romaji),
+        now.astimezone(UTC).isoformat(),
+        cut,
     )
     return merge_listing(record, read, now)
 
@@ -9847,10 +10173,6 @@ def _catalog_read(
     acquisition: AcquisitionService, payload: Mapping[str, object], switches: SourceSwitches
 ) -> ControlResponse | None:
     operation: object = payload.get("operation")
-    if operation == "titles":
-        return ControlResponse.succeeded(
-            {"items": [encode_view(item) for item in acquisition.find_titles(str(payload.get("query", "")))]}
-        )
     if operation == "search":
         return ControlResponse.succeeded(encode_view(acquisition.search(str(payload.get("query", "")))))
     if operation == "episodes":

@@ -75,6 +75,7 @@ class TitleCandidate:
     prequel_ids: tuple[int, ...]
     start: date | None = None
     country: str | None = None
+    cover_url: str | None = None
 
     def aliases(self) -> tuple[str, ...]:
         """Return the Latin-script names of this title, in catalog order, without repeats."""
@@ -92,11 +93,6 @@ class TitleCandidate:
     def is_cour(self) -> bool:
         """Whether this entry continues the season before it instead of opening a new one."""
         return is_cour_title(self.romaji, self.english)
-
-    def folder_title(self) -> str:
-        """Return the name used for the library folder: English when known, else romaji."""
-        english: str = (self.english or "").strip()
-        return english or self.romaji
 
 
 def _is_latin(text: str) -> bool:

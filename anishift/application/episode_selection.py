@@ -52,6 +52,7 @@ __all__ = [
     "EntryGroup",
     "EpisodeKey",
     "EpisodeListing",
+    "EpisodeName",
     "EpisodeOffer",
     "Franchise",
     "FranchiseEntry",
@@ -66,6 +67,7 @@ __all__ = [
     "SeasonDates",
     "StreamCandidate",
     "confidence_text",
+    "entry_title",
     "episode_listing",
     "fill_episode_titles",
     "first_season_numbering",
@@ -110,7 +112,7 @@ _SELF_RELATION: Final[str] = "SELF"
 _ANIME_TYPE: Final[str] = "ANIME"
 """AniList media type of every node the franchise graph keeps."""
 
-_SEASON_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
+SEASON_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
 """AniList formats that count as a season of the identity chain."""
 
 _EXTRA_FORMATS: Final[frozenset[str]] = frozenset({"OVA", "SPECIAL"})
@@ -240,6 +242,11 @@ class EntryGroup(StrEnum):
     OTHER = "other"
 
 
+def entry_title(english: str | None, romaji: str) -> str:
+    """Return the title every panel view shows for one AniList entry: English when known, else romaji."""
+    return (english or "").strip() or romaji
+
+
 @dataclass(frozen=True, slots=True)
 class FranchiseEntry:
     """One AniList entry of a franchise view."""
@@ -286,6 +293,14 @@ class FranchiseGraph:
 
 
 @dataclass(frozen=True, slots=True)
+class LibraryGraph:
+    """Every fetched franchise node of several Library entries as raw AniList JSON."""
+
+    nodes: Mapping[int, JsonObject]
+    queried: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
 class ListedEpisode:
     """One numbered episode of an entry."""
 
@@ -303,6 +318,15 @@ class ListedEpisode:
     def title(self) -> str | None:
         """Return the English title, else the romaji one."""
         return self.title_en or self.title_romaji
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeName:
+    """Catalogue facts one downloaded episode set is named after: entry title, listed episode and film format."""
+
+    title: str
+    episode: ListedEpisode
+    film: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -813,7 +837,7 @@ def _entry(node: JsonObject, relation: str, *, in_chain: bool) -> FranchiseEntry
 def _group(media_format: str | None, *, in_chain: bool) -> EntryGroup:
     if media_format in _EXTRA_FORMATS:
         return EntryGroup.EXTRA
-    if media_format in _SEASON_FORMATS and in_chain:
+    if media_format in SEASON_FORMATS and in_chain:
         return EntryGroup.SEASON
     return EntryGroup.OTHER
 
@@ -848,7 +872,7 @@ def _first_season(chain: Sequence[int], nodes: Mapping[int, JsonObject]) -> Json
     seasons: list[JsonObject] = [
         nodes[identifier]
         for identifier in chain
-        if identifier in nodes and nodes[identifier]["format"] in _SEASON_FORMATS
+        if identifier in nodes and nodes[identifier]["format"] in SEASON_FORMATS
     ]
     return min(seasons, key=_season_order, default=None)
 

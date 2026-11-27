@@ -8,13 +8,21 @@ the code:
 - `settings.json` stores workflow and engine preferences;
 - `presets.json` stores reusable run presets and the default preset;
 - `watch/` stores resident control state, including subscriptions in
-  `watch/state.json`, and its local endpoint credentials;
+  `watch/state.json`, and its local endpoint credentials. `watch/recognition.json`
+  caches the AniList entry found (or not found) for each hand-added Library title;
+  deleting it only makes the resident search those titles again;
 - `qbittorrent/` stores the resident's private client profile, process
   receipt and credentials. The executable is in `external/bin/qbittorrent/`;
 - `elevenreader/` stores the ElevenReader browser profile in `chrome-profile/`
   (the signed-in session, restricted to the current account) and the last
   session check in `session.json` (`signed_in`, `checked_at` and the account cleanup still owed:
   `restore` with the previous voice and speed, `delete_document`; never a read id or token).
+- `covers/` caches the AniList cover images of Library and subscription titles,
+  one `<anilist_id>.jpg` per entry, written by the resident and shown in the panel.
+  Deleting a file only makes the resident download it again. `covers/sixel/` keeps the panel's encoded SIXEL
+  payloads of those images, one per cover, cell size and encoding version; deleting them only makes the panel
+  encode them again. The resident deletes the cover of a title no longer in the Library, processing,
+  subscriptions or this session's search results, and payloads without their cover or of an older encoding.
 
 `ANISHIFT_CONFIG_DIR` replaces this directory entirely, so a test or a second
 account can keep its own preferences and watch state elsewhere.

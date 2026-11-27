@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Final
 
 from rich.console import Console
@@ -17,6 +18,7 @@ from anishift.application import (
     FranchiseEntry,
     ListedEpisode,
     TitleCandidate,
+    entry_title,
 )
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.anime_texts import (
@@ -28,7 +30,16 @@ from anishift.cli.interactive.anime_texts import (
 )
 from anishift.cli.interactive.subscription_texts import SubscriptionDraft
 
-__all__ = ["draft_rows", "entry_rows", "episode_row", "file_rows", "special_rows", "text_rows", "title_rows"]
+__all__ = [
+    "air_date",
+    "draft_rows",
+    "entry_rows",
+    "episode_row",
+    "file_rows",
+    "special_rows",
+    "text_rows",
+    "title_rows",
+]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -63,7 +74,7 @@ def title_rows(candidates: Sequence[TitleCandidate]) -> tuple[AnimeRow, ...]:
     return tuple(
         AnimeRow(
             str(item.anilist_id),
-            item.english or item.romaji,
+            entry_title(item.english, item.romaji),
             date=_year_label(item.year),
             kind=_format_label(item.format),
             status=_ENTRY_STATUSES.get(item.status.value, ""),
@@ -77,7 +88,7 @@ def entry_rows(entries: Sequence[FranchiseEntry]) -> tuple[AnimeRow, ...]:
     return tuple(
         AnimeRow(
             str(item.anilist_id),
-            item.english or item.romaji,
+            entry_title(item.english, item.romaji),
             date=_year_label(item.year),
             kind=_format_label(item.format),
             status=_ENTRY_STATUSES.get(item.status, ""),
@@ -100,6 +111,11 @@ def text_rows(values: Sequence[str], width: int) -> tuple[AnimeRow, ...]:
     )
 
 
+def air_date(moment: datetime | None) -> str:
+    """Return the local air date of an episode as ``dd.mm.yyyy``, or a dash when it is unknown."""
+    return moment.astimezone().strftime("%d.%m.%Y") if moment is not None else "—"
+
+
 def episode_row(episode: ListedEpisode, status: EpisodeStatus | None, *, film: bool, eligible: bool) -> AnimeRow:
     """Return the row of one listed episode with its owner state."""
     label: str = episode_status_label(status) if status else ""
@@ -117,7 +133,7 @@ def episode_row(episode: ListedEpisode, status: EpisodeStatus | None, *, film: b
         str(episode.number),
         episode.title or ("Film" if film else f"Odcinek {episode.number}"),
         number="Film" if film else str(episode.number),
-        date=episode.airs_at.astimezone().strftime("%d.%m.%Y") if episode.airs_at else "—",
+        date=air_date(episode.airs_at),
         status=label,
         eligible=eligible,
         detail=detail,
@@ -148,7 +164,7 @@ def special_rows(listing: EpisodeListing, franchise: Franchise | None) -> tuple[
         *(
             AnimeRow(
                 f"related:{item.anilist_id}",
-                safe(item.english or item.romaji),
+                safe(entry_title(item.english, item.romaji)),
                 number=item.format or "",
                 date=str(item.year or "—"),
                 status="Enter otwórz",

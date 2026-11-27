@@ -37,6 +37,7 @@ from anishift.cli.interactive.pointer import (
 from anishift.cli.interactive.prompts import TerminalRenderer, _WheelControl
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.state_library import UNRECOGNIZED_KEY
 from anishift.utils.rich_console.theme import RICH_THEME
 
 pytestmark = pytest.mark.unit
@@ -84,6 +85,7 @@ def library(
     controller: StateController = _state(monkeypatch)
     controller._tab = state_module._Tab.FILES
     controller._snapshot = {"library": [{"set_id": f"set-{index}", "name": f"Episode {index}"} for index in range(5)]}
+    controller._library_title = UNRECOGNIZED_KEY
     application, _copied = _application(monkeypatch, _Mode.STATE)
     application._state = controller
     try:
@@ -104,6 +106,21 @@ def test_hovered_bands_every_line_of_a_wrapped_row_only_over_the_list() -> None:
     assert hovered(frame, TextPoint(0, 2)) == ()
     assert hovered(frame, TextPoint(9, 0)) == ()
     assert hovered(frame, None) == ()
+
+
+def test_hovered_row_names_the_list_row_the_hover_lights() -> None:
+    frame: Text = Text("NAGŁÓWEK\n")
+    append_wrapped_row(frame, 2, ("pierwsza linia", "  dalszy ciąg"), False, "", index=7)
+    append_wrapped_row(frame, 2, ("druga pozycja",), True, "", index=8)
+    selection: FrameSelection = FrameSelection()
+    selection.paint(frame, ())
+
+    selection.hover(TextPoint(2, 5))
+    wrapped: int | None = selection.hovered_row()
+    selection.hover(TextPoint(0, 2))
+
+    assert wrapped == 7
+    assert selection.hovered_row() is None
 
 
 def test_hovered_bands_only_the_tagged_tab_under_the_mouse() -> None:
@@ -184,9 +201,9 @@ def test_panel_hover_shades_a_whole_table_row_without_selecting_it(
     first: list[str] = _lit(application._render_frame(80, 24))
 
     assert len(third) == 1
-    assert third[0].strip().startswith("Episode 3")
+    assert third[0].strip().startswith("[ ] —   Episode 3")
     assert third[0].rstrip().endswith("—")
-    assert first[0].strip().startswith("Episode 1")
+    assert first[0].strip().startswith("[ ] —   Episode 1")
     assert controller._selected == 0
 
 
@@ -390,6 +407,80 @@ def test_a_box_click_marks_the_episode_and_keeps_the_hover(
     assert "[x]" in line
     assert chr(0x276F) in line
     assert application._frame_selection._hover == TextPoint(point.y, point.x)
+
+
+def _down(application: interactive_app._InteractiveApplication, point: Point) -> None:
+    application._handle_mouse(MouseEvent(point, MouseEventType.MOUSE_DOWN, MouseButton.LEFT, frozenset()))
+
+
+def test_an_anime_press_on_another_row_changes_nothing_until_the_release(
+    episodes_app: tuple[interactive_app._InteractiveApplication, keys._Probe],
+) -> None:
+    application, _probe = episodes_app
+    box: Point = _box(application._render_frame(80, 24), 3)
+    point: Point = Point(box.x + 6, box.y)
+    _hover(application, point)
+    hovered_frame: Text = application._render_frame(80, 24)
+
+    _down(application, point)
+    pressed: Text = application._render_frame(80, 24)
+    application._handle_mouse(MouseEvent(point, MouseEventType.MOUSE_UP, MouseButton.LEFT, frozenset()))
+    released: str = application._render_frame(80, 24).plain
+
+    assert (pressed.plain, _lit(pressed)) == (hovered_frame.plain, _lit(hovered_frame))
+    assert chr(0x276F) in released.splitlines()[point.y]
+
+
+def test_a_list_press_on_another_row_changes_nothing_until_the_release(
+    library: tuple[interactive_app._InteractiveApplication, StateController],
+) -> None:
+    application, controller = library
+    frame: Text = application._render_frame(80, 24)
+    row: int = _row_of(frame, 3)
+    point: Point = Point(len(frame.plain.split("\n")[row]) // 2, row)
+    _hover(application, point)
+    hovered_frame: Text = application._render_frame(80, 24)
+
+    _down(application, point)
+    pressed: Text = application._render_frame(80, 24)
+    application._handle_mouse(MouseEvent(point, MouseEventType.MOUSE_UP, MouseButton.LEFT, frozenset()))
+
+    assert (pressed.plain, _lit(pressed)) == (hovered_frame.plain, _lit(hovered_frame))
+    assert controller._selected == 3
+
+
+def test_a_press_keeps_the_copy_notice_and_the_text_selection_until_the_release() -> None:
+    frame: Text = Text("  Odcinek 1\n  Odcinek 2")
+    selection: FrameSelection = FrameSelection(clipboard=lambda _value: True)
+    selection.paint(frame.copy(), ())
+    for kind, x in ((MouseEventType.MOUSE_DOWN, 2), (MouseEventType.MOUSE_MOVE, 8), (MouseEventType.MOUSE_UP, 8)):
+        selection.mouse(MouseEvent(Point(x, 0), kind, MouseButton.LEFT, frozenset()))
+    selection.copy("copy")
+    chosen: tuple[TextPoint, TextPoint] | None = selection._selection
+
+    selection.mouse(MouseEvent(Point(4, 1), MouseEventType.MOUSE_DOWN, MouseButton.LEFT, frozenset()))
+    pressed: tuple[str, tuple[TextPoint, TextPoint] | None] = (selection.notice, selection._selection)
+    selection.mouse(MouseEvent(Point(4, 1), MouseEventType.MOUSE_UP, MouseButton.LEFT, frozenset()))
+
+    assert pressed == ("Skopiowano zaznaczenie", chosen)
+    assert (selection.notice, selection._selection) == ("", None)
+
+
+def test_an_anime_press_keeps_the_notice_until_the_release() -> None:
+    items: tuple[AnimeRow, ...] = (AnimeRow("one", "Odcinek 1", number="1"), AnimeRow("two", "Odcinek 2", number="2"))
+    panel: AnimePanel = AnimePanel(
+        AnimeViewState(screen=AnimeScreen.EPISODES, items=items), lambda _action, _keys: None, lambda: 0.0
+    )
+    frame: Text = panel.frame(80, 24)
+    row: int = next(index for index, line in enumerate(frame.plain.split("\n")) if "Odcinek 2" in line)
+    panel.state.notice = "Zlecono 1"
+
+    panel.mouse(MouseEvent(Point(10, row), MouseEventType.MOUSE_DOWN, MouseButton.LEFT, frozenset()))
+    pressed: tuple[str, int] = (panel.state.notice, panel.state.cursor)
+    panel.mouse(MouseEvent(Point(10, row), MouseEventType.MOUSE_UP, MouseButton.LEFT, frozenset()))
+
+    assert pressed == ("Zlecono 1", 0)
+    assert (panel.state.notice, panel.state.cursor) == ("", 1)
 
 
 def test_a_box_click_with_the_range_field_open_never_types_into_it(

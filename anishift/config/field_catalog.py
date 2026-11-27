@@ -322,6 +322,7 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "source_nyaa": SettingDisposition.VISIBLE,
         "source_knaben": SettingDisposition.VISIBLE,
         "source_nekobt": SettingDisposition.VISIBLE,
+        "show_covers": SettingDisposition.VISIBLE,
         "subscription_polish_wait_h": SettingDisposition.VISIBLE,
         "mode": SettingDisposition.REMOVED,
         "processing_order_policy": SettingDisposition.VISIBLE,
@@ -415,6 +416,14 @@ def _acquisition_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
                 ("knaben", "Knaben"),
                 ("nekobt", "nekoBT"),
             )
+        ),
+        SettingSpec(
+            setting_id="show_covers",
+            label="Covers",
+            description="Show the AniList cover of the highlighted title beside the panel lists.",
+            value_type=SettingValueType.BOOLEAN,
+            default=defaults.show_covers,
+            scope=SettingScope.GLOBAL,
         ),
         SettingSpec(
             setting_id="subscription_polish_wait_h",

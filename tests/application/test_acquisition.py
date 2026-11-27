@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -54,9 +54,11 @@ from anishift.application.episode_selection import (
     EntryGroup,
     EpisodeKey,
     EpisodeListing,
+    EpisodeName,
     EpisodeOffer,
     Franchise,
     FranchiseGraph,
+    LibraryGraph,
     ListedEpisode,
     RankedCandidate,
     SeasonDates,
@@ -67,7 +69,6 @@ from anishift.application.episode_selection import (
     season_dates,
     suggestion,
 )
-from anishift.application.library import EpisodeName
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.services.catalog import (
     EpisodeAiring,
@@ -127,12 +128,20 @@ class _TitleCatalog:
         self.schedules: dict[int, SeasonAiring] = dict(schedules or {})
         self.searched: list[str] = []
         self.franchised: list[int] = []
+        self.library_reads: list[list[int]] = []
+        self.covers: dict[int, str] = {}
+        self.files: dict[str, bytes] = {}
+        self.cover_reads: list[list[int]] = []
+        self.downloads: list[str] = []
         self.scheduled: list[int] = []
         self.schedule_fails: bool = False
 
     def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
         self.searched.append(text)
         return self.candidates[:limit]
+
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
+        return {text: self.search(text, limit=limit) for text in texts}
 
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         return self.prequels
@@ -148,6 +157,22 @@ class _TitleCatalog:
     def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
         self.franchised.append(anilist_id)
         return self.graphs[anilist_id]
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        self.library_reads.append(sorted(anilist_ids))
+        graphs: list[FranchiseGraph] = [self.graphs[key] for key in anilist_ids if key in self.graphs]
+        return LibraryGraph(
+            {key: node for graph in graphs for key, node in graph.nodes.items()},
+            frozenset(key for graph in graphs for key in graph.queried),
+        )
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        self.cover_reads.append(sorted(anilist_ids))
+        return {key: url for key, url in self.covers.items() if key in anilist_ids}
+
+    def cover(self, url: str) -> bytes:
+        self.downloads.append(url)
+        return self.files[url]
 
 
 class _EpisodeCatalog:
@@ -2035,7 +2060,6 @@ def test_episode_name_reads_the_english_series_and_the_listed_episode(tmp_path: 
     assert (name.title, name.film) == ("Blue Box", False)
     assert (name.episode.number, name.episode.season, name.episode.episode) == (7, 2, 7)
     assert name.episode.title == "Deja Vu"
-    assert service.catalogue_title(_ENTRY_ID) == "Blue Box"
 
 
 @pytest.mark.unit
@@ -2051,7 +2075,7 @@ def test_episode_name_keeps_a_remembered_series_when_anilist_fails_later(tmp_pat
     catalogue: FakeEpisodeCatalogue = FakeEpisodeCatalogue(english="Blue Box")
     clock: _Clock = _Clock()
     service: AcquisitionService = _named_service(tmp_path, catalogue, clock)
-    service.catalogue_title(_ENTRY_ID)
+    service.episode_name(_ENTRY_ID, 3)
     clock.now += 100_000
     catalogue.down = True
 

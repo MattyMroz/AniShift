@@ -10,9 +10,9 @@ import httpx
 import pytest
 
 from anishift.application.cancellation import EventCancellationToken
-from anishift.application.episode_selection import FranchiseGraph
+from anishift.application.episode_selection import FranchiseGraph, LibraryGraph, franchise_traversal
 from anishift.errors import ErrorCode, ExecutionError
-from anishift.services.catalog.anilist import ANILIST_URL, AniListCatalog
+from anishift.services.catalog.anilist import ANILIST_URL, MAX_COVER_BYTES, AniListCatalog
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.types import EpisodeAiring, PrequelEntry, SeasonAiring, TitleCandidate, TitleStatus
 
@@ -108,6 +108,98 @@ def test_franchise_invalid_body_is_catalog_failure(body: object) -> None:
         pytest.raises(TitleCatalogError),
     ):
         AniListCatalog(http).franchise(1)
+
+
+def _recorded_media(*identifiers: int) -> dict[int, dict[str, Any]]:
+    media: dict[int, dict[str, Any]] = {}
+    for identifier in identifiers:
+        fixture: Path = Path(__file__).parents[2] / f"fixtures/search/anilist__franchise__{identifier}.json"
+        recorded: dict[str, Any] = json.loads(fixture.read_text(encoding="utf-8"))
+        for saved in recorded["requests"]:
+            media.update((node["id"], node) for node in saved["body"]["data"]["Page"]["media"])
+    return media
+
+
+@pytest.mark.unit
+def test_library_graph_reads_fifty_ids_per_request() -> None:
+    calls: list[list[int]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        assert "perPage: 50" in body["query"]
+        calls.append(body["variables"]["ids"])
+        media: list[dict[str, Any]] = [
+            {"id": key, "type": "ANIME", "format": "TV", "title": {"romaji": f"T{key}"}, "relations": {"edges": []}}
+            for key in body["variables"]["ids"]
+        ]
+        return httpx.Response(200, json=_page(media))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        graph: LibraryGraph = AniListCatalog(http).library_graph(range(1, 121))
+
+    assert [len(call) for call in calls] == [50, 50, 20]
+    assert set(graph.nodes) == set(range(1, 121))
+    assert graph.queried == frozenset(range(1, 121))
+
+
+@pytest.mark.unit
+def test_library_graph_expands_missing_chain_nodes_within_the_request_bound() -> None:
+    recorded: dict[int, dict[str, Any]] = _recorded_media(101280, 106509, 387)
+    calls: list[list[int]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        ids: list[int] = json.loads(request.content)["variables"]["ids"]
+        calls.append(ids)
+        return httpx.Response(200, json=_page([recorded[key] for key in ids if key in recorded]))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        graph: LibraryGraph = AniListCatalog(http).library_graph((387, 182205, 106509))
+
+    assert calls[0] == [387, 106509, 182205]
+    assert 1 < len(calls) <= 4
+    assert all(not franchise_traversal(key, graph.nodes, graph.queried)[2] for key in (387, 182205, 106509))
+
+
+@pytest.mark.unit
+def test_library_graph_stops_expanding_after_four_rounds() -> None:
+    calls: list[list[int]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        ids: list[int] = json.loads(request.content)["variables"]["ids"]
+        calls.append(ids)
+        media: list[dict[str, Any]] = [
+            {
+                "id": key,
+                "type": "ANIME",
+                "format": "TV",
+                "title": {"romaji": "Root"},
+                "relations": {
+                    "edges": [
+                        {
+                            "relationType": "SEQUEL",
+                            "node": {"id": key + 1, "type": "ANIME", "format": "TV", "title": {"romaji": "Next"}},
+                        }
+                    ]
+                },
+            }
+            for key in ids
+        ]
+        return httpx.Response(200, json=_page(media))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        graph: LibraryGraph = AniListCatalog(http).library_graph((1,))
+
+    assert calls == [[1], [2], [3], [4]]
+    assert set(graph.nodes) == {1, 2, 3, 4, 5}
+
+
+@pytest.mark.unit
+def test_library_graph_failure_is_a_catalog_error() -> None:
+    with (
+        httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(429))) as http,
+        pytest.raises(TitleCatalogError),
+    ):
+        AniListCatalog(http).library_graph((1,))
 
 
 _SOLO_LEVELING: Final[dict[str, Any]] = {
@@ -279,6 +371,33 @@ def test_candidate_country_of_origin(node: dict[str, Any], country: str | None) 
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("image", "url"),
+    [
+        (
+            {"extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx176496.jpg"},
+            "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx176496.jpg",
+        ),
+        ({"extraLarge": None}, None),
+        (None, None),
+    ],
+)
+def test_search_reads_the_extra_large_cover_address(image: dict[str, object] | None, url: str | None) -> None:
+    queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries.append(json.loads(request.content)["query"])
+        return httpx.Response(200, json=_page([{**_SOLO_LEVELING, "coverImage": image}]))
+
+    catalog, http = _catalog(handler)
+    with http:
+        candidate: TitleCandidate = catalog.search("solo leveling")[0]
+
+    assert "coverImage { extraLarge }" in queries[0]
+    assert candidate.cover_url == url
+
+
+@pytest.mark.unit
 def test_franchise_query_asks_for_the_country_of_origin_at_every_depth() -> None:
     queries: list[str] = []
     root: dict[str, Any] = {"id": 1, "type": "ANIME", "format": "ONA", "title": {"romaji": "Root"}}
@@ -395,6 +514,93 @@ def test_search_does_not_retry_when_no_word_can_be_shortened() -> None:
     assert searched == ["one"]
 
 
+def _aliased(hits: Callable[[str], bool]) -> Callable[[dict[str, Any]], httpx.Response]:
+    def answer(body: dict[str, Any]) -> httpx.Response:
+        searched: dict[str, str] = {key: value for key, value in body["variables"].items() if key != "limit"}
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    f"t{key.removeprefix('s')}": {"media": [_SOLO_LEVELING] if hits(text) else []}
+                    for key, text in searched.items()
+                }
+            },
+        )
+
+    return answer
+
+
+@pytest.mark.unit
+def test_search_many_spends_at_most_fifteen_aliases_with_shortened_retries_and_leaves_the_rest_out() -> None:
+    bodies: list[dict[str, Any]] = []
+    answer: Callable[[dict[str, Any]], httpx.Response] = _aliased(lambda text: text == "sol level")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        bodies.append(body)
+        return answer(body)
+
+    catalog, http = _catalog(handler)
+    texts: list[str] = [*(f"x{index}" for index in range(12)), "solo levelling", "one", "x99"]
+    with http:
+        found: dict[str, tuple[TitleCandidate, ...]] = catalog.search_many(texts)
+
+    assert [len(body["variables"]) - 1 for body in bodies] == [14, 1]
+    assert bodies[1]["variables"]["s0"] == "sol level"
+    assert all("t0: Page(perPage: $limit)" in body["query"] for body in bodies)
+    assert bodies[0]["variables"]["limit"] == 7
+    assert [len(found[text]) for text in texts[:-1]] == [0] * 12 + [1, 0]
+    assert "x99" not in found
+
+
+@pytest.mark.unit
+def test_search_many_in_minute_cycles_finds_forty_titles_without_crossing_thirty_points_a_minute() -> None:
+    texts: list[str] = [f"long title number{index}" if index % 3 == 0 else f"t{index}" for index in range(40)]
+    points: list[int] = [0]
+    rejected: list[int] = []
+    answer: Callable[[dict[str, Any]], httpx.Response] = _aliased(
+        lambda text: text.startswith("t") or text.startswith("lon tit")
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        points[-1] += len(body["variables"]) - 1
+        if points[-1] > 30:
+            rejected.append(points[-1])
+            return httpx.Response(429, json={"errors": [{"message": "Too Many Requests"}]})
+        return answer(body)
+
+    catalog, http = _catalog(handler)
+    found: dict[str, tuple[TitleCandidate, ...]] = {}
+    with http:
+        while len(found) < len(texts) and len(points) <= 10:
+            found.update(catalog.search_many([text for text in texts if text not in found]))
+            points.append(0)
+
+    assert rejected == []
+    assert all(found[text] for text in texts)
+    assert max(points) <= 15
+
+
+@pytest.mark.unit
+def test_search_many_keeps_the_first_request_answers_when_the_shortened_retry_fails() -> None:
+    answer: Callable[[dict[str, Any]], httpx.Response] = _aliased(lambda text: text == "found")
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) > 1:
+            return httpx.Response(429, json={"errors": [{"message": "Too Many Requests"}]})
+        return answer(json.loads(request.content))
+
+    catalog, http = _catalog(handler)
+    with http:
+        found: dict[str, tuple[TitleCandidate, ...]] = catalog.search_many(["found", "solo levelling", "zz"])
+
+    assert len(calls) == 2
+    assert {text: len(candidates) for text, candidates in found.items()} == {"found": 1, "zz": 0}
+
+
 def test_search_rejects_a_rate_limited_answer() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, json={"errors": [{"message": "Too Many Requests"}]})
@@ -454,18 +660,6 @@ def test_aliases_keep_latin_names_without_repeats() -> None:
         "Solo Leveling Season 2: Arise from the Shadow",
         "Solo Leveling 2nd Season",
     )
-
-
-def test_folder_title_prefers_english_and_falls_back_to_romaji() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=_page([_SOLO_LEVELING, _MUSHOKU]))
-
-    catalog, http = _catalog(handler)
-    with http:
-        candidates = catalog.search("anything")
-
-    assert candidates[0].folder_title() == "Solo Leveling Season 2: Arise from the Shadow"
-    assert candidates[1].folder_title() == "Mushoku Tensei III"
 
 
 def test_episode_offset_sums_the_prequel_chain_and_ignores_movies_and_cycles() -> None:
@@ -579,3 +773,115 @@ def test_prequel_episodes_marks_an_entry_whose_title_names_a_cour() -> None:
 
     assert entries == (PrequelEntry(episodes=12, cour=True), PrequelEntry(episodes=12, cour=False))
     assert offset == 24
+
+
+_ONE_PIECE_COVER: Final[str] = "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21-ELSYx3yMPcKM.jpg"
+
+
+def _covers_page() -> dict[str, Any]:
+    return _page(
+        [
+            {
+                "id": 21,
+                "title": {"romaji": "ONE PIECE", "english": "ONE PIECE"},
+                "coverImage": {
+                    "extraLarge": _ONE_PIECE_COVER,
+                    "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx21-ELSYx3yMPcKM.jpg",
+                    "medium": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/small/bx21-ELSYx3yMPcKM.jpg",
+                    "color": "#e49335",
+                },
+            },
+            {
+                "id": 1535,
+                "coverImage": {
+                    "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1535.jpg",
+                    "color": None,
+                },
+            },
+            {"id": 16498, "coverImage": None},
+            {"id": 30, "coverImage": {"extraLarge": None}},
+        ]
+    )
+
+
+@pytest.mark.unit
+def test_cover_urls_read_extra_large_by_id() -> None:
+    sent: list[dict[str, Any]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=_covers_page())
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        urls: dict[int, str] = AniListCatalog(http).cover_urls((1535, 21, 999999999))
+
+    assert urls[21] == _ONE_PIECE_COVER
+    assert urls[1535].endswith("/bx1535.jpg")
+    assert sent[0]["variables"] == {"ids": [21, 1535, 999999999]}
+    assert "coverImage { extraLarge }" in sent[0]["query"]
+
+
+@pytest.mark.unit
+def test_missing_or_null_cover_is_skipped() -> None:
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=_covers_page()))) as http:
+        urls: dict[int, str] = AniListCatalog(http).cover_urls((16498, 30, 999999999))
+
+    assert 16498 not in urls
+    assert 30 not in urls
+    assert 999999999 not in urls
+
+
+def _cover_client(response: httpx.Response, seen: list[httpx.Request]) -> httpx.Client:
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return response
+
+    return httpx.Client(transport=httpx.MockTransport(respond))
+
+
+@pytest.mark.unit
+def test_cover_downloads_the_file_from_the_cdn() -> None:
+    seen: list[httpx.Request] = []
+    with _cover_client(httpx.Response(200, content=b"jpeg"), seen) as http:
+        assert AniListCatalog(http).cover(_ONE_PIECE_COVER) == b"jpeg"
+    assert [str(item.url) for item in seen] == [_ONE_PIECE_COVER]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/file/anilistcdn/media/anime/cover/large/bx21.jpg",
+        "https://s4.anilist.co.example.com/bx21.jpg",
+    ],
+)
+def test_cover_refuses_another_host(url: str) -> None:
+    seen: list[httpx.Request] = []
+    with _cover_client(httpx.Response(200, content=b"jpeg"), seen) as http, pytest.raises(TitleCatalogError):
+        AniListCatalog(http).cover(url)
+    assert seen == []
+
+
+@pytest.mark.unit
+def test_cover_refuses_plain_http() -> None:
+    seen: list[httpx.Request] = []
+    with _cover_client(httpx.Response(200, content=b"jpeg"), seen) as http, pytest.raises(TitleCatalogError):
+        AniListCatalog(http).cover(_ONE_PIECE_COVER.replace("https://", "http://"))
+    assert seen == []
+
+
+@pytest.mark.unit
+def test_cover_refuses_a_redirect() -> None:
+    seen: list[httpx.Request] = []
+    moved: httpx.Response = httpx.Response(301, headers={"Location": "https://example.com/other.jpg"})
+    with _cover_client(moved, seen) as http, pytest.raises(TitleCatalogError):
+        AniListCatalog(http).cover(_ONE_PIECE_COVER)
+    assert len(seen) == 1
+
+
+@pytest.mark.unit
+def test_cover_refuses_more_than_two_megabytes() -> None:
+    seen: list[httpx.Request] = []
+    large: httpx.Response = httpx.Response(200, content=b"x" * (MAX_COVER_BYTES + 1))
+    with _cover_client(large, seen) as http, pytest.raises(TitleCatalogError):
+        AniListCatalog(http).cover(_ONE_PIECE_COVER)

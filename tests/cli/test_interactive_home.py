@@ -8,7 +8,7 @@ from rich.text import Text
 from anishift.cli.interactive.app import _closing_label, _fit_frame, _home_content
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
 from anishift.cli.interactive.mascot import MascotState, mascot_art
-from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR
 from anishift.cli.interactive.pointer import Click, ClickKind, TextPoint, click_at
 from anishift.cli.interactive.prompts import (
     AutoGeometry,
@@ -99,7 +99,7 @@ def test_a_narrow_home_keeps_the_slime_and_uses_a_fitting_wordmark(columns: int)
     brand = brand_for_geometry(geometry, native_mascot=True)
 
     assert geometry.show_mascot
-    assert NATIVE_MASCOT_ANCHOR in brand.plain
+    assert NATIVE_IMAGE_ANCHOR in brand.plain
     assert all(line.cell_len <= columns for line in brand.split("\n"))
 
 
@@ -108,7 +108,7 @@ def test_the_wordmark_stays_still_while_the_native_slime_animates() -> None:
     frames: list[Text] = [
         brand_for_geometry(geometry, native_mascot=True, animation_phase=phase) for phase in range(24)
     ]
-    positions: list[int] = [frame.plain.index(NATIVE_MASCOT_ANCHOR) for frame in frames]
+    positions: list[int] = [frame.plain.index(NATIVE_IMAGE_ANCHOR) for frame in frames]
 
     assert len(set(positions)) == 1
     assert {len(frame.split("\n")) for frame in frames} == {geometry.brand_rows}
@@ -122,7 +122,7 @@ def test_native_raster_padding_does_not_lower_the_wordmark(auto: bool) -> None:
     )
     frame = brand_for_geometry(geometry, native_mascot=True)
     lines: list[str] = frame.plain.split("\n")
-    anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
+    anchor: int = next(index for index, line in enumerate(lines) if NATIVE_IMAGE_ANCHOR in line)
     wordmark_bottom: int = max(index for index, line in enumerate(lines) if "═" in line)
 
     assert wordmark_bottom - anchor == 9
@@ -136,7 +136,7 @@ def test_only_the_slime_remains_when_the_full_wordmark_cannot_fit(columns: int) 
 
     assert geometry.show_mascot
     assert not geometry.show_full_wordmark
-    assert brand.plain.strip() == NATIVE_MASCOT_ANCHOR
+    assert brand.plain.strip() == NATIVE_IMAGE_ANCHOR
 
 
 def test_the_text_slime_bounces_without_changing_its_reservation() -> None:
@@ -170,7 +170,7 @@ def test_home_balances_the_gaps_above_and_below_the_menu(size: tuple[int, int]) 
     brand_bottom: int = max(index for index, line in enumerate(lines[:menu_top]) if line.strip())
     geometry = resolve_home_geometry(columns, rows, (18, 11))
     if geometry.show_mascot:
-        anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
+        anchor: int = next(index for index, line in enumerate(lines) if NATIVE_IMAGE_ANCHOR in line)
         brand_bottom = max(brand_bottom, anchor + geometry.mascot_rows - 1)
     above: int = menu_top - brand_bottom - 1
     below: int = rows - menu_bottom - 3
@@ -185,7 +185,7 @@ def test_home_padding_uses_resting_silhouette_and_excludes_footer(size: tuple[in
     content = _home_content(columns, rows, 0, MascotState.IDLE, native_size=(18, 11), animation_phase=phase)
     frame = _fit_frame(content, "1.0.0", "workspace", columns, rows)
     lines: list[str] = frame.plain.split("\n")
-    anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
+    anchor: int = next(index for index, line in enumerate(lines) if NATIVE_IMAGE_ANCHOR in line)
     menu_top: int = next(index for index, line in enumerate(lines) if "Panel" in line)
     menu_bottom: int = next(index for index, line in enumerate(lines) if "Wyjście" in line)
     gaps: tuple[int, int, int] = (anchor + 3, menu_top - anchor - 11, rows - menu_bottom - 3)

@@ -261,6 +261,7 @@ class UserSettings:
     source_nyaa: bool = True
     source_knaben: bool = True
     source_nekobt: bool = True
+    show_covers: bool = True
     subscription_polish_wait_h: int = DEFAULT_POLISH_WAIT_H
     mode: Mode = "auto"
     processing_order_policy: ProcessingOrderPolicy = "ready_first"
