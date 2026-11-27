@@ -262,14 +262,31 @@ def _verdict_changes(case: str, old: dict[str, Any], new: dict[str, Any]) -> Ite
 def _choice_changes(case: str, old: dict[str, Any], new: dict[str, Any]) -> Iterator[str]:
     for mode in ("manual", "subscription"):
         for part in ("top3", "suggestion"):
-            was: Any = old[mode] and old[mode][part]
-            now: Any = new[mode] and new[mode][part]
+            was: list[str] = _picked(old[mode], part)
+            now: list[str] = _picked(new[mode], part)
             if was != now:
                 yield f"- {case} {mode} {part}: {was} → {now}"
     if old["automatic"] != new["automatic"]:
-        yield f"- {case} automat: {old['automatic']} → {new['automatic']}"
+        names: dict[str, str] = {row["hash"]: row["release"] for row in (new["subscription"] or {"rows": []})["rows"]}
+        was_name: str | None = names.get(old["automatic"][1], old["automatic"][1])
+        now_name: str | None = names.get(new["automatic"][1], new["automatic"][1])
+        yield f"- {case} automat: {old['automatic'][0]} {was_name} → {new['automatic'][0]} {now_name}"
     if new["misses"]:
         yield f"- {case} brak nagranej odpowiedzi po zmianie: {new['misses']}"
+
+
+def _picked(offer: dict[str, Any] | None, part: str) -> list[str]:
+    if not offer:
+        return []
+    rows: list[dict[str, Any]] = offer["rows"]
+    if part == "suggestion":
+        return [] if offer["suggestion"] is None else [_named(rows[offer["suggestion"]])]
+    first: dict[str, dict[str, Any]] = {row["hash"]: row for row in reversed(rows)}
+    return [_named(first[value]) for value in offer["top3"]]
+
+
+def _named(row: dict[str, Any]) -> str:
+    return f"{row['release']} [{row['hash'][:8]}]"
 
 
 def _cell(text: str | None) -> str:
