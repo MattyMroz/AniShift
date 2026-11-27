@@ -458,6 +458,20 @@ def test_page_failing_after_speech_keeps_it_and_reads_only_the_rest(tmp_path: Pa
     assert result.incomplete == ()
 
 
+def test_errors_after_speech_keep_it_as_the_result_and_delete_only_the_takes(tmp_path: Path) -> None:
+    def script(take: int, parts: list[str]) -> list[str]:
+        return parts if take else parts[:3]
+
+    site = Site(script=script, stalls={0}, broken={0}, failing={1})
+
+    result = record(tmp_path, site, Redo.LINE)
+
+    folder: Path = result.recording.parent
+    assert fills(result.recording) == [1, 2, 3]
+    assert result.incomplete == ("part-3", "part-4")
+    assert sorted(path.name for path in folder.iterdir()) == ["doc.mp3", "doc.stream.txt"]
+
+
 def test_redo_ending_in_an_error_leaves_its_parts_incomplete_and_keeps_the_recording(tmp_path: Path) -> None:
     site = Site(script=drop_words(2, "trzy "), failing={1})
 
