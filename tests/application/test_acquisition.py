@@ -1041,14 +1041,15 @@ def test_offer_through_the_franchise_ranks_recorded_streams_with_the_recorded_me
 ) -> None:
     root: int = _HAIBANE if selected == _HAIBANE else _S1
     graph: FranchiseGraph = _fixture_graph(root)
-    target: dict[str, object] = identity_target(graph, selected, _fixture_mapping(selected), number)
+    now: datetime = datetime.fromtimestamp(_Clock().now, UTC)
+    target: dict[str, object] = identity_target(graph, selected, _fixture_mapping(selected), number, now=now)
     assert (target["type"], target["season"], target["episode"], target["absolute"], target["episode_title"]) == fields
     service: AcquisitionService = _episode_service(tmp_path)
     service.franchise(root)
     offer: EpisodeOffer = service.offer(EpisodeKey(selected, number))
     numbering: bool = numbering_gap(_fixture_mapping(selected), number, None, movie=False) is None
     expected: tuple[RankedCandidate, ...] = _rank(
-        identity_target(graph, selected, _fixture_mapping(selected), number, numbering=numbering),
+        identity_target(graph, selected, _fixture_mapping(selected), number, now=now, numbering=numbering),
         _fixture_streams(_STREAM_FILES[kitsu, number]),
     )
     assert offer.candidates == expected
@@ -1765,7 +1766,9 @@ def test_subscription_check_with_a_given_mapping_asks_ani_zip_nothing_and_assess
         tsukihime_id=None,
     )
     assert episodes.asked == []
-    assert search.target == identity_target(_fixture_graph(_S1), _S1, mapping, 4)
+    assert search.target == identity_target(
+        _fixture_graph(_S1), _S1, mapping, 4, now=datetime.fromtimestamp(_Clock().now, UTC)
+    )
     assert search.offer.candidates
 
 

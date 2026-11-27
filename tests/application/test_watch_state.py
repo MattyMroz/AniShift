@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from test_episode_selection import _fixture_graph, _fixture_mapping
+from test_episode_selection import _NOW, _fixture_graph, _fixture_mapping
 
 from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
@@ -581,8 +581,8 @@ def test_a_saved_episode_mapping_loads_equal_and_builds_the_same_identity_target
     assert loaded == mapping
     assert loaded is not None
     assert json.dumps(loaded.raw_episodes) == json.dumps(mapping.raw_episodes)
-    assert [identity_target(graph, season, loaded, number) for number in range(1, 30)] == [
-        identity_target(graph, season, mapping, number) for number in range(1, 30)
+    assert [identity_target(graph, season, loaded, number, now=_NOW) for number in range(1, 30)] == [
+        identity_target(graph, season, mapping, number, now=_NOW) for number in range(1, 30)
     ]
 
 

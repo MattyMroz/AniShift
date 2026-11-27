@@ -484,10 +484,16 @@ def franchise_view(graph: FranchiseGraph, selected_id: int) -> Franchise:
     )
 
 
-def identity_target(
-    graph: FranchiseGraph, selected_id: int, mapping: AniZipMapping, number: int, *, numbering: bool = True
+def identity_target(  # noqa: PLR0913 - the airing clock and the numbering stay explicit call-site facts
+    graph: FranchiseGraph,
+    selected_id: int,
+    mapping: AniZipMapping,
+    number: int,
+    *,
+    now: datetime,
+    numbering: bool = True,
 ) -> dict[str, object]:
-    """Build the H1 target of one local episode; without *numbering* its episode fields stay empty."""
+    """Build one episode's H1 target; a releasing entry airs until *now*, no *numbering* leaves episodes empty."""
     nodes: Mapping[int, JsonObject] = graph.nodes
     chain, _, missing = _walk(selected_id, nodes, graph.queried)
     members: frozenset[int] = frozenset(chain)
@@ -497,10 +503,12 @@ def identity_target(
         titles.extend(_titles(first_season))
     key: str = str(number)
     episode: JsonObject = (mapping.raw_episodes.get(key) or {}) if numbering else {}
-    series: JsonObject = first_season or nodes[selected_id]
+    years: set[int] = set(_airing_years(nodes[selected_id], now.year))
+    if first_season is not None:
+        years.update(_airing_years(first_season, now.year))
     return {
         "aliases": list(dict.fromkeys(titles)),
-        "year": (series.get("startDate") or {}).get("year") or series.get("seasonYear"),
+        "years": sorted(years),
         "type": nodes[selected_id]["format"],
         "local_episode": number,
         "episodes": nodes[selected_id].get("episodes"),
@@ -875,6 +883,16 @@ def _first_season(chain: Sequence[int], nodes: Mapping[int, JsonObject]) -> Json
         if identifier in nodes and nodes[identifier]["format"] in SEASON_FORMATS
     ]
     return min(seasons, key=_season_order, default=None)
+
+
+def _airing_years(node: JsonObject, current: int) -> range:
+    start: int | None = (node.get("startDate") or {}).get("year") or node.get("seasonYear")
+    if start is None:
+        return range(0)
+    end: int | None = (node.get("endDate") or {}).get("year")
+    if end is None:
+        end = current if node.get("status") == _RELEASING else start
+    return range(start, max(start, end) + 1)
 
 
 def _season_order(node: JsonObject) -> tuple[int, int]:

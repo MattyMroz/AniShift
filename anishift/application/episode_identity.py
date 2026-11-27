@@ -303,7 +303,7 @@ class _Target:
     episode: int | None
     season: int | None
     absolute: int | None
-    year: int | None
+    years: frozenset[int]
     named_season: int | None
     part: int | None
     count: int | None
@@ -500,11 +500,12 @@ def _target(target: Metadata, evidence: Metadata) -> _Target:
     )
     raw_kind: str = str(target.get("type") or catalog.get("format") or "")
     kind: MediaKind = cast("MediaKind", raw_kind) if raw_kind in MEDIA_KINDS else "UNKNOWN"
-    year: int | None = (
-        _integer(catalog.get("seasonYear") or target.get("year")) or _metadata_year(catalog) or _metadata_year(mappings)
+    years: frozenset[int] = frozenset(year for year in target.get("years") or () if _integer(year) is not None)
+    archived: int | None = (
+        _metadata_year(catalog) or _metadata_year(mappings) or (_metadata_year(mapping) if kind == "MOVIE" else None)
     )
-    if kind == "MOVIE":
-        year = year or _metadata_year(mapping)
+    if not years and archived is not None:
+        years = frozenset({archived})
     named: list[int] = [number for title in candidates if (number := _marker(title, "season")) is not None]
     parts: list[int] = [number for title in candidates if (number := _marker(title, "part")) is not None]
     other_episodes: tuple[str, ...] = tuple(sorted(set(_names(target.get("other_episode_titles"))) | others))
@@ -519,7 +520,7 @@ def _target(target: Metadata, evidence: Metadata) -> _Target:
         episode=episode,
         season=season,
         absolute=absolute,
-        year=year,
+        years=years,
         named_season=max(named) if named else season,
         part=max(parts) if parts else None,
         count=_integer(target.get("episodes") if target.get("episodes") is not None else catalog.get("episodes")),
@@ -687,8 +688,8 @@ def _year(text: str, target: _Target) -> tuple[str, bool]:
     if not years:
         return text, True
     allowed: bool = (
-        years == {target.year}
-        if target.year is not None
+        years <= target.years
+        if target.years
         else (target.kind == "MOVIE" and len(years) == 1 and not years & target.neighbor_years)
     )
     return (re.sub(r"\b(?:19|20)\d{2}\b", " ", text).strip(), True) if allowed else (text, False)
@@ -1070,7 +1071,7 @@ def _context_qualifier_conflict(rest: str, target: _Target, *, anchor: str, mult
         )
         if target.kind != kind:
             return "Package explicitly identifies a different media type."
-    if not multiple and target.year is not None and not _year(rest, target)[1]:
+    if not multiple and target.years and not _year(rest, target)[1]:
         return "Package year conflicts with target metadata."
     if anchor and re.fullmatch(r"\d{1,2}", rest) and int(rest) != target.named_season:
         return "Package explicitly identifies a numbered sequel."

@@ -1251,7 +1251,8 @@ class AcquisitionService:
     def _episode_request(
         self, key: EpisodeKey, read: ListingRead, *, manual: bool, tsukihime_id: int | None
     ) -> EpisodeRequest:
-        graph: FranchiseGraph = self._context_graph(key.anilist_id, self._clock())
+        now: float = self._clock()
+        graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
         candidate: TitleCandidate = graph_candidate(graph, key.anilist_id)
         movie: bool = candidate.format == _MOVIE_FORMAT
         if movie and key.number != 1:
@@ -1259,7 +1260,7 @@ class AcquisitionService:
             raise ValueError(msg)
         target: dict[str, object]
         numbering: bool
-        target, numbering = _numbered_target(graph, candidate, read, key.number, movie=movie)
+        target, numbering = _numbered_target(graph, candidate, read, key.number, now)
         absolute: object = target.get("absolute")
         return EpisodeRequest(
             key,
@@ -1325,9 +1326,7 @@ class AcquisitionService:
         streams: tuple[StreamCandidate, ...] = ()
         target: dict[str, object]
         numbering: bool
-        target, numbering = _numbered_target(
-            graph, graph_candidate(graph, key.anilist_id), read, key.number, movie=movie
-        )
+        target, numbering = _numbered_target(graph, graph_candidate(graph, key.anilist_id), read, key.number, now)
         try:
             if mapping.kitsu_id is not None and movie:
                 streams = self._streams().movie_streams(mapping.kitsu_id)
@@ -1570,15 +1569,17 @@ def graph_season_context(graph: FranchiseGraph, candidate: TitleCandidate) -> Se
 
 
 def _numbered_target(
-    graph: FranchiseGraph, candidate: TitleCandidate, read: ListingRead, number: int, *, movie: bool
+    graph: FranchiseGraph, candidate: TitleCandidate, read: ListingRead, number: int, now: float
 ) -> tuple[dict[str, object], bool]:
     """Build the H1 target and whether it is numbered; a lone first season numbers itself without a mapping."""
     mapping: AniZipMapping = read.mapping
+    movie: bool = candidate.format == _MOVIE_FORMAT
     gap: str | None = numbering_gap(mapping, number, read.tvdb_season, movie=movie)
     if gap == "none" and _first_season(graph, candidate, read):
         mapping, gap = first_season_numbering(mapping, number), None
     numbering: bool = gap is None
-    return identity_target(graph, candidate.anilist_id, mapping, number, numbering=numbering), numbering
+    moment: datetime = datetime.fromtimestamp(now, UTC)
+    return identity_target(graph, candidate.anilist_id, mapping, number, now=moment, numbering=numbering), numbering
 
 
 def _first_season(graph: FranchiseGraph, candidate: TitleCandidate, read: ListingRead) -> bool:
