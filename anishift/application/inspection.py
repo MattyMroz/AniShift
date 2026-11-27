@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
+from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final
+from typing import Final, cast
 
 from PIL import Image, ImageOps
 
@@ -23,12 +25,14 @@ from anishift.application.artifacts import (
     create_artifact_id,
 )
 from anishift.application.cancellation import CancellationToken
+from anishift.application.control_views import encode_view
 from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, DiscoveryResult
 from anishift.application.intents import ExternalAudioRole
 from anishift.application.selection import choose_primary_video
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, MediaProbeError
 from anishift.platform.binaries import Binary, require_binary
 from anishift.platform.directory_watch import source_is_available
+from anishift.platform.local_control import MAX_FRAME_BYTES
 from anishift.services.media._process import (
     ProcessExecutionError,
     ProcessFailureReason,
@@ -54,6 +58,9 @@ _MAX_INSPECTION_WORKERS: Final[int] = 8
 
 _SUPPORTED_IMAGE_FORMATS: Final[frozenset[str]] = frozenset({"JPEG", "PNG"})
 """Pillow format names a cover still may really be written in, judged by content rather than by extension."""
+
+_WORKSPACE_PAGE_BYTES: Final[int] = MAX_FRAME_BYTES // 2
+"""Encoded groups one workspace page holds at most, leaving the rest of its frame to the envelope."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +119,57 @@ class InspectedWorkspace:
             for artifact in group.artifacts
             if artifact.artifact_id in pending and artifact.path is not None
         )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspacePage:
+    """Consecutive groups of one inspected workspace, small enough for one control frame."""
+
+    groups: tuple[InspectedSourceGroup, ...]
+    warnings: tuple[InspectionWarning, ...]
+    next_offset: int | None
+    revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class EncodedWorkspace:
+    """One inspected workspace with the encoded size of every group and the revision of the whole."""
+
+    workspace: InspectedWorkspace
+    sizes: tuple[int, ...]
+    revision: str
+
+
+def encode_workspace(workspace: InspectedWorkspace) -> EncodedWorkspace:
+    """Encode *workspace* once, measuring each group and naming its revision."""
+    document: dict[str, object] = encode_view(workspace)
+    return EncodedWorkspace(
+        workspace=workspace,
+        sizes=tuple(len(_json_bytes(group)) for group in cast("list[object]", document["groups"])),
+        revision=sha256(_json_bytes(document)).hexdigest(),
+    )
+
+
+def workspace_page(encoded: EncodedWorkspace, offset: int) -> WorkspacePage:
+    """Return the groups from *offset* that fit one page, with their warnings and the workspace revision."""
+    sizes: tuple[int, ...] = encoded.sizes
+    end: int = offset
+    used: int = 0
+    while end < len(sizes) and (end == offset or used + sizes[end] <= _WORKSPACE_PAGE_BYTES):
+        used += sizes[end]
+        end += 1
+    groups: tuple[InspectedSourceGroup, ...] = encoded.workspace.groups[offset:end]
+    shown: frozenset[str] = frozenset(group.group_id for group in groups)
+    return WorkspacePage(
+        groups=groups,
+        warnings=tuple(warning for warning in encoded.workspace.warnings if warning.group_id in shown),
+        next_offset=end if end < len(sizes) else None,
+        revision=encoded.revision,
+    )
+
+
+def _json_bytes(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False).encode()
 
 
 @dataclass(frozen=True, slots=True)

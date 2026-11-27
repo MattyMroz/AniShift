@@ -255,6 +255,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   trzyma cache niezmienionych grup — nie dodawaj cache w UI; równoległa inspekcja zachowuje kolejność discovery.
   Produkcyjne `discover()` cicho instaluje brakujące narzędzia przez callback z `bootstrap.py` (MKV: MKVToolNix i
   FFmpeg; MP4/audio: FFmpeg; TXT i napisy: nic); konstruktory i renderer nie pobierają plików.
+- Polecenie IPC `discover` idzie stronami (`workspace_page`, najwyżej pół ramki grup) z rewizją całego workspace;
+  owner koduje workspace raz na wersję (`encode_workspace`), a `ResidentSession.discover` składa tylko strony jednej
+  rewizji i czyta od nowa najwyżej 3 razy. Nie wracaj do jednej ramki: odpowiedź rośnie z biblioteką.
 - `SOURCE` ma `planned_destination == path`, `INTERMEDIATE` nie ma trwałego celu, `DURABLE` dostaje cel przed
   wykonaniem. `AUTO` nie zawiera ręcznych ID; `MANUAL` wskazuje artefakt albo osadzoną ścieżkę, nigdy oba.
 - `ExecutionPlan.tasks` w porządku `stable_topological_order()` (grupa `2` przed `10`); każdy artefakt ma jednego

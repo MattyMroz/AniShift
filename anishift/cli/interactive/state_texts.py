@@ -9,6 +9,7 @@ from typing import Final
 
 from anishift.application import AdmissionConflict, EpisodeReason, RefusalReason
 from anishift.application.events import sanitize_event_message
+from anishift.cli.resident import WORKSPACE_CHANGING_REASON
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
 __all__ = [
@@ -162,6 +163,7 @@ _SUBSCRIPTION_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
 
 LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
     {
+        WORKSPACE_CHANGING_REASON: "Pliki zmieniały się w trakcie odczytu · spróbuj ponownie",
         "library_set_missing": "Tego zestawu nie ma już w bibliotece",
         "library_result_missing": "Brakuje potwierdzonego głównego wyniku",
         "library_result_changed": "Główny wynik istnieje, ale jest zmieniony lub niepotwierdzony",
