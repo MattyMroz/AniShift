@@ -674,6 +674,9 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
                 assert "Del usuń" in controller.render(120, 40).plain
                 controller.handle_key("delete")
                 assert controller._processing_rows() == []
+                assert _wait_for_resident(
+                    session, lambda _status: owner.state.requests[0].state is RequestState.CANCELLED
+                )
                 release.set()
                 assert _wait_for_resident(
                     session, lambda _status: session.command("run_result", {"run_id": run_id})["state"] == "cancelled"
