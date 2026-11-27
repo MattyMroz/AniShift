@@ -1023,6 +1023,29 @@ def test_cancelled_recording_keeps_shared_browser_until_the_others_finish(
     assert site.sessions[1].alive
 
 
+def test_recording_timed_out_before_speech_keeps_shared_browser_until_the_others_finish(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
+    site = FakeSite(texts=TEXTS, held={0}, silent={1})
+    first, second = engine_for(site), engine_for(site)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        kept = _in_thread(pool, second, _request(tmp_path, name="second"))
+        _wait_until(lambda: site.streams == 1)
+        expiring = _in_thread(pool, first, _request(tmp_path, name="first"))
+        with pytest.raises(TtsTimeoutError, match="no audio"):
+            expiring.result(timeout=5.0)
+        assert site.sessions[0].alive
+        site.held.clear()
+        kept.result(timeout=5.0)
+
+    _run(_record(first, _request(tmp_path, name="third")))
+
+    assert len(site.sessions) == 2
+    assert site.sessions[0].closed
+    assert site.sessions[1].alive
+
+
 def test_recording_reaching_its_deadline_after_speech_ends_with_what_came(
     tmp_path: Path, engine_for: EngineFor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
