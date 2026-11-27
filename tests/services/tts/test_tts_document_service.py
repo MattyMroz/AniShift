@@ -45,7 +45,6 @@ from anishift.services.tts import (
     TtsInputError,
     TtsQuotaError,
     TtsService,
-    TtsTimeoutError,
     TtsUnsupportedError,
     VoiceInfo,
 )
@@ -531,12 +530,16 @@ def test_document_batch_without_any_spoken_part_fails_its_lines_without_split(tm
 
 
 @pytest.mark.parametrize(
-    "splitter",
-    [_Splitter(failures=(RuntimeError("cut failed"),)), _Splitter(missing_clip_once=True)],
-    ids=["split_failure", "missing_clip"],
+    ("splitter", "cuts"),
+    [
+        (_Splitter(failures=(RuntimeError("cut failed"), RuntimeError("cut failed"))), 2),
+        (_Splitter(failures=(ValueError("no frames"),)), 1),
+        (_Splitter(missing_clip_once=True), 1),
+    ],
+    ids=["split_failure_twice", "unreadable_recording", "missing_clip"],
 )
 def test_document_batch_recording_that_cannot_be_cut_fails_its_lines_without_recording_again(
-    tmp_path: Path, splitter: _Splitter
+    tmp_path: Path, splitter: _Splitter, cuts: int
 ) -> None:
     engine = _DocumentEngine()
 
@@ -545,7 +548,7 @@ def test_document_batch_recording_that_cannot_be_cut_fails_its_lines_without_rec
     assert _statuses(result) == [SynthesisStatus.FAILED, SynthesisStatus.FAILED]
     assert [item.error_code for item in result.requests] == ["TTS_CLIP_INVALID", "TTS_CLIP_INVALID"]
     assert len(engine.documents) == 1
-    assert len(splitter.calls) == 1
+    assert len(splitter.calls) == cuts
     assert not any(span.destination.exists() for span in splitter.calls[0])
 
 
@@ -571,14 +574,14 @@ def test_document_batch_split_cancelled_by_decoder_ends_as_cancellation(tmp_path
     assert len(engine.documents) == 1
 
 
-def test_document_batch_split_decode_timeout_records_the_document_again(tmp_path: Path) -> None:
+def test_document_batch_split_failing_once_is_cut_again_without_recording_again(tmp_path: Path) -> None:
     engine = _DocumentEngine()
-    splitter = _Splitter(failures=(TtsTimeoutError("decode timed out"),))
+    splitter = _Splitter(failures=(RuntimeError("decode timed out"),))
 
     (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
 
     assert result.status is SpeechBatchStatus.COMPLETED
-    assert len(engine.documents) == 2
+    assert len(engine.documents) == 1
     assert len(splitter.calls) == 2
 
 

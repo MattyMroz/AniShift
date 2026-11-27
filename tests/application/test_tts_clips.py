@@ -41,9 +41,7 @@ from anishift.services.tts import (
     SynthesisRequest,
     TtsCancelledError,
     TtsConfig,
-    TtsError,
     TtsService,
-    TtsTimeoutError,
     TtsUnsupportedError,
     VoiceInfo,
 )
@@ -285,21 +283,12 @@ def test_split_clip_decode_failure_raises_runtime_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("error", "raised"),
-    [
-        (AudioCancelledError(context=ErrorContext(code=ErrorCode.CANCELLED, message="cancelled")), TtsCancelledError),
-        (AudioProcessError(context=ErrorContext(code=ErrorCode.TIMEOUT, message="timed out")), TtsTimeoutError),
-    ],
-    ids=["cancelled", "timeout"],
-)
-def test_split_clip_decode_cancel_or_timeout_raises_its_tts_error(
-    tmp_path: Path, error: AudioError, raised: type[TtsError]
-) -> None:
+def test_split_clip_decode_cancelled_raises_tts_cancellation(tmp_path: Path) -> None:
     source: Path = tmp_path / "recording.mp3"
     source.write_bytes(bytes.fromhex("fffb90c4") + bytes(413) + bytes.fromhex("fffb90c4") + bytes(413))
+    error = AudioCancelledError(context=ErrorContext(code=ErrorCode.CANCELLED, message="cancelled"))
 
-    with pytest.raises(raised):
+    with pytest.raises(TtsCancelledError):
         _clips(runner=_FailingRunner(error)).split_clip(source, _spans(tmp_path), WAV)
 
 

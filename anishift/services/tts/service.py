@@ -483,7 +483,13 @@ class _DocumentAttempt:
     async def _split(self, recording: Path, spans: tuple[ClipSpan, ...]) -> None:
         try:
             split: SplitResult = await asyncio.to_thread(self._splitter.split_clip, recording, spans, self._expectation)
-        except (OSError, RuntimeError, ValueError) as splitter_error:
+        except OSError, RuntimeError:
+            logger.warning("TTS document split failed; the recording is cut once more")
+            try:
+                split = await asyncio.to_thread(self._splitter.split_clip, recording, spans, self._expectation)
+            except (OSError, RuntimeError, ValueError) as splitter_error:
+                raise _split_error() from splitter_error
+        except ValueError as splitter_error:
             raise _split_error() from splitter_error
         if split.written != tuple(span.request_id for span in spans):
             raise _split_error()
