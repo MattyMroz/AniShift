@@ -1026,6 +1026,37 @@ def test_owner_prunes_covers_of_titles_gone_from_library_and_subscriptions(tmp_p
 
 
 @pytest.mark.integration
+def test_owner_prunes_once_a_cover_already_gone_from_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    _stored_cover_files(covers)
+    calls: list[int] = []
+    prune = AcquisitionService.prune_covers
+
+    def counted(directory: Path, keep: frozenset[int]) -> tuple[frozenset[int], int]:
+        calls.append(len(keep))
+        return prune(directory, keep)
+
+    monkeypatch.setattr(AcquisitionService, "prune_covers", staticmethod(counted))
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        _cached(owner, [_S1, _SLIME_OAD])
+        (covers / f"{_SLIME_OAD}.jpg").unlink()
+        settled: int = len(calls)
+        removal: dict[str, object] = {"subscription_id": f"subscription-{_SLIME_OAD}"}
+        assert owner.handle(_request("subscription_remove", removal, command_id="remove-oad")).ok
+        cached: list[int] = _cached(owner, [_S1])
+        for _ in range(20):
+            owner._on_owner(lambda: None)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert cached == [_S1]
+    assert len(calls) - settled <= 2
+
+
+@pytest.mark.integration
 def test_owner_keeps_every_cover_before_the_first_full_inventory(tmp_path: Path) -> None:
     titles: _TitleCatalog = _slime_titles()
     owner, covers = _cover_owner(tmp_path, titles)

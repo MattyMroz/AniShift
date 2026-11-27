@@ -8893,17 +8893,18 @@ class AutomationOwner:
             logger.warning("Library covers were not pruned", error_class=type(error).__name__)
         finally:
             logger.info("Library covers pruned", kept=len(entries), removed=len(removed), failed=failed)
-            self._queue.put(lambda: self._record_pruned(removed, failed))
+            self._queue.put(lambda: self._record_pruned(entries, removed, failed))
 
-    def _record_pruned(self, removed: frozenset[int], failed: int) -> None:
+    def _record_pruned(self, entries: frozenset[int], removed: frozenset[int], failed: int) -> None:
         self._active_io -= 1
         self._pruning_covers = False
         self._covers_pruned = not failed
-        self._covers -= removed
+        gone: frozenset[int] = removed if failed else removed | (self._covers - entries)
         self._covers_requested -= removed
-        if removed:
+        if removed or gone & self._covers:
+            self._covers -= gone
             self._publish_state()
-        elif not failed:
+        elif not failed and self._cover_entries() != entries:
             self._prune_covers()
 
     def _request_series(self) -> None:
