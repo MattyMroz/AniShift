@@ -33,6 +33,7 @@ from anishift.services.torrents import QBittorrentClient, TorrentFile, TorrentIn
 from anishift.services.torrents.errors import TorrentClientError
 from anishift.setup.installer import ensure_resource
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_replace
 
 __all__ = ["ManagedQBittorrent"]
 
@@ -439,7 +440,7 @@ class ManagedQBittorrent:
             handle.write(_STATE.dump_json(state))
             handle.flush()
             os.fsync(handle.fileno())
-        temporary.replace(self._root / "process.json")
+        safe_replace(temporary, self._root / "process.json")
         self._state = state
 
     def _required_client(self) -> QBittorrentClient:
