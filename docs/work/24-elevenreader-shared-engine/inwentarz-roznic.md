@@ -52,7 +52,7 @@ Wynik: jeden silnik o identycznych plikach w obu repozytoriach; wszystko, co zal
 | `service.py` | `chars < char_count` | błąd (całość od nowa) | błąd (całość od nowa) | tylko ostrzeżenie; brakujące słowa idą do dogrania |
 | `service.py` | zastój, odmowa App Check, v2 po dźwięku | błąd próby | błąd próby | po dźwięku koniec próby z tym, co przyszło, dogranie reszty |
 | `service.py` | wynik | `DocumentResult` z `chunks` | `EngineDocumentResult` | `host.document_result`; nowe pola `ranges` (E) i `incomplete` (oba) |
-| `service.py` | `part_spans`, `part_bounds`, `stream_timeline` | w `service.py` | `part_spans` w `service.py` | `redo.py` (`part_spans`, `timings`, `read_parts`, `stream_timeline`); `part_bounds` usunięte |
+| `service.py` | `part_spans`, `part_bounds`, `stream_timeline` | w `service.py` | `part_spans` w `service.py` | `redo.py` (`timings`, `read_parts`, `stream_timeline`); `part_bounds` i `part_spans` usunięte |
 | docstringi | wielolinijkowe (Args/Returns) | kilka | brak | jednolinijkowe w całym silniku |
 
 ## Rzeczy świadomie różne (tylko `host.py`)
@@ -75,7 +75,60 @@ Wynik: jeden silnik o identycznych plikach w obu repozytoriach; wszystko, co zal
 - AniShift: linia `incomplete` jest w `spans` przy cięciu (oddziela ją od sąsiadów), ale nie dostaje klipu.
 - Pliki prób mają nazwę `<nazwa>.take<n>.mp3` w obu programach.
 
+## Recenzja AniShift i zmiany do przeniesienia
+
+Zasada nadrzędna po recenzji: po odebraniu dźwięku dokument nigdy nie jest nagrywany od nowa; pierwsze nagranie
+zostaje wynikiem.
+
+1. Jeden zły klip kończył cały odcinek (`TtsRecordingSplitError` dla wszystkich linii). Teraz zły klip to błąd tylko
+   jego linii (`TTS_CLIP_INVALID`), reszta linii zostaje z klipami. Nieudane cięcie FFmpeg jest ponawiane raz (samo
+   cięcie, nie nagranie); anulowanie dekodera to anulowanie. `8091a340`, `ec7a336e`.
+2. Trwały błąd w dogrywaniu (logowanie, App Check, kredyty, głos) nie przerywał pętli, a linie dostawały „rewrite the
+   line”. Teraz `FatalError` kończy dogrywanie, nagranie zostaje, a `incomplete_cause` niesie kod i podpowiedź błędu
+   na niepełne linie. `a34e228e`.
+3. `_joined` łapał `ValueError`/`IndexError`/`TtsError` wokół całego `splice` jako „redo is not joined”. Teraz
+   `OSError` (odczyt, dekodowanie) to „not joined”, a `ValueError`/`IndexError` to błąd w kodzie z tracebackiem w
+   logu; w obu przypadkach wynikiem jest pierwsze nagranie (wyjątek z silnika scheduler AniShift ponawiałby jako
+   przejściowy, czyli nagrywał od nowa). `ab4658f9`, `b7982e37`.
+4. Pliki `*.take<n>.mp3` i `*.stream.txt` prób zostawały na dysku, a każde ponowienie nieudanego przebiegu dokładało
+   nagranie wielkości odcinka. Teraz silnik usuwa dogranie niewklejane od razu, a próbę główną i wklejone dogrania po
+   zapisie wyniku; zostaje wynik i jego `stream.txt`. Błąd przed wynikiem zostawia próby wywołującemu; `TtsService`
+   AniShift usuwa po każdej próbie dokumentu wszystkie pliki pod nazwą nagrania. `a5f65d07`.
+5. Martwy kod: `redo.part_spans` (tylko testy) i lista `left_out` z `splice` usunięte; testy czasów części używają
+   pomocnika `part_timings` w `tests/conftest.py` (`read_parts` + `timings`). `e6e3c2c3`.
+6. Test „przekroczenie czasu przed dźwiękiem → przeglądarka podejrzana” wrócił w nowej postaci (brak dźwięku po Play,
+   drugie nagranie trwa, przeglądarka restartuje dopiero po nim). `8c99cf08`.
+
+Poza listą: `host.mono_pcm` uruchamia FFmpeg z `CREATE_NO_WINDOW`, jak reszta wywołań w AniShift (`207c3a7b`, tylko
+`host.py` AniShift).
+
+### Do przeniesienia do ElevenDownloaderPro (`src/edp/engine/`)
+
+Pliki wspólne, skopiować 1:1 z AniShift (`anishift/services/tts/engines/elevenreader/`):
+
+- `service.py`: `FatalError` z `.host`; `_redo` zwraca `(redone, cause)` i kończy się na `FatalError`;
+  `document_result(..., incomplete_cause=...)` w `synthesize_document` i `download_document`; `_take(recording=...)`;
+  `_discard` i `_stream_file`; usuwanie prób po zapisie wyniku i dograń niewklejanych od razu; `_joined` łapie
+  `OSError` i osobno `ValueError`/`IndexError` (`logger.exception`), `splice` zwraca same chunki.
+- `redo.py`: bez `part_spans` (także w `__all__`), `splice` zwraca `tuple[AlignmentChunk, ...]`, bez `left_out`.
+
+`host.py` ElevenDownloaderPro (własny, nie kopiować z AniShift):
+
+- eksport `FatalError` z `edp.errors`;
+- `DocumentResult` z polem `incomplete_cause: ErrorContext | None` i `document_result(..., incomplete_cause)`.
+
+Reszta ElevenDownloaderPro:
+
+- `reading.py`: `_TAKES` i warunek „read more than once” (`len(list(work.glob(_TAKES))) > ...`) nie mają już sensu,
+  bo po wyniku prób nie ma; do usunięcia razem z testem `tests/test_reading.py` (ok. linii 813, oczekuje
+  `download.take1.mp3`); `edp record`/`download` może pokazać `incomplete_cause` przy częściach `incomplete`.
+- `tests/engine/test_engine_redo.py`: te same zmiany co w AniShift (`tests/services/tts/test_engine_redo.py`):
+  test bez plików prób po wyniku, test usunięcia niewklejanego dogrania, test odmowy App Check w dogrywaniu
+  (`incomplete_cause`), test błędu w kodzie przy sklejaniu (pierwsze nagranie zostaje), porównania z
+  `doc.take1.mp3` zamienione na `fills(...)`.
+- `AGENTS.md` silnika: sekcje „Wykrywanie i dogrywanie” i „Pliki nagrań” jak w AniShift.
+
 ## Sprawy otwarte
 
-- AniShift: gdy `accept_result` zawiedzie (cięcie lub walidacja klipów FFmpeg), scheduler ponawia dokument i nagrywa
-  go od nowa; pliki prób silnika zostają na dysku. Zmiana wymaga decyzji o semantyce schedulera.
+- AniShift: wynik dokumentu niezgodny z kontraktem (`_unowned_clip_error`, `_document_timing_error`, oba
+  przejściowe) dalej każe schedulerowi nagrać dokument od nowa; to błąd silnika, nie cięcia, więc zostało bez zmian.
