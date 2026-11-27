@@ -1,20 +1,18 @@
-"""Validated configuration for the ElevenReader engine."""
+"""Validated configuration for the ElevenReader engine and the files under its profile root."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Final, Never
+from typing import TYPE_CHECKING, Final
 
-from anishift.errors import ErrorCode, ErrorContext
-from anishift.platform.installed import find_installed
-from anishift.services.tts.errors import TtsConfigError, TtsVoiceError
-
-from .constants import CHROME_LOCATIONS, CHROME_STEM, MAX_PARALLEL_DOCUMENTS, PROVIDER_MODEL_ID, VOICES
+from .constants import CHROME_LOCATIONS, CHROME_STEM, VOICES
+from .host import UNKNOWN_VOICE_HINT, ErrorCode, ErrorContext, TtsVoiceError, find_installed
 from .types import ElevenReaderVoice
 
 if TYPE_CHECKING:
-    from anishift.services.tts.config import TtsConfig
+    from pathlib import Path
+
+    from .types import Redo
 
 __all__ = ["ElevenReaderConfig", "find_chrome", "lock_file", "profile_dir", "resolve_voice", "session_file"]
 
@@ -27,32 +25,19 @@ _SESSION_FILE_NAME: Final[str] = "session.json"
 """Last session check result inside the ElevenReader root."""
 
 _LOCK_FILE_NAME: Final[str] = "chrome.lock"
-"""Lock file guarding the profile against a second AniShift browser, inside the ElevenReader root."""
+"""Lock file guarding the profile against a second browser of this program, inside the ElevenReader root."""
+
+_VOICE_ID_LENGTH: Final[int] = 20
+"""Length of an ElevenLabs voice id; any such id from the voice library is accepted as a voice."""
 
 
 @dataclass(frozen=True, slots=True)
 class ElevenReaderConfig:
-    """ElevenReader settings resolved from the shared TTS configuration."""
+    """Voice, profile root and redo mode of one ElevenReader engine."""
 
     voice: ElevenReaderVoice
     profile_root: Path
-
-    @classmethod
-    def from_tts_config(cls, config: TtsConfig) -> ElevenReaderConfig:
-        """Resolve the voice and profile, refusing any model, concurrency or option ElevenReader cannot honour."""
-        if config.provider_model_id.strip().casefold() != PROVIDER_MODEL_ID:
-            _raise_config_error(f"ElevenReader reads only with {PROVIDER_MODEL_ID}", field_name="provider_model_id")
-        if not 1 <= config.max_concurrency <= MAX_PARALLEL_DOCUMENTS:
-            _raise_config_error(
-                f"ElevenReader records 1 to {MAX_PARALLEL_DOCUMENTS} documents at a time", field_name="max_concurrency"
-            )
-        if config.engine_options:
-            _raise_config_error("ElevenReader accepts no engine options", field_name="engine_options")
-        if config.elevenreader_profile_root is None:
-            _raise_config_error(
-                "ElevenReader needs a browser profile directory", field_name="elevenreader_profile_root"
-            )
-        return cls(voice=resolve_voice(config.voice_id), profile_root=config.elevenreader_profile_root)
+    redo: Redo
 
 
 def profile_dir(root: Path) -> Path:
@@ -66,17 +51,17 @@ def session_file(root: Path) -> Path:
 
 
 def lock_file(root: Path) -> Path:
-    """Return the lock file AniShift holds while it uses the Chrome profile under *root*."""
+    """Return the lock file held while this program uses the Chrome profile under *root*."""
     return root / _LOCK_FILE_NAME
 
 
 def find_chrome() -> Path | None:
-    """Return the installed Google Chrome executable, or None."""
+    """Return the Google Chrome executable from a standard install location, then from ``PATH``, or None."""
     return find_installed(CHROME_LOCATIONS, CHROME_STEM)
 
 
 def resolve_voice(alias_or_id: str) -> ElevenReaderVoice:
-    """Return the offered voice named by alias (any case) or provider voice id."""
+    """Return the offered voice named by alias (any case) or id, or the voice library voice with that id."""
     wanted: str = alias_or_id.strip()
     by_alias: ElevenReaderVoice | None = VOICES.get(wanted.casefold())
     if by_alias is not None:
@@ -84,24 +69,13 @@ def resolve_voice(alias_or_id: str) -> ElevenReaderVoice:
     for voice in VOICES.values():
         if voice.voice_id == wanted:
             return voice
+    if len(wanted) == _VOICE_ID_LENGTH and wanted.isalnum() and wanted.isascii():
+        return ElevenReaderVoice(alias=wanted, label=wanted, voice_id=wanted)
     offered: str = ", ".join(VOICES)
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_VOICE_INVALID,
         message=f"Unknown ElevenReader voice. Offered: {offered}",
-        suggestion="Wybierz głos Piotr Fronczewski albo Adam w Ustawienia → Lektor.",
+        suggestion=UNKNOWN_VOICE_HINT.format(offered=offered),
         details={"voice_id": wanted},
     )
     raise TtsVoiceError(context=context)
-
-
-def _raise_config_error(message: str, *, field_name: str) -> Never:
-    context: ErrorContext = ErrorContext(
-        code=ErrorCode.TTS_CONFIG_INVALID,
-        message=message,
-        suggestion=(
-            f"Select ElevenReader with model eleven_v4, 1 to {MAX_PARALLEL_DOCUMENTS} syntheses at a time "
-            "and the application profile."
-        ),
-        details={"field": field_name},
-    )
-    raise TtsConfigError(context=context)

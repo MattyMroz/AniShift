@@ -15,12 +15,12 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import CommandRunner, PcmTarget, normalize_command
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import AudioCancelledError, AudioDecodeError
-from anishift.services.audio.levels import FRAME_MS, frame_levels, speech_bounds
+from anishift.services.audio.levels import speech_bounds
 from anishift.services.audio.types import NormalizedClip, TimedClip
+from anishift.utils.pauses import FRAME_MS, SILENT_DBFS, frame_levels
 
 __all__ = [
     "EDGE_TRIM_CLICK_MS",
-    "EDGE_TRIM_DBFS",
     "EDGE_TRIM_MARGIN_MS",
     "EDGE_TRIM_PAUSE_MS",
     "NormalizationContext",
@@ -44,9 +44,6 @@ _PCM_S16LE_WIDTH: Final[int] = 2
 
 _MS_PER_SECOND: Final[int] = 1000
 """Milliseconds in one second."""
-
-EDGE_TRIM_DBFS: Final[float] = -45.0
-"""Frame level above which a clip edge counts as speech."""
 
 EDGE_TRIM_MARGIN_MS: Final[float] = 30.0
 """Audio kept outside the outermost speech frames to avoid clicks."""
@@ -197,7 +194,7 @@ def _trim_edges(path: Path, sample_rate: int) -> None:
     samples: array[int] = array("h")
     samples.frombytes(path.read_bytes())
     bounds: tuple[int, int] | None = speech_bounds(
-        frame_levels(samples, sample_rate), EDGE_TRIM_DBFS, click_ms=EDGE_TRIM_CLICK_MS, pause_ms=EDGE_TRIM_PAUSE_MS
+        frame_levels(samples, sample_rate), SILENT_DBFS, click_ms=EDGE_TRIM_CLICK_MS, pause_ms=EDGE_TRIM_PAUSE_MS
     )
     if bounds is None:
         return

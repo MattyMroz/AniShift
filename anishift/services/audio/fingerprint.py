@@ -10,12 +10,12 @@ from typing import Final
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.normalize import (
     EDGE_TRIM_CLICK_MS,
-    EDGE_TRIM_DBFS,
     EDGE_TRIM_MARGIN_MS,
     EDGE_TRIM_PAUSE_MS,
 )
 from anishift.services.audio.output import MIX_LIMITER
 from anishift.services.audio.types import ChannelPlan, TimedClip
+from anishift.utils.pauses import SILENT_DBFS
 
 __all__ = [
     "mix_fingerprint",
@@ -150,7 +150,7 @@ def normalization_fingerprint(
             "channels": config.narrator_channels,
         },
         "edge_trim": {
-            "threshold_dbfs": _canonical_float(EDGE_TRIM_DBFS),
+            "threshold_dbfs": _canonical_float(SILENT_DBFS),
             "margin_ms": _canonical_float(EDGE_TRIM_MARGIN_MS),
             "click_ms": _canonical_float(EDGE_TRIM_CLICK_MS),
             "click_pause_ms": _canonical_float(EDGE_TRIM_PAUSE_MS),

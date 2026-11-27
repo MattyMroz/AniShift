@@ -1,4 +1,4 @@
-"""Provider-local value types for ElevenReader."""
+"""Value types of the ElevenReader engine: account, sign-in, stream state and the redo mode."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ __all__ = [
     "ElevenReaderVoice",
     "LibraryState",
     "PlayerState",
+    "Redo",
     "SessionRecord",
     "SignInOutcome",
     "SignOutOutcome",
@@ -33,6 +34,16 @@ class ElevenReaderVoice:
     voice_id: str
 
 
+class Redo(StrEnum):
+    """How a part the server left unread is recorded again and put in place of the bad recording."""
+
+    LINE = "line"
+    """The bad part alone; its recording replaces the bad part."""
+
+    PARAGRAPH = "paragraph"
+    """The bad part with the part before and after it as one document; that whole recording replaces all three."""
+
+
 class LibraryState(StrEnum):
     """What the library page showed."""
 
@@ -42,9 +53,11 @@ class LibraryState(StrEnum):
 
 
 class SignInOutcome(StrEnum):
-    """Result of opening the plain Chrome window the owner signs in with."""
+    """Result of a sign-in action: a window opened for the owner, or a driven window that waited for the sign-in."""
 
     OPENED = "opened"
+    SIGNED_IN = "signed_in"
+    SIGNED_OUT = "signed_out"
     BUSY = "busy"
     NO_CHROME = "no_chrome"
     FAILED = "failed"

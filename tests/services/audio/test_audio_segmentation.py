@@ -7,25 +7,24 @@ from bisect import bisect_right
 from typing import TYPE_CHECKING
 
 import pytest
-from conftest import alignment_chunks, requires_binaries
+from conftest import alignment_chunks, part_timings, requires_binaries
 
 from anishift.paths import quality_dir
 from anishift.platform.binaries import Binary, require_binary
-from anishift.services.audio.levels import frame_levels
-from anishift.services.audio.normalize import EDGE_TRIM_DBFS
-from anishift.services.audio.segmentation import (
+from anishift.services.tts import DocumentPart
+from anishift.services.tts.engines.elevenreader.types import AlignmentChunk
+from anishift.text.boundaries import ends_sentence
+from anishift.utils.mp3_frames import iter_frames, splice_times
+from anishift.utils.pauses import (
     ENVELOPE_RATE,
+    SILENT_DBFS,
     CutDecision,
     LineSpan,
     clip_ranges,
     cut_points,
+    frame_levels,
     server_frame_times,
 )
-from anishift.services.tts import DocumentPart
-from anishift.services.tts.engines.elevenreader.service import part_spans
-from anishift.services.tts.engines.elevenreader.types import AlignmentChunk
-from anishift.text.boundaries import ends_sentence
-from anishift.utils.mp3_frames import iter_frames, splice_times
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -54,7 +53,7 @@ def _spans(work: Path, voice: str) -> list[LineSpan]:
     chunks: tuple[AlignmentChunk, ...] = alignment_chunks(work / f"anishift-test-{voice}.align.jsonl")
     return [
         LineSpan(start_ms=timing.start_ms, end_ms=timing.end_ms, open_end=not ends_sentence(part.text))
-        for timing, part in zip(part_spans(chunks, parts), parts, strict=True)
+        for timing, part in zip(part_timings(chunks, parts), parts, strict=True)
     ]
 
 
@@ -72,7 +71,7 @@ def _recording_cuts(work: Path, voice: str) -> tuple[list[CutDecision], list[flo
 
 
 def _heard_at(levels: list[float], times: list[float], at_ms: float) -> bool:
-    return levels[max(bisect_right(times, at_ms) - 1, 0)] > EDGE_TRIM_DBFS
+    return levels[max(bisect_right(times, at_ms) - 1, 0)] > SILENT_DBFS
 
 
 def _assert_prototype_cuts_or_silent(

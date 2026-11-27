@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import glob
 import itertools
+import json
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -12,6 +14,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Never, Self
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.services.tts.artifacts import atomic_json_snapshot
 from anishift.services.tts.cancellation import TtsCancellation
 from anishift.services.tts.chunking import chunk_speech_text
 from anishift.services.tts.engines import create_engine
@@ -21,9 +24,10 @@ from anishift.services.tts.errors import (
     TtsConfigError,
     TtsError,
     TtsInputError,
+    TtsRecordingSplitError,
     TtsUnsupportedError,
 )
-from anishift.services.tts.fingerprint import SynthesisIdentity
+from anishift.services.tts.fingerprint import SynthesisIdentity, artifact_key, synthesis_fingerprint
 from anishift.services.tts.protocols import DocumentTtsEngine
 from anishift.services.tts.resume import (
     CachedTtsClip,
@@ -36,6 +40,8 @@ from anishift.services.tts.types import (
     ClipSpan,
     DocumentPart,
     DocumentSynthesisRequest,
+    EngineDocumentResult,
+    PartTiming,
     SpeechBatch,
     SpeechBatchProgress,
     SpeechBatchResult,
@@ -52,6 +58,7 @@ from anishift.services.tts.types import (
 from anishift.services.tts.validation import is_speech_text, validate_speech_batch
 from anishift.text.boundaries import ends_sentence
 from anishift.utils.logger import get_logger
+from anishift.utils.mp3_frames import iter_frames
 from anishift.utils.timer import Timer
 
 if TYPE_CHECKING:
@@ -66,7 +73,7 @@ if TYPE_CHECKING:
         TtsEngine,
         TtsProgressSink,
     )
-    from anishift.services.tts.types import AudioFormat, EngineClipResult, EngineDocumentResult, SplitResult
+    from anishift.services.tts.types import AudioFormat, EngineClipResult, SplitResult
 
 logger = get_logger(__name__)
 
@@ -321,6 +328,9 @@ class _DocumentAttempt:
         "_document_id",
         "_engine",
         "_expectation",
+        "_incomplete",
+        "_incomplete_cause",
+        "_kept",
         "_lines",
         "_paths",
         "_progress",
@@ -359,6 +369,10 @@ class _DocumentAttempt:
         self._recording: Path | None = None
         self._receipts: dict[str, ValidatedClipReceipt] = {}
         self._unspoken: frozenset[str] = frozenset()
+        self._incomplete: frozenset[str] = frozenset()
+        self._incomplete_cause: ErrorContext | None = None
+        key: str = artifact_key("document", "\0".join(synthesis_fingerprint(line.identity) for line in lines))
+        self._kept: tuple[Path, Path] = repository.kept_document_paths(key, self._recording_format)
 
     @property
     def lines(self) -> tuple[_DocumentLine, ...]:
@@ -371,26 +385,49 @@ class _DocumentAttempt:
         return self._expectation
 
     @property
-    def paths(self) -> tuple[Path, ...]:
-        """Return the recording and clip paths reserved by the current attempt."""
-        return tuple(self._paths)
-
-    @property
     def unspoken(self) -> frozenset[str]:
         """Return the request ids of the accepted recording's lines the engine did not speak."""
         return self._unspoken
+
+    @property
+    def incomplete(self) -> frozenset[str]:
+        """Return the request ids of lines that still miss words after the engine read them again."""
+        return self._incomplete
+
+    @property
+    def incomplete_error(self) -> TtsError:
+        """Return the failure of an incomplete line: what stopped the engine's redo, or the words left unread."""
+        if self._incomplete_cause is not None:
+            return TtsError(context=self._incomplete_cause)
+        return _incomplete_line_error()
 
     def receipt_for(self, request_id: str) -> ValidatedClipReceipt | None:
         """Return the accepted clip receipt of one document line."""
         return self._receipts.get(request_id)
 
-    async def call(self, attempt: int) -> EngineDocumentResult:
-        """Discard the previous attempt's files, then record the document into a fresh owned path."""
-        del attempt
+    def discard(self) -> None:
+        """Delete the attempt's recording, clips and every file the engine wrote under the recording's name."""
         _discard_paths(tuple(self._paths))
+        recording: Path | None = self._recording
+        if recording is None:
+            return
+        name: str = recording.name.removesuffix(f".{self._recording_format.value}.tmp")
+        _discard_paths(tuple(recording.parent.glob(f"{glob.escape(name)}.*")))
+
+    async def call(self, attempt: int) -> EngineDocumentResult:
+        """Discard the previous attempt's files, then return the kept recording or record the document anew."""
+        del attempt
+        self.discard()
         self._paths.clear()
         self._receipts = {}
         self._unspoken = frozenset()
+        self._incomplete = frozenset()
+        self._incomplete_cause = None
+        kept: EngineDocumentResult | None = await asyncio.to_thread(self._kept_result)
+        if kept is not None:
+            logger.info("TTS document cuts its kept recording instead of recording it again", lines=len(self._lines))
+            self._recording = kept.recording
+            return kept
         recording: Path = self._reserve(self._recording_format)
         self._recording = recording
         request: DocumentSynthesisRequest = DocumentSynthesisRequest(
@@ -403,7 +440,14 @@ class _DocumentAttempt:
             deadline_s=self._config.request_timeout_s,
             progress=self._progress,
         )
-        return await self._engine.synthesize_document(request, cancel=self._cancel)
+        try:
+            return await self._engine.synthesize_document(request, cancel=self._cancel)
+        except TtsError:
+            raise
+        except Exception as error:
+            logger.exception("TTS document engine failed outside its typed contract")
+            message: str = "TTS engine failed outside its typed contract"
+            raise _document_result_error(message) from error
 
     async def accept_result(self, result: EngineDocumentResult) -> EngineDocumentResult:
         """Split an owned recording into the spoken lines and decode-check every clip before success."""
@@ -416,11 +460,30 @@ class _DocumentAttempt:
             or result.provider_model_id != profile.provider_model_id
             or result.voice_id != profile.resolved_voice_id
         ):
-            raise _unowned_clip_error()
+            message: str = "TTS engine returned a document result for another request"
+            raise _document_result_error(message)
         if tuple(timing.request_id for timing in result.parts) != tuple(
             line.request.request_id for line in self._lines
         ):
-            raise _document_timing_error()
+            message = "TTS document timings do not match its lines"
+            raise _document_result_error(message)
+        try:
+            await self._cut(result)
+        except TtsError:
+            await asyncio.to_thread(self._keep, result)
+            raise
+        except (OSError, RuntimeError, ValueError) as error:
+            raise _split_error(kept=await asyncio.to_thread(self._keep, result)) from error
+        except Exception as error:
+            logger.exception("TTS document recording could not be cut into line clips")
+            raise _split_error(kept=await asyncio.to_thread(self._keep, result)) from error
+        self._paths.update(self._kept)
+        return result
+
+    async def _cut(self, result: EngineDocumentResult) -> None:
+        if self._cancel.is_cancelled:
+            raise _document_cancelled_error()
+        incomplete: frozenset[str] = frozenset(result.incomplete)
         spans: tuple[ClipSpan, ...] = tuple(
             ClipSpan(
                 request_id=timing.request_id,
@@ -436,25 +499,35 @@ class _DocumentAttempt:
             await self._split(result.recording, spans)
         receipts: dict[str, ValidatedClipReceipt] = {}
         for span in spans:
+            if span.request_id in incomplete:
+                continue
             receipt: ValidatedClipReceipt | None = await asyncio.to_thread(
                 self._repository.validate_temporary_clip,
                 span.destination,
                 self._expectation,
             )
             if receipt is None:
-                raise _invalid_audio_error()
+                logger.warning("TTS document line clip is not valid audio; only its line fails")
+                continue
             receipts[span.request_id] = receipt
         self._receipts = receipts
-        self._unspoken = frozenset(timing.request_id for timing in result.parts if not timing.spoken)
-        return result
+        self._incomplete = incomplete
+        self._incomplete_cause = result.incomplete_cause
+        self._unspoken = frozenset(
+            timing.request_id for timing in result.parts if not timing.spoken and timing.request_id not in incomplete
+        )
+        if self._cancel.is_cancelled:
+            raise _document_cancelled_error()
 
     async def _split(self, recording: Path, spans: tuple[ClipSpan, ...]) -> None:
         try:
             split: SplitResult = await asyncio.to_thread(self._splitter.split_clip, recording, spans, self._expectation)
-        except (OSError, RuntimeError, ValueError) as splitter_error:
-            raise _split_error() from splitter_error
+        except OSError, RuntimeError:
+            logger.warning("TTS document split failed; the recording is cut once more")
+            split = await asyncio.to_thread(self._splitter.split_clip, recording, spans, self._expectation)
         if split.written != tuple(span.request_id for span in spans):
-            raise _split_error()
+            message: str = "TTS clip splitter did not write every line clip"
+            raise ValueError(message)
         if split.uncertain_boundaries:
             logger.warning(
                 "TTS document split {count} boundaries without silence",
@@ -466,6 +539,59 @@ class _DocumentAttempt:
         path: Path = self._repository.temporary_clip_path(clip_format=clip_format)
         self._paths.add(path)
         return path
+
+    def _keep(self, result: EngineDocumentResult) -> bool:
+        """Keep a readable recording with its timings for the next attempt and tell whether one is kept."""
+        recording, saved = self._kept
+        try:
+            readable: bool = next(iter_frames(result.recording.read_bytes()), None) is not None
+        except OSError, ValueError:
+            readable = False
+        if not readable:
+            logger.warning("TTS document recording holds no MPEG audio; the next attempt records it again")
+            _discard_paths(self._kept)
+            return False
+        if result.recording == recording:
+            return True
+        try:
+            atomic_json_snapshot(saved, _kept_payload(result))
+            result.recording.replace(recording)
+        except OSError:
+            logger.exception("TTS document recording could not be kept; the next attempt records it again")
+            _discard_paths(self._kept)
+            return False
+        logger.info("TTS document recording is kept for the next attempt", lines=len(self._lines))
+        return True
+
+    def _kept_result(self) -> EngineDocumentResult | None:
+        recording, saved = self._kept
+        if not recording.is_file() or not saved.is_file():
+            _discard_paths(self._kept)
+            return None
+        parts: tuple[PartTiming, ...] = ()
+        incomplete: tuple[str, ...] = ()
+        cause: ErrorContext | None = None
+        try:
+            parts, incomplete, cause = _kept_fields(json.loads(saved.read_text(encoding="utf-8")))
+        except OSError, ValueError:
+            parts = ()
+        if tuple(timing.request_id for timing in parts) != tuple(line.request.request_id for line in self._lines):
+            logger.warning("TTS kept document recording has unreadable timings; the document is recorded again")
+            _discard_paths(self._kept)
+            return None
+        profile: SynthesisProfile = self._engine.synthesis_profile
+        return EngineDocumentResult(
+            request_id=self._document_id,
+            recording=recording,
+            format=self._recording_format,
+            engine_id=self._engine.engine_id,
+            provider_model_id=profile.provider_model_id,
+            voice_id=profile.resolved_voice_id,
+            request_time_ms=0.0,
+            parts=parts,
+            incomplete=incomplete,
+            incomplete_cause=cause,
+        )
 
 
 class TtsService:
@@ -1224,7 +1350,7 @@ class TtsService:
                 for position, line in enumerate(lines)
             ]
         finally:
-            _discard_paths(attempt.paths)
+            attempt.discard()
         logger.debug(
             "TTS document finished",
             scope_id=batch.scope_id,
@@ -1256,6 +1382,8 @@ class TtsService:
         if outcome.error is not None or result is None:
             error: TtsError = outcome.error or _incomplete_error()
             return _failed_execution(line.request, error, calls, retries, request_time_ms)
+        if line.request.request_id in attempt.incomplete:
+            return _failed_execution(line.request, attempt.incomplete_error, calls, retries, request_time_ms)
         if line.request.request_id in attempt.unspoken:
             return _failed_execution(line.request, _unspoken_line_error(), calls, retries, request_time_ms)
         receipt: ValidatedClipReceipt | None = attempt.receipt_for(line.request.request_id)
@@ -1643,22 +1771,89 @@ def _unspoken_line_error() -> TtsInputError:
     return TtsInputError(context=context)
 
 
-def _document_timing_error() -> TtsClipValidationError:
+def _incomplete_line_error() -> TtsInputError:
     context: ErrorContext = ErrorContext(
-        code=ErrorCode.TTS_CLIP_INVALID,
-        message="TTS document timings do not match its lines",
-        suggestion="Retry the document; the recording was discarded.",
+        code=ErrorCode.TTS_INPUT_INVALID,
+        message="TTS engine left words of the line unread, also when it read the line again",
+        suggestion="Retry the task or rewrite the line; the other lines were kept.",
     )
-    return TtsClipValidationError(context=context)
+    return TtsInputError(context=context)
 
 
-def _split_error() -> TtsClipValidationError:
+def _document_result_error(message: str) -> TtsRecordingSplitError:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_CLIP_INVALID,
-        message="TTS document recording could not be split into line clips",
-        suggestion="Retry the document or inspect the shared audio clip splitter.",
+        message=message,
+        suggestion="Report the engine error with the log; the task records its lines again only when retried.",
     )
-    return TtsClipValidationError(context=context)
+    return TtsRecordingSplitError(context=context)
+
+
+def _split_error(*, kept: bool) -> TtsRecordingSplitError:
+    suggestion: str = (
+        "Retry the task; it cuts the kept recording again without recording the lines."
+        if kept
+        else "Retry the task; no readable recording was kept, so its lines are recorded again."
+    )
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_CLIP_INVALID,
+        message="TTS document recording could not be split into valid line clips",
+        suggestion=suggestion,
+    )
+    return TtsRecordingSplitError(context=context)
+
+
+def _document_cancelled_error() -> TtsCancelledError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.CANCELLED,
+        message="TTS document was cancelled after its recording arrived",
+        suggestion="Run synthesis again; it cuts a kept recording instead of recording the lines again.",
+    )
+    return TtsCancelledError(context=context)
+
+
+def _kept_payload(result: EngineDocumentResult) -> dict[str, object]:
+    cause: ErrorContext | None = result.incomplete_cause
+    return {
+        "parts": [[timing.request_id, timing.start_ms, timing.end_ms] for timing in result.parts],
+        "incomplete": list(result.incomplete),
+        "incomplete_cause": None
+        if cause is None
+        else {"code": cause.code.value, "message": cause.message, "suggestion": cause.suggestion},
+    }
+
+
+def _kept_fields(payload: object) -> tuple[tuple[PartTiming, ...], tuple[str, ...], ErrorContext | None]:
+    match payload:
+        case {"parts": list() as parts, "incomplete": list() as incomplete, "incomplete_cause": cause}:
+            pass
+        case _:
+            message: str = "Kept document result has another shape"
+            raise ValueError(message)
+    if not all(isinstance(request_id, str) for request_id in incomplete):
+        message = "Kept document result names a part that is not text"
+        raise ValueError(message)
+    return tuple(_kept_timing(part) for part in parts), tuple(incomplete), _kept_cause(cause)
+
+
+def _kept_timing(part: object) -> PartTiming:
+    match part:
+        case [str() as request_id, int() | float() as start_ms, int() | float() as end_ms]:
+            return PartTiming(request_id=request_id, start_ms=float(start_ms), end_ms=float(end_ms))
+        case _:
+            message: str = "Kept document part timing has another shape"
+            raise ValueError(message)
+
+
+def _kept_cause(cause: object) -> ErrorContext | None:
+    match cause:
+        case None:
+            return None
+        case {"code": str() as code, "message": str() as message, "suggestion": str() as suggestion}:
+            return ErrorContext(code=ErrorCode(code), message=message, suggestion=suggestion)
+        case _:
+            error: str = "Kept document incomplete cause has another shape"
+            raise ValueError(error)
 
 
 def _assembly_error() -> TtsClipValidationError:

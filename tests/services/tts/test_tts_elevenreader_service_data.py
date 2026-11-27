@@ -5,11 +5,10 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
-from conftest import alignment_chunks
+from conftest import alignment_chunks, part_timings
 
 from anishift.paths import quality_dir
 from anishift.services.tts import DocumentPart
-from anishift.services.tts.engines.elevenreader.service import part_spans
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,12 +35,12 @@ def _parts(lines: Path) -> tuple[DocumentPart, ...]:
 
 
 @pytest.mark.parametrize("voice", ["fronczewski", "adam"])
-def test_part_spans_tantei_recording_matches_prototype_lines(voice: str) -> None:
+def test_part_timings_tantei_recording_matches_prototype_lines(voice: str) -> None:
     alignment: Path = TANTEI / f"anishift-test-{voice}.align.jsonl"
     if not alignment.is_file() or not (DATA / "bounds.py").is_file():
         pytest.skip("ElevenReader prototype data is not available")
 
-    timings = part_spans(alignment_chunks(alignment), _parts(TANTEI / "lines.json"))
+    timings = part_timings(alignment_chunks(alignment), _parts(TANTEI / "lines.json"))
     lines = _prototype_bounds().load_lines(TANTEI, voice)
 
     assert len(timings) == len(lines)
@@ -50,12 +49,12 @@ def test_part_spans_tantei_recording_matches_prototype_lines(voice: str) -> None
 
 
 @pytest.mark.parametrize("voice", ["fronczewski", "adam"])
-def test_part_spans_separated_edgerunners_recording_returns_every_line(voice: str) -> None:
+def test_part_timings_separated_edgerunners_recording_returns_every_line(voice: str) -> None:
     alignment: Path = DATA / "edge02c" / f"anishift-test-{voice}.align.jsonl"
     if not alignment.is_file():
         pytest.skip("ElevenReader prototype data is not available")
     parts = _parts(DATA / "edge02" / "lines.json")
 
-    timings = part_spans(alignment_chunks(alignment), parts)
+    timings = part_timings(alignment_chunks(alignment), parts)
 
     assert [timing.request_id for timing in timings] == [part.request_id for part in parts]

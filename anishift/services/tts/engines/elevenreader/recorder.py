@@ -7,18 +7,17 @@ import binascii
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Final
-
-from anishift.utils.logger import get_logger
-from anishift.utils.mp3_frames import cut_before_ms, frames_duration_ms
+from typing import TYPE_CHECKING, Final, TypeIs
 
 from .constants import (
     MIN_DEDUP_BYTES,
     MIN_PROBE_CHARS,
+    READING_SPEED,
     SILENT_CHUNK_MIN_LETTERS,
     SILENT_CHUNK_MS_PER_LETTER,
     TAIL_CHARS,
 )
+from .host import cut_before_ms, frames_duration_ms, get_logger
 from .types import AlignmentChunk
 
 if TYPE_CHECKING:
@@ -53,6 +52,8 @@ class StreamRecorder:
         self._expect: str | None = None
         self._expect_anchored: bool = False
         self._listening_speed: float | None = None
+        self._start_position: float | None = None
+        self._off_speed_after_speech: bool = False
         self._stopped: bool = False
         self._write_error: OSError | None = None
 
@@ -72,6 +73,16 @@ class StreamRecorder:
         return self._listening_speed
 
     @property
+    def off_speed_after_speech(self) -> bool:
+        """Whether the page asked for another reading speed after audio came; nothing after it is recorded."""
+        return self._off_speed_after_speech
+
+    @property
+    def start_position(self) -> float | None:
+        """Return the character the page asked the stream to start at before any text came, or None."""
+        return self._start_position
+
+    @property
     def write_error(self) -> OSError | None:
         """Return the error that stopped writing the recording, or None while writing works."""
         return self._write_error
@@ -86,12 +97,20 @@ class StreamRecorder:
         self._stopped = True
 
     def on_sent(self, payload: str | bytes) -> None:
-        """Track the reading speed carried by a frame the page sends; the server picks the voice model from it."""
+        """Track the reading speed and the start position carried by a frame the page sends to the server."""
         data: dict[str, object] | None = None if self._stopped else _json_object(payload)
-        speed: object = None if data is None else data.get("listening_speed")
-        if isinstance(speed, bool) or not isinstance(speed, int | float):
+        if data is None:
+            return
+        position: object = data.get("position")
+        if self._start_position is None and not self._chars and _is_number(position):
+            self._start_position = float(position)
+        speed: object = data.get("listening_speed")
+        if not _is_number(speed):
             return
         self._listening_speed = float(speed)
+        if self._listening_speed != READING_SPEED and self._audio_bytes:
+            self._off_speed_after_speech = True
+            self._stopped = True
 
     def on_frame(self, payload: str | bytes) -> None:
         """Record the audio and character timings of one frame the server sends."""
@@ -178,6 +197,10 @@ class StreamRecorder:
                 return len(expect) - at
         self._expect = None
         return 0
+
+
+def _is_number(value: object) -> TypeIs[int | float]:
+    return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def _json_object(payload: str | bytes) -> dict[str, object] | None:

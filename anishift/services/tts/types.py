@@ -343,7 +343,7 @@ class PartTiming:
 
 @dataclass(frozen=True, slots=True)
 class EngineDocumentResult:
-    """Provider-native recording and part timings produced by one document attempt."""
+    """Provider-native recording, part timings, the parts still missing words and why their redo stopped."""
 
     request_id: str
     recording: Path
@@ -353,6 +353,8 @@ class EngineDocumentResult:
     voice_id: str
     request_time_ms: float
     parts: tuple[PartTiming, ...]
+    incomplete: tuple[str, ...] = ()
+    incomplete_cause: ErrorContext | None = None
 
 
 @dataclass(frozen=True, slots=True)

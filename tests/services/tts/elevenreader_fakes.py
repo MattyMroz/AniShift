@@ -134,6 +134,7 @@ class FakeSite:
     hang_on: str = ""
     hung: threading.Event = field(default_factory=threading.Event)
     held: set[int] = field(default_factory=set)
+    silent: set[int] = field(default_factory=set)
     streams: int = 0
     upload_window_s: float = 120.0
     reads: list[str] = field(default_factory=list)
@@ -234,6 +235,8 @@ class FakePage:
         await self._step("press_play")
         self.site.plays += 1
         if self._recorder is None or self._on_url is None or not self.site.send_audio:
+            return
+        if self.upload_index in self.site.silent:
             return
         voice: str = str(self.site.account.get("default_voice_id")) if self.site.voice_in_url else "other"
         self.site.events.append(f"stream_{self.upload_index}")
@@ -427,7 +430,7 @@ class FakeFrame:
         if self.error is not None:
             raise self.error
         self.scripts.append(script)
-        return self.state if "__anishiftState()" in script else None
+        return self.state if "__readerState()" in script else None
 
 
 class FakeSocket:

@@ -11,6 +11,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import pytest
+from conftest import part_timings
 from elevenreader_fakes import (
     ADAM_ID,
     BREAK,
@@ -24,6 +25,7 @@ from elevenreader_fakes import (
     audio_frame,
     document_trace,
     fake_engine,
+    mp3_frames,
     read_id_of,
     read_url,
     stream_frames,
@@ -53,14 +55,17 @@ from anishift.services.tts import (
 from anishift.services.tts.engines.elevenreader import (
     CLEANUP_WARNING,
     ElevenReaderTtsEngine,
+    host,
     hub,
     read_session,
     service,
 )
 from anishift.services.tts.engines.elevenreader import browser as browser_module
+from anishift.services.tts.engines.elevenreader import config as config_module
 from anishift.services.tts.engines.elevenreader.api_backend import save_cleanup, write_session
 from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
-from anishift.services.tts.engines.elevenreader.service import document_text, part_spans
+from anishift.services.tts.engines.elevenreader.redo import read_parts
+from anishift.services.tts.engines.elevenreader.service import document_text
 from anishift.services.tts.engines.elevenreader.types import (
     AccountCleanup,
     AccountSettings,
@@ -236,7 +241,8 @@ def test_synthesize_document_default_browser_starts_one_chrome_session_on_the_pr
     site = FakeSite(library=LibraryState.SIGNED_OUT)
     roots: list[Path] = []
 
-    def session(root: Path) -> FakeSession:
+    def session(root: Path, *, headless: bool) -> FakeSession:
+        assert headless
         roots.append(root)
         created: FakeSession = FakeSession(site)
         site.sessions.append(created)
@@ -308,12 +314,14 @@ def test_synthesize_document_v2_stream_raises_transient_error_and_closes_only_it
     assert site.sessions[0].alive
 
 
-def test_synthesize_document_incomplete_recording_raises_clip_error(tmp_path: Path, engine_for: EngineFor) -> None:
+def test_synthesize_document_other_length_than_uploaded_only_warns(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, char_count=10_000, player_done=True)
 
-    with pytest.raises(TtsClipValidationError, match="incomplete"):
-        _run(_record(engine_for(site), _request(tmp_path)))
+    result = _run(_record(engine_for(site), _request(tmp_path)))
 
+    assert all(timing.spoken for timing in result.parts)
+    assert result.incomplete == ()
+    assert len(site.uploaded) == 1
     _assert_cleaned(site)
 
 
@@ -332,11 +340,14 @@ def test_synthesize_document_silent_chunk_leaves_only_its_lines_unspoken(tmp_pat
     _assert_cleaned(site)
 
 
-def test_synthesize_document_line_count_mismatch_raises_clip_error(tmp_path: Path, engine_for: EngineFor) -> None:
+def test_synthesize_document_lines_joined_by_the_server_keep_both_parts(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, frames=stream_frames(("Pierwsza kwestia. Druga (kwestia).",)))
 
-    with pytest.raises(TtsClipValidationError, match="line count mismatch"):
-        _run(_record(engine_for(site), _request(tmp_path)))
+    result = _run(_record(engine_for(site), _request(tmp_path)))
+
+    assert all(timing.spoken for timing in result.parts)
+    assert result.incomplete == ()
+    assert len(site.uploaded) == 1
 
 
 def test_synthesize_document_without_audio_opens_the_document_again_then_times_out(
@@ -366,12 +377,22 @@ def test_synthesize_document_app_check_refusal_fails_at_once_without_play(
     _assert_cleaned(site)
 
 
-def test_synthesize_document_stalled_stream_times_out(tmp_path: Path, engine_for: EngineFor) -> None:
+def test_synthesize_document_stalled_stream_keeps_the_speech_and_lists_what_its_redo_missed(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     frames: list[str] = [audio_frame("Pierwsza kwestia. " + BREAK, frames=3)]
     site = FakeSite(texts=TEXTS, frames=frames, char_count=10_000)
 
-    with pytest.raises(TtsTimeoutError, match="stalled"):
-        _run(_record(engine_for(site), _request(tmp_path)))
+    result = _run(_record(engine_for(site), _request(tmp_path)))
+
+    assert result.incomplete == ("line-1",)
+    assert [timing.spoken for timing in result.parts] == [True, False]
+    assert len(site.uploaded) == 2
+    assert result.recording.read_bytes() == mp3_frames(3)
+    assert sorted(path.name for path in result.recording.parent.iterdir()) == [
+        "recording.mp3",
+        "recording.stream.txt",
+    ]
 
 
 def test_synthesize_document_progress_reports_received_characters_on_engine_thread(
@@ -448,7 +469,7 @@ def test_synthesize_document_cancel_while_page_hangs_stops_quickly_and_cleans(
 
 
 def test_synthesize_document_hung_page_times_out_at_deadline_and_cleans(tmp_path: Path, engine_for: EngineFor) -> None:
-    site = FakeSite(texts=TEXTS, char_count=10_000, hang_on="player_state")
+    site = FakeSite(texts=TEXTS, char_count=10_000, hang_on="press_play")
     engine = engine_for(site)
 
     async def scenario() -> None:
@@ -587,7 +608,7 @@ def test_failed_restore_is_saved_and_run_by_next_engine_after_its_recording(
     assert not saved.delete_document
     second = FakeSite(texts=TEXTS, account={"default_voice_id": FRONCZEWSKI_ID, "playback_speed_rate": 1.0})
 
-    _run(_record(engine_for(second), _request(tmp_path)))
+    _run(_record(engine_for(second), _request(tmp_path, name="second")))
 
     assert second.events.index("upload") < second.events.index("restore_account")
     assert second.account["default_voice_id"] == "previous-voice"
@@ -680,7 +701,7 @@ def test_failed_delete_stays_pending_and_runs_before_next_upload(tmp_path: Path,
         await _record(engine, _request(tmp_path))
         site.failing.clear()
         site.events.clear()
-        await _record(engine, _request(tmp_path))
+        await _record(engine, _request(tmp_path, name="second"))
 
     _run(scenario())
 
@@ -787,7 +808,7 @@ def test_logs_never_contain_token_read_id_or_stream_address(tmp_path: Path) -> N
         await _record(engine, _request(tmp_path))
         await engine.close()
         failing = fake_engine(tmp_path, FakeSite(texts=TEXTS, failing={"delete_read", "restore_account"}))
-        await _record(failing, _request(tmp_path))
+        await _record(failing, _request(tmp_path, name="second"))
         await failing.close()
 
     try:
@@ -977,18 +998,59 @@ def test_cancelling_one_recording_closes_only_its_tab_and_keeps_the_other(
     assert site.account["default_voice_id"] == "previous-voice"
 
 
-def test_timed_out_recording_keeps_shared_browser_until_the_others_finish(
+def test_cancelled_recording_keeps_shared_browser_until_the_others_finish(
     tmp_path: Path, engine_for: EngineFor
 ) -> None:
     site = FakeSite(texts=TEXTS, held={0, 1})
     first, second = engine_for(site), engine_for(site)
+    stop = TtsCancellation()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        expiring = _in_thread(pool, first, _request(tmp_path, deadline_s=1.0, name="first"))
+        cancelled = _in_thread(pool, first, _request(tmp_path, name="first"), stop)
         _wait_until(lambda: site.streams == 1)
         kept = _in_thread(pool, second, _request(tmp_path, name="second"))
         _wait_until(lambda: site.streams == 2)
-        with pytest.raises(TtsTimeoutError, match="deadline"):
+        stop.cancel()
+        with pytest.raises(TtsCancelledError):
+            cancelled.result(timeout=5.0)
+        assert site.sessions[0].alive
+        site.held.clear()
+        kept.result(timeout=5.0)
+
+    _run(_record(first, _request(tmp_path, name="third")))
+
+    assert len(site.sessions) == 2
+    assert site.sessions[0].closed
+    assert site.sessions[1].alive
+
+
+def test_mono_pcm_runs_ffmpeg_without_a_console_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(command: list[str], **options: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(options)
+        return subprocess.CompletedProcess(command, 0, stdout=bytes(4))
+
+    monkeypatch.setattr(host, "require_binary", lambda binary: tmp_path / binary.value)
+    monkeypatch.setattr(subprocess, "run", run)
+
+    pcm = host.mono_pcm(tmp_path / "take.mp3")
+
+    assert list(pcm) == [0, 0]
+    assert [call["creationflags"] for call in calls] == [getattr(subprocess, "CREATE_NO_WINDOW", 0)]
+
+
+def test_recording_timed_out_before_speech_keeps_shared_browser_until_the_others_finish(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
+    site = FakeSite(texts=TEXTS, held={0}, silent={1})
+    first, second = engine_for(site), engine_for(site)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        kept = _in_thread(pool, second, _request(tmp_path, name="second"))
+        _wait_until(lambda: site.streams == 1)
+        expiring = _in_thread(pool, first, _request(tmp_path, name="first"))
+        with pytest.raises(TtsTimeoutError, match="no audio"):
             expiring.result(timeout=5.0)
         assert site.sessions[0].alive
         site.held.clear()
@@ -999,6 +1061,18 @@ def test_timed_out_recording_keeps_shared_browser_until_the_others_finish(
     assert len(site.sessions) == 2
     assert site.sessions[0].closed
     assert site.sessions[1].alive
+
+
+def test_recording_reaching_its_deadline_after_speech_ends_with_what_came(
+    tmp_path: Path, engine_for: EngineFor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service, "POLL_S", 0.1)
+    site = FakeSite(texts=TEXTS, held={0})
+
+    result = _run(_record(engine_for(site), _request(tmp_path, deadline_s=1.0)))
+
+    assert all(timing.spoken for timing in result.parts)
+    assert site.sessions[0].alive
 
 
 def test_last_engine_closing_stops_browser_and_host_thread(tmp_path: Path) -> None:
@@ -1074,7 +1148,7 @@ def test_synthesize_document_invalid_request_is_refused_without_browser(
 def test_availability_without_chrome_reports_missing_binary(
     monkeypatch: pytest.MonkeyPatch, engine_for: EngineFor
 ) -> None:
-    monkeypatch.setattr(service, "find_chrome", lambda: None)
+    monkeypatch.setattr(config_module, "find_chrome", lambda: None)
 
     availability = _run(engine_for(FakeSite()).availability())
 
@@ -1091,7 +1165,7 @@ def test_availability_live_reads_saved_session(
     signed_in: bool,
     status: AvailabilityStatus,
 ) -> None:
-    monkeypatch.setattr(service, "find_chrome", lambda: tmp_path / "chrome.exe")
+    monkeypatch.setattr(config_module, "find_chrome", lambda: tmp_path / "chrome.exe")
     write_session(tmp_path, signed_in=signed_in)
 
     availability = _run(engine_for(FakeSite()).availability(live=True))
@@ -1105,7 +1179,7 @@ def test_availability_live_without_saved_session_reports_missing_key(
     monkeypatch: pytest.MonkeyPatch,
     engine_for: EngineFor,
 ) -> None:
-    monkeypatch.setattr(service, "find_chrome", lambda: tmp_path / "chrome.exe")
+    monkeypatch.setattr(config_module, "find_chrome", lambda: tmp_path / "chrome.exe")
 
     availability = _run(engine_for(FakeSite()).availability(live=True))
 
@@ -1168,28 +1242,28 @@ def _parts(*texts: str) -> tuple[DocumentPart, ...]:
 
 
 def _spans(chunks: tuple[AlignmentChunk, ...], *texts: str) -> list[tuple[float, float]]:
-    return [(timing.start_ms, timing.end_ms) for timing in part_spans(chunks, _parts(*texts))]
+    return [(timing.start_ms, timing.end_ms) for timing in part_timings(chunks, _parts(*texts))]
 
 
-def test_part_spans_break_tags_split_parts_in_server_time() -> None:
+def test_part_timings_break_tags_split_parts_in_server_time() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (250.0, 280.0)]
 
 
-def test_part_spans_separator_paragraph_is_not_a_part() -> None:
+def test_part_timings_separator_paragraph_is_not_a_part() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> … <break time="0.6s"/> Cd.'),)
 
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (480.0, 510.0)]
 
 
-def test_part_spans_adjacent_break_tags_form_one_boundary() -> None:
+def test_part_timings_adjacent_break_tags_form_one_boundary() -> None:
     chunks = (_chunk('Ab.<break time="0.6s"/> <break time="0.6s"/>Cd.'),)
 
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (440.0, 470.0)]
 
 
-def test_part_spans_part_the_server_did_not_speak_returns_empty_span() -> None:
+def test_part_timings_part_the_server_did_not_speak_returns_empty_span() -> None:
     silent = AlignmentChunk(
         offset_ms=250.0, chars=tuple("j g"), starts_ms=(0.0, 0.0, 0.0), durations_ms=(0.0, 0.0, 0.0)
     )
@@ -1198,77 +1272,72 @@ def test_part_spans_part_the_server_did_not_speak_returns_empty_span() -> None:
     assert _spans(chunks, "Ab.", "j g", "Cd.") == [(0.0, 30.0), (250.0, 250.0), (520.0, 550.0)]
 
 
-def test_part_spans_parts_touching_a_silent_chunk_return_empty_spans() -> None:
+def test_part_timings_parts_touching_a_silent_chunk_return_empty_spans() -> None:
     chunks = (
         _chunk('Ab. <break time="0.6s"/> C'),
         _chunk('d. <break time="0.6s"/> Ef.', offset_ms=300.0, step_ms=1.0, silent=True),
         _chunk(' <break time="0.6s"/> Gh.', offset_ms=330.0),
     )
 
-    timings = part_spans(chunks, _parts("Ab.", "Cd.", "Ef.", "Gh."))
+    timings = part_timings(chunks, _parts("Ab.", "Cd.", "Ef.", "Gh."))
 
     assert [timing.spoken for timing in timings] == [True, False, False, True]
     assert _spans(chunks, "Ab.", "Cd.", "Ef.", "Gh.")[3] == (550.0, 580.0)
 
 
-def test_part_spans_ellipsis_ending_a_part_stays_in_its_text() -> None:
+def test_part_timings_ellipsis_ending_a_part_stays_in_its_text() -> None:
     chunks = (_chunk('Zobacz filmik… <break time="0.6s"/> … <break time="0.6s"/> Cd.'),)
 
-    timings = part_spans(chunks, _parts("Zobacz filmik…", "Cd."))
+    timings = part_timings(chunks, _parts("Zobacz filmik…", "Cd."))
 
     assert [(timing.start_ms, timing.end_ms) for timing in timings] == [(0.0, 140.0), (590.0, 620.0)]
 
 
-def test_part_spans_final_break_adds_no_empty_part() -> None:
+def test_part_timings_final_break_adds_no_empty_part() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd. <break time="2s"/>'),)
 
     assert len(_spans(chunks, "Ab.", "Cd.")) == 2
 
 
-def test_part_spans_tag_cut_between_chunks_still_splits() -> None:
+def test_part_timings_tag_cut_between_chunks_still_splits() -> None:
     chunks = (_chunk("Ab. <break ti"), _chunk('me="0.6s"/> Cd.', offset_ms=1000.0))
 
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (1120.0, 1150.0)]
 
 
-def test_part_spans_unclosed_tag_at_end_is_dropped() -> None:
+def test_part_timings_unclosed_tag_at_end_is_dropped() -> None:
     chunks = (_chunk('Ab. <break time="2'),)
 
     assert _spans(chunks, "Ab.") == [(0.0, 30.0)]
 
 
-def test_part_spans_part_ending_before_it_starts_raises_clip_error() -> None:
+def test_part_timings_part_ending_before_it_starts_returns_empty_span() -> None:
     reversed_chunk = AlignmentChunk(
         offset_ms=0.0, chars=tuple("Ab."), starts_ms=(100.0, 50.0, 0.0), durations_ms=(10.0, 10.0, 10.0)
     )
 
-    with pytest.raises(TtsClipValidationError, match="timing is reversed") as error:
-        part_spans((reversed_chunk,), _parts("Ab."))
-
-    assert error.value.context.code.value == "TTS_CLIP_INVALID"
-    assert error.value.context.details == {"line": 0}
+    assert _spans((reversed_chunk,), "Ab.") == [(100.0, 100.0)]
 
 
-def test_part_spans_surrounding_whitespace_is_trimmed() -> None:
+def test_part_timings_surrounding_whitespace_is_trimmed() -> None:
     chunks = (_chunk("  Ab  "),)
 
     assert _spans(chunks, "Ab") == [(20.0, 40.0)]
 
 
-def test_part_spans_bracketed_part_matches_round_brackets_in_server_text() -> None:
+def test_part_timings_bracketed_part_matches_round_brackets_in_server_text() -> None:
     chunks = (_chunk("(Ab)"),)
 
     assert _spans(chunks, "[Ab]") == [(0.0, 40.0)]
 
 
-def test_part_spans_count_mismatch_raises_clip_error() -> None:
+def test_part_timings_part_the_server_split_in_two_lines_spans_both() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
-    with pytest.raises(TtsClipValidationError, match="line count mismatch"):
-        part_spans(chunks, _parts("Ab. Cd."))
+    assert _spans(chunks, "Ab. Cd.") == [(0.0, 280.0)]
 
 
-def test_part_spans_part_ending_with_em_dash_matches_server_text_without_it() -> None:
+def test_part_timings_part_ending_with_em_dash_matches_server_text_without_it() -> None:
     chunks = (_chunk('Szybki Kr <break time="0.6s"/> Kula ognia!'),)
 
     assert _spans(chunks, "Szybki Kr—", "Kula ognia!") == [(0.0, 90.0), (310.0, 420.0)]
@@ -1284,22 +1353,18 @@ def test_part_spans_part_ending_with_em_dash_matches_server_text_without_it() ->
         ("Nie wiem", "Nie, wiem?!"),
     ],
 )
-def test_part_spans_punctuation_only_difference_is_accepted(received: str, sent: str) -> None:
-    timings = part_spans((_chunk(received),), _parts(sent))
+def test_part_timings_punctuation_only_difference_is_accepted(received: str, sent: str) -> None:
+    timings = part_timings((_chunk(received),), _parts(sent))
 
     assert [timing.request_id for timing in timings] == ["line-0"]
 
 
-def test_part_spans_different_words_raise_one_permanent_unsupported_error() -> None:
+def test_part_timings_part_with_other_words_gets_no_span_and_counts_as_missing() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
-    with pytest.raises(TtsUnsupportedError, match="line text mismatch") as error:
-        part_spans(chunks, _parts("Ab.", "Ef."))
-
-    assert error.value.context.code.value == "TTS_UNSUPPORTED"
-    assert error.value.context.details == {"line": 1}
-    assert error.value.context.suggestion
+    assert _spans(chunks, "Ab.", "Ef.") == [(0.0, 30.0), (30.0, 30.0)]
+    assert read_parts('Ab. <break time="0.6s"/> Cd.', ["Ab.", "Ef."]).missing == (1,)
 
 
-def test_part_spans_no_chunks_and_no_parts_returns_nothing() -> None:
-    assert part_spans((), ()) == ()
+def test_part_timings_no_chunks_and_no_parts_returns_nothing() -> None:
+    assert part_timings((), ()) == ()

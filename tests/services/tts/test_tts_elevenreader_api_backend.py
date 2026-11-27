@@ -244,7 +244,8 @@ class _SignOutSession:
     start_failure: ClassVar[TtsError | None] = None
     forget_failure: ClassVar[TtsError | None] = None
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, headless: bool) -> None:
+        assert headless
         self.root: Path = root
         self.events: list[str] = []
         _SignOutSession.instances.append(self)
@@ -811,9 +812,9 @@ def test_reader_page_check_page_speed_injects_missing_and_retunes_off_speed_fram
 
     asyncio.run(_reader(page).check_page_speed(64.0))
 
-    assert "window.__anishiftSpeed = 64.0" in missing.scripts[-1]
-    assert slow.scripts[-1] == "window.__anishiftSetSpeed(64.0)"
-    assert retargeted.scripts[-1] == "window.__anishiftSetSpeed(64.0)"
+    assert "window.__readerSpeed = 64.0" in missing.scripts[-1]
+    assert slow.scripts[-1] == "window.__readerSetSpeed(64.0)"
+    assert retargeted.scripts[-1] == "window.__readerSetSpeed(64.0)"
     assert len(steady.scripts) == 1
 
 

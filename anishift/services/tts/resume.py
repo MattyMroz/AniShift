@@ -143,6 +143,14 @@ class TtsResumeRepository:
         """Reserve an owned same-filesystem path for an engine attempt."""
         return self._layout.temporary_clip_path(clip_format=clip_format)
 
+    def kept_document_paths(self, document_key: str, recording_format: AudioFormat) -> tuple[Path, Path]:
+        """Return where a document recording that was not cut waits with its timings for the next attempt."""
+        stem: str = f"document-{document_key}"
+        return (
+            self._layout.clips_dir / f"{stem}.{recording_format.value}",
+            self._layout.clips_dir / f"{stem}.json",
+        )
+
     def flush(self) -> None:
         """Persist all staged entries in one durable manifest snapshot."""
         with self._lock:
