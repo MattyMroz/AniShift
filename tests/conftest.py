@@ -58,3 +58,29 @@ def pytest_collection_modifyitems(config: pytest.Config, items: Iterable[pytest.
     for item in items:
         if "network" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_chrome_or_ffmpeg(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.node.get_closest_marker("network") is not None:
+        return
+    from anishift.services.tts.engines.elevenreader import browser, redo  # noqa: PLC0415
+
+    monkeypatch.setattr(browser, "open_window", _no_window)
+    monkeypatch.setattr(browser, "async_playwright", _no_playwright)
+    monkeypatch.setattr(redo, "mono_pcm", _no_pcm)
+
+
+def _no_window(root: Path) -> None:
+    message: str = f"a test opened a Chrome window on {root}"
+    raise AssertionError(message)
+
+
+def _no_playwright() -> None:
+    message: str = "a test started Playwright"
+    raise AssertionError(message)
+
+
+def _no_pcm(recording: Path) -> list[int]:
+    message: str = f"a test decoded {recording} with FFmpeg"
+    raise AssertionError(message)

@@ -13,8 +13,10 @@ from anishift.services.tts.engines.elevenreader import (
     MAX_PARALLEL_DOCUMENTS,
     VOICES,
     ElevenReaderConfig,
+    Redo,
     resolve_voice,
 )
+from anishift.services.tts.engines.elevenreader.host import engine_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,17 +46,18 @@ def test_voices_offer_two_voices_with_fronczewski_default() -> None:
 
 
 @pytest.mark.parametrize("documents", [1, MAX_PARALLEL_DOCUMENTS])
-def test_from_tts_config_parallel_documents_within_limit_are_accepted(tmp_path: Path, documents: int) -> None:
+def test_engine_config_parallel_documents_within_limit_are_accepted(tmp_path: Path, documents: int) -> None:
     config = replace(tts_config(tmp_path), max_concurrency=documents)
 
-    assert ElevenReaderConfig.from_tts_config(config).profile_root == tmp_path
+    assert engine_config(config).profile_root == tmp_path
 
 
-def test_from_tts_config_resolves_voice_and_profile(tmp_path: Path) -> None:
-    config: ElevenReaderConfig = ElevenReaderConfig.from_tts_config(tts_config(tmp_path, voice_id="adam"))
+def test_engine_config_resolves_voice_and_profile_and_redoes_by_line(tmp_path: Path) -> None:
+    config: ElevenReaderConfig = engine_config(tts_config(tmp_path, voice_id="adam"))
 
     assert config.voice.voice_id == ADAM_ID
     assert config.profile_root == tmp_path
+    assert config.redo is Redo.LINE
 
 
 @pytest.mark.parametrize(
@@ -66,10 +69,10 @@ def test_from_tts_config_resolves_voice_and_profile(tmp_path: Path) -> None:
         ("elevenreader_profile_root", None),
     ],
 )
-def test_from_tts_config_unsupported_setting_raises_config_error(tmp_path: Path, field_name: str, value: Any) -> None:
+def test_engine_config_unsupported_setting_raises_config_error(tmp_path: Path, field_name: str, value: Any) -> None:
     config = replace(tts_config(tmp_path), **{field_name: value})
 
     with pytest.raises(TtsConfigError) as error:
-        ElevenReaderConfig.from_tts_config(config)
+        engine_config(config)
 
     assert error.value.context.details == {"field": field_name}

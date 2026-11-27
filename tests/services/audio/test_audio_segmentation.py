@@ -22,7 +22,7 @@ from anishift.services.audio.segmentation import (
     server_frame_times,
 )
 from anishift.services.tts import DocumentPart
-from anishift.services.tts.engines.elevenreader.service import part_spans
+from anishift.services.tts.engines.elevenreader.redo import part_spans
 from anishift.services.tts.engines.elevenreader.types import AlignmentChunk
 from anishift.text.boundaries import ends_sentence
 from anishift.utils.mp3_frames import iter_frames, splice_times

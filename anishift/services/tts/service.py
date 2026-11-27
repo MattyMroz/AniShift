@@ -321,6 +321,7 @@ class _DocumentAttempt:
         "_document_id",
         "_engine",
         "_expectation",
+        "_incomplete",
         "_lines",
         "_paths",
         "_progress",
@@ -359,6 +360,7 @@ class _DocumentAttempt:
         self._recording: Path | None = None
         self._receipts: dict[str, ValidatedClipReceipt] = {}
         self._unspoken: frozenset[str] = frozenset()
+        self._incomplete: frozenset[str] = frozenset()
 
     @property
     def lines(self) -> tuple[_DocumentLine, ...]:
@@ -380,6 +382,11 @@ class _DocumentAttempt:
         """Return the request ids of the accepted recording's lines the engine did not speak."""
         return self._unspoken
 
+    @property
+    def incomplete(self) -> frozenset[str]:
+        """Return the request ids of lines that still miss words after the engine read them again."""
+        return self._incomplete
+
     def receipt_for(self, request_id: str) -> ValidatedClipReceipt | None:
         """Return the accepted clip receipt of one document line."""
         return self._receipts.get(request_id)
@@ -391,6 +398,7 @@ class _DocumentAttempt:
         self._paths.clear()
         self._receipts = {}
         self._unspoken = frozenset()
+        self._incomplete = frozenset()
         recording: Path = self._reserve(self._recording_format)
         self._recording = recording
         request: DocumentSynthesisRequest = DocumentSynthesisRequest(
@@ -421,6 +429,7 @@ class _DocumentAttempt:
             line.request.request_id for line in self._lines
         ):
             raise _document_timing_error()
+        incomplete: frozenset[str] = frozenset(result.incomplete)
         spans: tuple[ClipSpan, ...] = tuple(
             ClipSpan(
                 request_id=timing.request_id,
@@ -430,7 +439,7 @@ class _DocumentAttempt:
                 destination=self._reserve(self._expectation.format),
             )
             for line, timing in zip(self._lines, result.parts, strict=True)
-            if timing.spoken
+            if timing.spoken and timing.request_id not in incomplete
         )
         if spans:
             await self._split(result.recording, spans)
@@ -445,7 +454,10 @@ class _DocumentAttempt:
                 raise _invalid_audio_error()
             receipts[span.request_id] = receipt
         self._receipts = receipts
-        self._unspoken = frozenset(timing.request_id for timing in result.parts if not timing.spoken)
+        self._incomplete = incomplete
+        self._unspoken = frozenset(
+            timing.request_id for timing in result.parts if not timing.spoken and timing.request_id not in incomplete
+        )
         return result
 
     async def _split(self, recording: Path, spans: tuple[ClipSpan, ...]) -> None:
@@ -1256,6 +1268,8 @@ class TtsService:
         if outcome.error is not None or result is None:
             error: TtsError = outcome.error or _incomplete_error()
             return _failed_execution(line.request, error, calls, retries, request_time_ms)
+        if line.request.request_id in attempt.incomplete:
+            return _failed_execution(line.request, _incomplete_line_error(), calls, retries, request_time_ms)
         if line.request.request_id in attempt.unspoken:
             return _failed_execution(line.request, _unspoken_line_error(), calls, retries, request_time_ms)
         receipt: ValidatedClipReceipt | None = attempt.receipt_for(line.request.request_id)
@@ -1639,6 +1653,15 @@ def _unspoken_line_error() -> TtsInputError:
         code=ErrorCode.TTS_INPUT_INVALID,
         message="TTS engine did not speak the line, even read as its own document",
         suggestion="Retry the task or rewrite the line as readable words; the other lines were kept.",
+    )
+    return TtsInputError(context=context)
+
+
+def _incomplete_line_error() -> TtsInputError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_INPUT_INVALID,
+        message="TTS engine left words of the line unread, also when it read the line again",
+        suggestion="Retry the task or rewrite the line; the other lines were kept.",
     )
     return TtsInputError(context=context)
 

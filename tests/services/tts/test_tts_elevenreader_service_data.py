@@ -9,7 +9,7 @@ from conftest import alignment_chunks
 
 from anishift.paths import quality_dir
 from anishift.services.tts import DocumentPart
-from anishift.services.tts.engines.elevenreader.service import part_spans
+from anishift.services.tts.engines.elevenreader.redo import part_spans
 
 if TYPE_CHECKING:
     from pathlib import Path

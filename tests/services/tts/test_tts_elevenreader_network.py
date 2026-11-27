@@ -42,7 +42,8 @@ from anishift.services.tts.engines.elevenreader.api_backend import (
     save_cleanup,
 )
 from anishift.services.tts.engines.elevenreader.browser import ChromeSession
-from anishift.services.tts.engines.elevenreader.constants import DOCUMENT_NAME, READS_URL, USER_CONFIG_URL
+from anishift.services.tts.engines.elevenreader.constants import READS_URL, USER_CONFIG_URL
+from anishift.services.tts.engines.elevenreader.host import NAME
 from anishift.services.tts.engines.elevenreader.types import AccountCleanup, DocumentTrace, UploadedRead
 
 pytestmark = [
@@ -187,7 +188,7 @@ def _record_episode(
 
 
 async def _account(root: Path) -> tuple[object, object, frozenset[str]]:
-    session = ChromeSession(root)
+    session = ChromeSession(root, headless=True)
     await session.start()
     try:
         page: ReaderPage = await session.new_page()
@@ -290,7 +291,7 @@ async def _orphan_lookup(root: Path, document: Path) -> tuple[object, bool, obje
     def save() -> None:
         save_cleanup(root, cleanup)
 
-    session = ChromeSession(root)
+    session = ChromeSession(root, headless=True)
     page: ReaderPage | None = None
     uploaded: UploadedRead | None = None
     await session.start()
@@ -314,7 +315,7 @@ async def _orphan_lookup(root: Path, document: Path) -> tuple[object, bool, obje
 
 def test_reads_listing_live_account_finds_and_deletes_document_without_known_id(tmp_path: Path) -> None:
     root: Path = elevenreader_dir()
-    document: Path = tmp_path / DOCUMENT_NAME
+    document: Path = tmp_path / f"{NAME}.txt"
     document.write_text("Test listy dokumentów! Drugie zdanie.\n\n…\n\nDruga kwestia.\n", encoding="utf-8")
 
     listed, recognised, left, settled = asyncio.run(_orphan_lookup(root, document))

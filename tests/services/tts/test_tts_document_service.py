@@ -108,8 +108,10 @@ class _DocumentEngine:
         drop_timing_once: bool = False,
         wrong_voice_once: bool = False,
         speaks_up_to: dict[str, int] | None = None,
+        incomplete: frozenset[str] = frozenset(),
     ) -> None:
         self.speaks_up_to: dict[str, int] = speaks_up_to or {}
+        self.incomplete: frozenset[str] = incomplete
         self.documents: list[tuple[str, ...]] = []
         self.document_ids: list[str] = []
         self.recordings: list[Path] = []
@@ -184,6 +186,7 @@ class _DocumentEngine:
             voice_id=voice_id,
             request_time_ms=5.0,
             parts=timings,
+            incomplete=tuple(part.request_id for part in request.parts if part.text in self.incomplete),
         )
 
     async def close(self) -> None:
@@ -396,6 +399,19 @@ def test_document_batch_part_the_server_did_not_speak_fails_only_that_line(tmp_p
     assert engine.documents == [("line-0", "line-1", "line-2"), ("line-1",)]
     assert [[span.request_id for span in spans] for spans in splitter.calls] == [["line-0", "line-2"]]
     assert result.stats.provider_calls == 2
+    assert result.status is SpeechBatchStatus.PARTIAL
+
+
+def test_document_batch_line_still_missing_words_after_redo_fails_alone_without_another_read(tmp_path: Path) -> None:
+    engine = _DocumentEngine(incomplete=frozenset({"Trzy cztery."}))
+    splitter = _Splitter()
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery.", "Pięć."))
+
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED, SynthesisStatus.SYNTHESIZED]
+    assert result.requests[1].error_code == "TTS_INPUT_INVALID"
+    assert engine.documents == [("line-0", "line-1", "line-2")]
+    assert [[span.request_id for span in spans] for spans in splitter.calls] == [["line-0", "line-2"]]
     assert result.status is SpeechBatchStatus.PARTIAL
 
 

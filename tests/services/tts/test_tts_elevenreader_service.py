@@ -58,9 +58,11 @@ from anishift.services.tts.engines.elevenreader import (
     service,
 )
 from anishift.services.tts.engines.elevenreader import browser as browser_module
+from anishift.services.tts.engines.elevenreader import config as config_module
 from anishift.services.tts.engines.elevenreader.api_backend import save_cleanup, write_session
 from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
-from anishift.services.tts.engines.elevenreader.service import document_text, part_spans
+from anishift.services.tts.engines.elevenreader.redo import part_spans, read_parts
+from anishift.services.tts.engines.elevenreader.service import document_text
 from anishift.services.tts.engines.elevenreader.types import (
     AccountCleanup,
     AccountSettings,
@@ -236,7 +238,8 @@ def test_synthesize_document_default_browser_starts_one_chrome_session_on_the_pr
     site = FakeSite(library=LibraryState.SIGNED_OUT)
     roots: list[Path] = []
 
-    def session(root: Path) -> FakeSession:
+    def session(root: Path, *, headless: bool) -> FakeSession:
+        assert headless
         roots.append(root)
         created: FakeSession = FakeSession(site)
         site.sessions.append(created)
@@ -308,12 +311,14 @@ def test_synthesize_document_v2_stream_raises_transient_error_and_closes_only_it
     assert site.sessions[0].alive
 
 
-def test_synthesize_document_incomplete_recording_raises_clip_error(tmp_path: Path, engine_for: EngineFor) -> None:
+def test_synthesize_document_other_length_than_uploaded_only_warns(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, char_count=10_000, player_done=True)
 
-    with pytest.raises(TtsClipValidationError, match="incomplete"):
-        _run(_record(engine_for(site), _request(tmp_path)))
+    result = _run(_record(engine_for(site), _request(tmp_path)))
 
+    assert all(timing.spoken for timing in result.parts)
+    assert result.incomplete == ()
+    assert len(site.uploaded) == 1
     _assert_cleaned(site)
 
 
@@ -332,11 +337,14 @@ def test_synthesize_document_silent_chunk_leaves_only_its_lines_unspoken(tmp_pat
     _assert_cleaned(site)
 
 
-def test_synthesize_document_line_count_mismatch_raises_clip_error(tmp_path: Path, engine_for: EngineFor) -> None:
+def test_synthesize_document_lines_joined_by_the_server_keep_both_parts(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, frames=stream_frames(("Pierwsza kwestia. Druga (kwestia).",)))
 
-    with pytest.raises(TtsClipValidationError, match="line count mismatch"):
-        _run(_record(engine_for(site), _request(tmp_path)))
+    result = _run(_record(engine_for(site), _request(tmp_path)))
+
+    assert all(timing.spoken for timing in result.parts)
+    assert result.incomplete == ()
+    assert len(site.uploaded) == 1
 
 
 def test_synthesize_document_without_audio_opens_the_document_again_then_times_out(
@@ -366,12 +374,18 @@ def test_synthesize_document_app_check_refusal_fails_at_once_without_play(
     _assert_cleaned(site)
 
 
-def test_synthesize_document_stalled_stream_times_out(tmp_path: Path, engine_for: EngineFor) -> None:
+def test_synthesize_document_stalled_stream_keeps_the_speech_and_lists_what_its_redo_missed(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     frames: list[str] = [audio_frame("Pierwsza kwestia. " + BREAK, frames=3)]
     site = FakeSite(texts=TEXTS, frames=frames, char_count=10_000)
 
-    with pytest.raises(TtsTimeoutError, match="stalled"):
-        _run(_record(engine_for(site), _request(tmp_path)))
+    result = _run(_record(engine_for(site), _request(tmp_path)))
+
+    assert result.incomplete == ("line-1",)
+    assert [timing.spoken for timing in result.parts] == [True, False]
+    assert len(site.uploaded) == 2
+    assert result.recording.read_bytes() == (tmp_path / "rec" / "recording.take1.mp3").read_bytes()
 
 
 def test_synthesize_document_progress_reports_received_characters_on_engine_thread(
@@ -587,7 +601,7 @@ def test_failed_restore_is_saved_and_run_by_next_engine_after_its_recording(
     assert not saved.delete_document
     second = FakeSite(texts=TEXTS, account={"default_voice_id": FRONCZEWSKI_ID, "playback_speed_rate": 1.0})
 
-    _run(_record(engine_for(second), _request(tmp_path)))
+    _run(_record(engine_for(second), _request(tmp_path, name="second")))
 
     assert second.events.index("upload") < second.events.index("restore_account")
     assert second.account["default_voice_id"] == "previous-voice"
@@ -680,7 +694,7 @@ def test_failed_delete_stays_pending_and_runs_before_next_upload(tmp_path: Path,
         await _record(engine, _request(tmp_path))
         site.failing.clear()
         site.events.clear()
-        await _record(engine, _request(tmp_path))
+        await _record(engine, _request(tmp_path, name="second"))
 
     _run(scenario())
 
@@ -787,7 +801,7 @@ def test_logs_never_contain_token_read_id_or_stream_address(tmp_path: Path) -> N
         await _record(engine, _request(tmp_path))
         await engine.close()
         failing = fake_engine(tmp_path, FakeSite(texts=TEXTS, failing={"delete_read", "restore_account"}))
-        await _record(failing, _request(tmp_path))
+        await _record(failing, _request(tmp_path, name="second"))
         await failing.close()
 
     try:
@@ -1074,7 +1088,7 @@ def test_synthesize_document_invalid_request_is_refused_without_browser(
 def test_availability_without_chrome_reports_missing_binary(
     monkeypatch: pytest.MonkeyPatch, engine_for: EngineFor
 ) -> None:
-    monkeypatch.setattr(service, "find_chrome", lambda: None)
+    monkeypatch.setattr(config_module, "find_chrome", lambda: None)
 
     availability = _run(engine_for(FakeSite()).availability())
 
@@ -1091,7 +1105,7 @@ def test_availability_live_reads_saved_session(
     signed_in: bool,
     status: AvailabilityStatus,
 ) -> None:
-    monkeypatch.setattr(service, "find_chrome", lambda: tmp_path / "chrome.exe")
+    monkeypatch.setattr(config_module, "find_chrome", lambda: tmp_path / "chrome.exe")
     write_session(tmp_path, signed_in=signed_in)
 
     availability = _run(engine_for(FakeSite()).availability(live=True))
@@ -1105,7 +1119,7 @@ def test_availability_live_without_saved_session_reports_missing_key(
     monkeypatch: pytest.MonkeyPatch,
     engine_for: EngineFor,
 ) -> None:
-    monkeypatch.setattr(service, "find_chrome", lambda: tmp_path / "chrome.exe")
+    monkeypatch.setattr(config_module, "find_chrome", lambda: tmp_path / "chrome.exe")
 
     availability = _run(engine_for(FakeSite()).availability(live=True))
 
@@ -1237,16 +1251,12 @@ def test_part_spans_unclosed_tag_at_end_is_dropped() -> None:
     assert _spans(chunks, "Ab.") == [(0.0, 30.0)]
 
 
-def test_part_spans_part_ending_before_it_starts_raises_clip_error() -> None:
+def test_part_spans_part_ending_before_it_starts_returns_empty_span() -> None:
     reversed_chunk = AlignmentChunk(
         offset_ms=0.0, chars=tuple("Ab."), starts_ms=(100.0, 50.0, 0.0), durations_ms=(10.0, 10.0, 10.0)
     )
 
-    with pytest.raises(TtsClipValidationError, match="timing is reversed") as error:
-        part_spans((reversed_chunk,), _parts("Ab."))
-
-    assert error.value.context.code.value == "TTS_CLIP_INVALID"
-    assert error.value.context.details == {"line": 0}
+    assert _spans((reversed_chunk,), "Ab.") == [(100.0, 100.0)]
 
 
 def test_part_spans_surrounding_whitespace_is_trimmed() -> None:
@@ -1261,11 +1271,10 @@ def test_part_spans_bracketed_part_matches_round_brackets_in_server_text() -> No
     assert _spans(chunks, "[Ab]") == [(0.0, 40.0)]
 
 
-def test_part_spans_count_mismatch_raises_clip_error() -> None:
+def test_part_spans_part_the_server_split_in_two_lines_spans_both() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
-    with pytest.raises(TtsClipValidationError, match="line count mismatch"):
-        part_spans(chunks, _parts("Ab. Cd."))
+    assert _spans(chunks, "Ab. Cd.") == [(0.0, 280.0)]
 
 
 def test_part_spans_part_ending_with_em_dash_matches_server_text_without_it() -> None:
@@ -1290,15 +1299,11 @@ def test_part_spans_punctuation_only_difference_is_accepted(received: str, sent:
     assert [timing.request_id for timing in timings] == ["line-0"]
 
 
-def test_part_spans_different_words_raise_one_permanent_unsupported_error() -> None:
+def test_part_spans_part_with_other_words_gets_no_span_and_counts_as_missing() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
-    with pytest.raises(TtsUnsupportedError, match="line text mismatch") as error:
-        part_spans(chunks, _parts("Ab.", "Ef."))
-
-    assert error.value.context.code.value == "TTS_UNSUPPORTED"
-    assert error.value.context.details == {"line": 1}
-    assert error.value.context.suggestion
+    assert _spans(chunks, "Ab.", "Ef.") == [(0.0, 30.0), (30.0, 30.0)]
+    assert read_parts('Ab. <break time="0.6s"/> Cd.', ["Ab.", "Ef."]).missing == (1,)
 
 
 def test_part_spans_no_chunks_and_no_parts_returns_nothing() -> None:

@@ -427,7 +427,7 @@ class FakeFrame:
         if self.error is not None:
             raise self.error
         self.scripts.append(script)
-        return self.state if "__anishiftState()" in script else None
+        return self.state if "__readerState()" in script else None
 
 
 class FakeSocket:

@@ -21,7 +21,7 @@ Leniwy rejestr adapterów providerów TTS.
   a `types.py` tylko dla typów danych. Zdalny adapter ma `api_backend.py`: jedna próba u dostawcy razem z
   mapowaniem jego błędów; lokalny `sapi` ma w tej roli `worker.py` i `protocol.py`. Żaden nie ma `errors.py`.
 - Moduł spoza standardu tylko z uzasadnieniem: `edge/patch.py`, `elevenbytes/vpn.py`,
-  `elevenlabs/options.py`, `elevenreader/{browser,hub,recorder}.py`.
+  `elevenlabs/options.py`, `elevenreader/{browser,host,hub,pauses,recorder,redo}.py`.
 - Testy: `tests/services/tts/test_tts_<silnik>[_<moduł>].py`; test `network` w osobnym pliku `_network`.
 
 ## Adaptery
@@ -30,5 +30,13 @@ Leniwy rejestr adapterów providerów TTS.
 - `elevenbytes/` — publiczne proxy ElevenBytes, domyślnie stabilny endpoint run6.
 - `elevenlabs/` — oficjalne, potencjalnie płatne API ElevenLabs.
 - `elevenreader/` — ElevenReader (Eleven v4) przez prawdziwy Chrome z zalogowanym profilem;
-  silnik dokumentowy.
+  silnik dokumentowy. Wszystko, co zależy od AniShift, jest w `elevenreader/host.py`: polskie teksty dla panelu
+  (Ustawienia → Lektor, `FALLBACK_HINT`), `EngineSurface` (protokół `TtsEngine`: `engine_id`, `capabilities`,
+  dostępność, głosy, odmowa `synthesize`), `engine_config` z `TtsConfig` (zawsze `Redo.LINE`: część to kwestia),
+  `check_request` (`eleven_v4`, bez opcji), `mono_pcm` (FFmpeg z `anishift.platform.binaries`, bo domena TTS nie
+  importuje `services.audio`) i `ChromeBusyError` jako błąd przejściowy z `retry_after_s`. Panel loguje przez
+  `sign_in` (okno bez sterowania) i wylogowuje przez `sign_out`. Linia z `incomplete` w wyniku dokumentu kończy się
+  w `TtsService` błędem tej linii bez kolejnego odczytu; pozostałe linie zostają. Chrome jest dzieckiem rezydenta
+  (Job Object kończy go z rezydentem), okno logowania dostaje `independent_child_flags`. Testy sieciowe silnika:
+  `test_tts_elevenreader_network.py` (`-m network`, prawdziwe konto, nie uruchamiaj bez polecenia).
 - `sapi/` — lokalny, architekturowo izolowany worker Windows SAPI.

@@ -1,164 +1,130 @@
-# services/tts/engines/elevenreader
+# Silnik ElevenReader
 
-Silnik dokumentowy: jedna próba wgrywa dokument odcinka do ElevenReadera, nagrywa strumień w Chrome i zwraca
-nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzyknięty `ClipSplitter`, nie silnik.
+Silnik dokumentowy: wgrywa dokument do ElevenReadera, nagrywa strumień w Chrome, sprawdza po słowach, czy serwer
+przeczytał każdą część, dogrywa części z brakującymi słowami i zwraca jedno nagranie MP3 z czasami części. Wszystko,
+co zależy od programu (błędy, teksty dla użytkownika, platforma, dekodowanie MP3, typy dokumentu, nazwa programu,
+powierzchnia silnika wobec reszty programu), jest wyłącznie w `host.py`. Pozostałe pliki tego katalogu nie importują
+niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich jest zmianą silnika, nie programu.
 
 ## Moduły
 
-- Standard sióstr: `config.py`, `constants.py`, `types.py`, `service.py` (silnik, `document_text`, `part_spans`)
-  i `api_backend.py` (karta Playwright: `ReaderPage`, konto, sesja, mapowanie błędów dostawcy).
-- Specyficzne: `browser.py` (proces Chrome i CDP, jak `sapi/worker.py`; tu też `ChromeMissingError` i
-  `ChromeBusyError`, jak `VpnError` w `elevenbytes/vpn.py`), `hub.py` (`ReaderHub`: jedna przeglądarka profilu w
-  procesie, karta na nagranie, wspólne sprzątanie konta) oraz `recorder.py` (czyste ramki WebSocket → MP3 i czasy
-  znaków, testowane bez przeglądarki).
+- `host.py`: jedyne miejsce zależne od programu. Daje błędy i `ErrorContext`, teksty podpowiedzi (`*_HINT`,
+  `CLEANUP_WARNING`), `NAME` (nazwa pliku dokumentu, katalogów tymczasowych i wątku), anulowanie, `ProcessLock`,
+  `restrict_directory`, `find_installed`, zapis `session.json`, cięcie ramek MP3, `mono_pcm` (MP3 → mono PCM 16 kHz),
+  typy dokumentu (`DocumentPart`, `DocumentSynthesisRequest`, `PartTiming`, `DocumentResult` i `document_result`),
+  `engine_config` (z czego powstaje `ElevenReaderConfig`), `check_request`, `keeps_tags` oraz `EngineSurface`, klasę
+  bazową silnika z tym, czego program wymaga od silnika poza wspólnymi metodami.
+- `config.py`, `constants.py`, `types.py`, `service.py` (silnik, `document_text`) i `api_backend.py` (karta
+  Playwright: `ReaderPage`, konto, sesja, logowanie, wylogowanie, mapowanie błędów dostawcy).
+- `redo.py`: porównanie słów (`read_parts`), czasy części (`timings`, `part_spans`), bloki dogrywania
+  (`redo_blocks`) i sklejanie (`splice`). `pauses.py`: poziomy ramek 10 ms i najlepsza pauza między dwoma odcinkami
+  mowy (te same stałe co reguła cięcia klipów).
+- `browser.py` (proces Chrome i CDP: `ChromeSession(root, headless=…)`, `open_window`), `hub.py` (`ReaderHub`: jedna
+  przeglądarka profilu w procesie, karta na nagranie, wspólne sprzątanie konta), `recorder.py` (czyste ramki WebSocket
+  → MP3 i czasy znaków, testowane bez przeglądarki).
+
+## Wykrywanie i dogrywanie
+
+- Tekst ze strumienia to metadane do podświetlania i nie jest deterministyczny; celem jest dźwięk. `read_parts`
+  porównuje naraz wszystkie słowa dokumentu (`[^\W_]+`, małe litery; interpunkcja, odstępy i wielkość liter się nie
+  liczą) ze słowami strumienia (bez znaczników `<break>`) przez `difflib.SequenceMatcher` bez `autojunk`. Połączenie
+  lub rozdzielenie linii przez serwer nie jest różnicą. Słowo brakujące albo inne oznacza część jako brakującą
+  (`missing`); słowo dodane przez serwer trafia tylko do logu. Każda różnica idzie do logu (`ElevenReader streamed
+  other words than the parts`) z numerem części i słowami obu wersji; to jedyny wyjątek od zakazu tekstu w logach.
+- Zakres części w tekście strumienia biegnie od jej pierwszego do ostatniego słowa wraz z interpunkcją do najbliższej
+  pauzy albo spacji; część bez słów dostaje akapit bez słów między sąsiadami. Część poza zakresem, z odwróconym czasem
+  albo dotykająca cichej porcji dostaje pusty `PartTiming`. Inna liczba znaków niż `char_count` tylko ostrzega.
+- `ElevenReaderConfig.redo` (`Redo`, bez wartości domyślnej): `LINE` nagrywa złą część samą, `PARAGRAPH` razem z
+  częścią przed i po niej jako jeden dokument, który zastępuje wszystkie trzy. Bloki stykające się lub nachodzące
+  łączą się w jeden. Każdy blok nagrywa się raz; dogranie z brakującym słowem albo błędem nie jest wklejane i nie ma
+  kolejnych ponowień, a jego części są w wyniku jako `incomplete`. Nigdy nie nagrywa się całego dokumentu od nowa po
+  odebraniu dźwięku.
+- Sklejanie (`splice`) tnie w ciszy wykrytej w dźwięku (`pauses.best_pause` między częścią przed i po szwie, środek
+  pauzy), a nie według czasów serwera. Dogranie zaczyna się tyle przed pierwszą głośną ramką (`NOISE_DBFS`), ile pauzy
+  ucięto po stronie nagrania głównego, i kończy tyle po ostatniej; blok na początku albo końcu dokumentu bierze
+  dogranie od jego początku albo do końca. Brak pauzy przy szwie: blok nie jest wklejany. Tekst i czasy znaków
+  wynikowego nagrania powstają z odcinków obu nagrań przesuniętych na nową oś.
+
+## Pliki nagrań
+
+- Każda próba ma własny plik `<stem>.take<n><suffix>` obok `request.recording` (`open("xb")`), także pobranie
+  (`download_document`); silnik niczego nie kasuje. Wynik trafia do `request.recording`, który nie może zawierać
+  danych (pusty plik zastępczy jest dozwolony), więc żadne nagranie nie jest nadpisywane.
+- Obok każdej próby i wyniku zawsze leży `<stem>.stream.txt` z tekstem, który przysłał serwer.
+- Strumień urwany po dźwięku (zastój `STALL_S`, odmowa App Check, prośba strony o inną prędkość) kończy próbę z tym,
+  co przyszło; brakujące części idą do dogrania. Bez dźwięku te same zdarzenia są błędem próby. Rejestrator przestaje
+  zapisywać, gdy strona poprosi o inną prędkość po dźwięku (`off_speed_after_speech`).
 
 ## Gospodarz (`hub.py`)
 
 - `ReaderHub.acquire(profile_root, …)` w konstruktorze silnika, `release()` w `close()`; rejestr procesu pod
-  `threading.Lock`, licznik referencji = żywe silniki. Gospodarz ma własny wątek `anishift-elevenreader` (daemon) i
+  `threading.Lock`, licznik referencji = żywe silniki. Gospodarz ma własny wątek `<NAME>-elevenreader` (daemon) i
   pętlę asyncio; na niej żyją `ChromeSession`, karty, `AccountCleanup` i każdy zapis `session.json`. Silniki z różnych
-  `TtsService` (różne pętle) zlecają całą próbę przez `record` i nie dotykają Playwright.
+  pętli zlecają całą próbę przez `record` i nie dotykają Playwright.
 - Nowy gospodarz profilu, którego poprzedni jeszcze się zamyka, czeka w swoim wątku na koniec poprzedniego i dopiero
   wtedy wczytuje `load_cleanup`; ostatni `release` sprząta konto w nowej karcie, zapisuje, ostrzega
   (`CLEANUP_WARNING`), zamyka Chrome i kończy wątek.
 - Próba: bramka głosu (poza terminem, pod anulowaniem; inny głos czeka na koniec aktywnych, kolejka po bilecie bez
-  głodzenia) → termin `request.deadline_s` → blokada startu: Chrome (start albo restart podejrzanego, gdy nikt inny
-  nie nagrywa), karta, `require_signed_in`, zaległe dokumenty, upload, `prepare_account`, Play; blokadę zwalnia
+  głodzenia) → termin `deadline_s` → blokada startu: Chrome (start albo restart podejrzanego, gdy nikt inny nie
+  nagrywa), karta, `require_signed_in`, zaległe dokumenty, upload, `prepare_account`, Play; blokadę zwalnia
   `attempt.started()` po pierwszym adresie strumienia albo po `START_TIMEOUT_S` → nagrywanie równolegle → `_leave`.
-- Anulowanie: token runu i anulowanie zadania silnika przechodzą przez osobny `TtsCancellation` próby
-  (`_until_done`); silnik wraca dopiero po końcu `_leave` tej próby. Postęp dokumentu wraca na pętlę silnika
-  (`_reported_here`, `run_coroutine_threadsafe`).
+  Każde dogranie to osobna próba.
+- Anulowanie wywołującego i anulowanie zadania silnika przechodzą przez osobne anulowanie próby (`_until_done`);
+  silnik wraca dopiero po końcu `_leave` tej próby. Postęp dokumentu wraca na pętlę silnika (`_reported_here`).
 
 ## Granice
 
-- Na poziomie modułu Playwright importuje tylko `browser.py`. `api_backend.py` ładuje go leniwie
-  (`_playwright_error`, `_playwright_timeout`, import `browser` w `sign_in` i `sign_out`), a `hub.py` ładuje `browser.py`
-  w `headless_session`. Pilnuje tego test w `test_tts_contract.py` i test importu pakietu w procesie potomnym.
-- `find_chrome`, `profile_dir`, `session_file` i `lock_file` leżą w `config.py`, żeby doctor i panel nie ładowały
+- Na poziomie modułu Playwright importuje tylko `browser.py`. `api_backend.py` ładuje go leniwie, a `hub.py` w
+  `headless_session`.
+- `find_chrome`, `profile_dir`, `session_file` i `lock_file` leżą w `config.py`, żeby diagnostyka nie ładowała
   Playwright.
-- `ChromeSession` startuje Chrome z `--user-data-dir=config/elevenreader/chrome-profile` (Chrome 136+ ignoruje
-  CDP dla domyślnego profilu) na wolnym porcie i dołącza `connect_over_cdp`. Proces jest zwykłym dzieckiem
-  rezydenta (bez breakaway), więc Job Object kończy go razem z rezydentem.
-- `ChromeSession.close` najpierw prosi Chrome o wyjście przez CDP (`Browser.close`) i czeka do 10 s; `terminate`
-  i `kill` są tylko zapasem. Chrome zapisuje ciasteczka na dysk z opóźnieniem do ok. 30 s, więc twarde zabicie
-  zaraz po zalogowaniu gubi sesję (`signed_in: true` w `session.json`, a profil wylogowany).
-- `ChromeSession` jest zawsze headless (`headless_session`): nagrywanie, sprzątanie i `sign_out`. Skrypty
-  diagnostyczne też nie otwierają okna.
-- `sign_in` (panel „Zaloguj (otwórz okno Chrome)”) przy wolnym profilu (`claim_profile`) uruchamia przez
-  `open_window` zwykłe, odłączone Chrome na `chrome-profile` z adresem biblioteki: bez portu debugowania,
-  Playwright i CDP, bez czekania na zamknięcie i bez sprawdzania sesji. Blokadę AniShift zwalnia od razu; dalej
-  profil chroni `lockfile` samego Chrome. Właściciel loguje się sam; `session.json` aktualizuje następne nagranie
-  (`require_signed_in`), a zaległe sprzątanie konta robi gospodarz przy nagraniu i ostatnim `release`.
-  Wyścig między zwolnieniem blokady a utworzeniem `lockfile` działa w obie strony, bo drugie Chrome na profilu
-  przekazuje adres pierwszemu i kończy się: gdy okno wystartuje pierwsze, Chrome nagrania kończy się i próba
-  dostaje błąd przejściowy z ponowieniem; gdy pierwsze wystartuje headless Chrome nagrania, okno oddaje mu adres i
-  znika, panel mówi „Otwarto okno”, choć okna nie widać, a ponowne Zaloguj daje „profil w użyciu” do końca nagrania.
-- `sign_out` (panel „Wyloguj (usuń ciasteczka ElevenReadera)”) startuje `ChromeSession` (zajęty profil →
-  `SignOutOutcome.BUSY`), `forget_site` usuwa ciasteczka domen `SITE_COOKIE_DOMAIN` (elevenreader.io i subdomeny,
-  `BrowserContext.clear_cookies`) i dane originu `SITE_ORIGIN` (CDP `Storage.clearDataForOrigin`, `all`, przez
-  sesję CDP świeżej karty: z sesji przeglądarki Chromium odpowiada „Internal error” i nic nie czyści, próba
-  2026-11-22 na lokalnym originie z localStorage, IndexedDB i ciasteczkiem), bo
-  Firebase trzyma logowanie i stan App Check w IndexedDB strony, nie tylko w ciasteczkach. Reszta profilu (konto
-  Google, inne strony) zostaje. Potem łagodne `close` (zapis profilu) i `signed_in: false` przez `write_session`,
-  które zachowuje zaległe `restore` i `documents`. Tylko na polecenie właściciela: kod nigdy nie czyści danych sam,
-  także po odmowie App Check.
-- `claim_profile` to jedyna droga zajęcia profilu (`ChromeSession.start`, `sign_in`): `ProcessLock` na
-  `chrome.lock` (drugi proces AniShift) i `chrome-profile/lockfile`, który Chrome na Windows trzyma otwarty bez
-  prawa usuwania, dopóki działa (próba 2026-11-22: `unlink` → `PermissionError` 32, po wyjściu plik znika); tak
-  widać też okno logowania, które nie trzyma `chrome.lock`. Nieusuwalny `lockfile` = zajęty; nieaktualny usuwa.
-  Zajęty → `ChromeBusyError` (przejściowy); w `sign_in` → `SignInOutcome.BUSY`, w `sign_out` →
-  `SignOutOutcome.BUSY`. W procesie Chrome profilu ma tylko gospodarz. `restrict_directory` przy każdym starcie.
+- `ChromeSession` startuje Chrome z `--user-data-dir=<root>/chrome-profile` (Chrome 136+ ignoruje CDP dla domyślnego
+  profilu) na wolnym porcie i dołącza `connect_over_cdp`; skrypt prędkości strony tylko przy `headless=True`.
+  `close` najpierw prosi Chrome o wyjście przez CDP (sama prośba ma limit 10 s) i czeka do 10 s; `terminate` i `kill`
+  są zapasem. Chrome zapisuje ciasteczka z opóźnieniem do ok. 30 s, więc twarde zabicie zaraz po zalogowaniu gubi
+  sesję.
+- `claim_profile` to jedyna droga zajęcia profilu (`ChromeSession.start`, `sign_in`): `ProcessLock` na `chrome.lock`
+  i `chrome-profile/lockfile`, który Chrome na Windows trzyma otwarty; nieusuwalny `lockfile` = zajęty. Zajęty →
+  `busy_error()` z `host.py`; w `sign_in` i `await_sign_in` → `SignInOutcome.BUSY`, w `sign_out` →
+  `SignOutOutcome.BUSY`.
+- `sign_in` otwiera przez `open_window` zwykłe, odłączone Chrome na bibliotece, bez CDP i bez czekania.
+  `await_sign_in` otwiera sterowane okno, czeka do `SIGN_IN_TIMEOUT_S` na zalogowanie i sprząta konto. `sign_out`
+  usuwa tylko ciasteczka `SITE_COOKIE_DOMAIN` i dane originu `SITE_ORIGIN` (CDP `Storage.clearDataForOrigin` przez
+  sesję świeżej karty) i zapisuje `signed_in: false`.
 - `ReaderPage` jest jedynym miejscem z selektorami i wywołaniami Playwright. Każdy błąd Playwright idzie przez
   `map_playwright_error` z `from None`, bo komunikat Playwright potrafi zawierać adres z `read_id`.
 
 ## Konto i sprzątanie
 
-- Głos i tempo 1x ustawia `user_config` konta tokenem strony (`prepare_account`), przed otwarciem dokumentu:
-  serwer wybiera model przy starcie strumienia. Wpis przywrócenia (we wspólnym `AccountCleanup` gospodarza) powstaje
-  przed zapisem i nie jest nadpisywany, dopóki poprzedni nie wykona się, inaczej „poprzednim” głosem zostałby nasz.
-- Każda próba ma własny `AccountCleanup` wgrań (`ReaderAttempt.uploads`); gospodarz ma wspólny (`restore` i dokumenty
-  zakończonych prób). `session.json` zapisuje sumę obu (`_save`). `clean_account(…, restore=…)`: w `_leave` (pod
-  `finish_shielded`, także po anulowaniu) próba usuwa tylko swoje dokumenty; resztki przechodzą do wspólnego, a
-  próba, po której nie zostaje żadna otwarta karta, pod blokadą startu przywraca ustawienia (`restore=True`).
-  Licznik kart `_tabs` spada na samym początku `_leave`, nie w `_exit`, więc dwie próby kończące się naraz nie
-  pomijają przywrócenia nawzajem. Start próby usuwa zaległe
-  dokumenty bez przywracania ustawień. Każdy krok ma własny limit i `_cleanup_step` łapie każdy wyjątek; karta
-  zamyka się w `finally`, a slot bramki głosu zwalnia zawsze. Zaległe kroki biegną też przy ostatnim `release` (jeśli
-  przeglądarka żyje); panel ich nie uruchamia. Trwała porażka: `logger.warning(CLEANUP_WARNING, steps=…)`, wiersz w SESJA
-  i ostrzeżenie doctora.
-- `upload` dopisuje `DocumentTrace` każdego wgrania (`pressed_at` i `listed_by` jako czas zegarowy `time.time()`,
-  skróty SHA-256 możliwych tytułów z `document_titles`) i zapisuje go przed „Upload”, a `read_id` z odpowiedzi
-  wpisuje do śladu przed walidacją `char_count`/tokenu. Dokument ze znanym `read_id` znika przez `DELETE reads/{id}`,
-  także po restarcie, bo `read_id` jest zapisany w `session.json`.
-- Tylko upload bez odpowiedzi z `read_id` (anulowanie w trakcie uploadu, odpowiedź bez id) szuka się w pierwszej
-  stronie `GET reads`: `from_user_import is True`, `original_file_type == "text/plain"`, `added_at_unix` w
-  `[pressed_at − 300 s, listed_by + 300 s]` i skrót znormalizowanego `title` wśród skrótów śladu. Serwer bierze tytuł
-  z pierwszego zdania treści, nie z nazwy pliku, więc ślad trzyma skróty każdego prefiksu dokumentu na granicy słów
-  do 200 znaków. Jeden kandydat → `DELETE`; kilku → nic nie usuwa, ostrzeżenie, krok zostaje zaległy; zero przed
-  `listed_by` → krok zostaje; zero po `listed_by` → krok rozliczony z `logger.warning`, że upload mógł zostać na
-  koncie (z liczbą importów w oknie, bez tytułu i tekstu).
-- Zaległe sprzątanie jest trwałe w prywatnym `session.json` (`restore`, `documents`: `pressed_at`, `listed_by`,
-  `titles`, `read_id`): `prepare_account` i `upload` zapisują je przed zmianą konta, gospodarz po każdym sprzątaniu,
-  `load_cleanup` wczytuje je raz na gospodarza. Czas zegarowy zachowuje okno wgrania po restarcie procesu i komputera.
-- Błąd próby zamyka tylko jej kartę. Anulowanie, timeout i niedostępność (`_SUSPECT_ERRORS`) oznaczają przeglądarkę
-  jako podejrzaną; restart następuje przy otwieraniu karty, gdy żadne inne nagranie nie trwa. Martwy Chrome
-  (`alive == False`) startuje od nowa przy następnej próbie.
+- `resolve_voice` przyjmuje alias, id głosu z `VOICES` albo 20-znakowe id dowolnego głosu biblioteki ElevenLabs.
+- Głos i tempo 1x ustawia `user_config` konta tokenem strony (`prepare_account`) przed otwarciem dokumentu; głos
+  `None` (pobieranie z głosem konta) zostawia głos. Wpis przywrócenia powstaje przed zapisem i nie jest nadpisywany,
+  dopóki poprzedni nie wykona się.
+- Każda próba ma własny `AccountCleanup` wgrań; gospodarz ma wspólny (`restore` i dokumenty zakończonych prób).
+  `session.json` zapisuje sumę obu. Próba usuwa w `_leave` swoje dokumenty, a ostatnia otwarta karta przywraca
+  ustawienia. Każdy krok ma własny limit i `_cleanup_step` łapie każdy wyjątek. Trwała porażka: ostrzeżenie
+  `CLEANUP_WARNING` z krokami.
+- `upload` zapisuje `DocumentTrace` (czasy zegarowe, skróty SHA-256 możliwych tytułów) przed „Upload”, a `read_id`
+  przed walidacją `char_count`/tokenu. Upload bez `read_id` szuka się w pierwszej stronie `GET reads`
+  (`from_user_import`, `text/plain`, okno czasu ±300 s, skrót tytułu); jeden kandydat → `DELETE`, kilku → nic.
+- Błąd próby zamyka tylko jej kartę. Anulowanie, timeout i niedostępność oznaczają przeglądarkę jako podejrzaną;
+  restart następuje przy otwieraniu karty, gdy żadne inne nagranie nie trwa.
 
 ## Pułapki
 
-- Konto trzyma na urządzeniu najwyżej 2 strumienie naraz (pomiar: `docs/work/11-elevenreader-tts/outcomes/02-parallel-documents.md`):
-  przy 3 i 5 nowy strumień zamyka starszy, a ta karta stoi do `STALL_S`. Dlatego `MAX_PARALLEL_DOCUMENTS` = 2;
-  podniesienie tylko po nowym pomiarze testem sieciowym `test_tts_services_on_own_threads_live_record_documents_together`.
-  Otwarcie i zamknięcie strumienia logują `ElevenReader stream opened/closed` z liczbą odebranych znaków.
-
-- Brak retry w transporcie. Ponowne otwarcie dokumentu z Play (do 3, gdy przez `START_TIMEOUT_S` nie przyszedł
-  dźwięk) i pętla dołączania do CDP to czynności jednej próby.
-- Gdy Firebase App Check odrzuci przeglądarkę, strona pisze w konsoli `AppCheck: 403` / `appCheck/…` i nie otwiera
-  strumienia, a odmowę zapamiętuje w profilu na dobę. `ReaderPage` łapie to z konsoli (`APP_CHECK_REFUSAL`) i
-  `raise_if_refused` od razu kończy próbę trwałym `TtsAuthError` (`refused_error`), bez czekania na Play. Panel
-  pokazuje treść z sugestią w całości po polsku (wyjątkowo także `message` tego błędu jest po polsku), bez „App Check” i
-  kodu, z drogą Ustawienia → Lektor → Wyloguj, potem Zaloguj i logowanie w otwartym oknie, albo próbą po dobie,
-  albo innym silnikiem; bez `FALLBACK_HINT`, bo ElevenBytes bywa wyłączany. Danych strony po odmowie nic nie czyści
-  samo (Z1 specyfikacji): robi to tylko `sign_out` na kliknięcie właściciela.
-- Błąd Playwright przy starcie sterownika, dołączaniu i przygotowaniu kontekstu (`ChromeSession._attach`) staje się
-  `unavailable_error`, więc `sign_out` kończy się `FAILED`, a panel nie zostaje w stanie „zajęty”.
-- Każde wywołanie strony w próbie (także `set_page_speed`, `press_play`, `check_page_speed`, `player_state`) idzie
-  przez `unless_cancelled`, więc anulowanie nie czeka na limit Playwright; `evaluate` nie ma własnego limitu.
-- Blokadę startu, Chrome, kartę i nagrywanie próby ogranicza `request.deadline_s` (`within_deadline`): po jego
-  upływie próba kończy się `TtsTimeoutError` (przejściowy), a sprzątanie i zamknięcie karty biegną w `finally` jak po
-  każdym błędzie. Scheduler ma wyłączony `asyncio.timeout` dla tego silnika, więc ten termin jest jedynym górnym
-  limitem próby; poza nim są czekanie w bramce głosu (ogranicza je tylko anulowanie) i końcowe sprzątanie (każdy krok
-  `CLEANUP_STEP_TIMEOUT_S`).
-- Token, `read_id`, adres WebSocketu i tekst dokumentu nie trafiają do logów ani wyjątków. Token i adres
-  WebSocketu nie trafiają też do plików. Prywatny `session.json` (katalog z `restrict_directory`, gitignored) ma tylko
-  `signed_in`, `checked_at`, `restore` (głos i tempo konta) i `documents` (czasy, `read_id` wyłącznie do sprzątania
-  oraz skróty SHA-256 prefiksów tytułu). Skróty nie są jawnym tekstem, ale słownikiem da się je odwrócić słowo po
-  słowie. Adres strumienia jest sprawdzany w pamięci.
-- Część pusta po neutralizacji, równa `LINE_SEPARATOR` albo z `<break` to `TtsInputError` z `validate_part`;
-  `TtsService` woła ją dla każdej kwestii przed grupowaniem, a `synthesize_document` dla każdej części przed
-  przeglądarką.
-- Błąd zapisu nagrania (`OSError`) zatrzymuje `StreamRecorder`; `_record` w następnym takcie rzuca
-  `TtsClipValidationError` z `error_class` i `errno`, bez ścieżki.
-- Pierwsza ramka wysyłana z `listening_speed` ≠ 1 oznacza model v2 → błąd przejściowy.
-- Wylogowanego gościa biblioteka przekierowuje na `/reader/sign-up` (przyciski „Sign up with Google/Apple/email”,
-  „Sign in” nie jako przycisk); `open_library` rozpoznaje to po adresie i przyciskach „Sign up”. Status 402 jako brak
-  kredytów jest niepotwierdzonym założeniem.
-- `GET reads` (zmierzone) zwraca `{"reads": [...], "has_more", "next_cursor", "last_sort_id"}`; nowy
-  upload był na pierwszej stronie. Kod czyta tylko ją, bez paginacji. Założenie: kolejność od najnowszych, a upload
-  bez `read_id` szuka się zwykle w tym samym przebiegu, minuty po wgraniu (sprzątanie po anulowaniu, następna próba,
-  `close()`). Po dłuższej przerwie dokument może być poza pierwszą stroną; wtedy krok rozlicza się z ostrzeżeniem,
-  a nie po cichu. Brak listy `reads` zostawia krok `delete_orphan` zaległym
-  (widocznym w panelu), nigdy nie rozlicza go po cichu. Rozpoznanie sprawdza test sieciowy
-  `test_reads_listing_live_account_finds_and_deletes_document_without_known_id`.
-- `char_count` z odpowiedzi uploadu jest obowiązkowy; bez niego próba kończy się błędem przejściowym.
-- Serwer potrafi nie wypowiedzieć części (np. strzępu szyldu `j g`): jej znaki mają zerowy czas, a `part_spans` zwraca
-  dla niej pusty `PartTiming` zamiast błędu, więc odpada tylko ta kwestia. Inna liczba części i odwrócony czas
-  pozostają `TtsClipValidationError` całego nagrania. Tekst części porównuje się tylko po słowach (`\w+`, bez
-  wielkości liter): różnica w interpunkcji, myślnikach i odstępach przechodzi. Inne słowa to trwały
-  `TtsUnsupportedError` z numerem części w `details`, bez ponowień, bo ten sam tekst da ten sam wynik.
-- Serwer potrafi też oddać porcję z pełnym tekstem i alignmentem, ale prawie bez dźwięku (ok. 1 ms na znak, bez
-  `notice`). `StreamRecorder` oznacza porcję jako
-  `silent`, gdy ma co najmniej `SILENT_CHUNK_MIN_LETTERS` liter (`\w` po usunięciu tagów `<...>`) i mniej niż
-  `SILENT_CHUNK_MS_PER_LETTER` ms ramek MP3 na literę, i loguje ostrzeżenie z indeksem porcji, liczbą liter i ms
-  dźwięku, bez tekstu. Każda część nachodząca na taką porcję dostaje w `part_spans` pusty `PartTiming`; ponowny odczyt
-  w mniejszych dokumentach robi wspólna ścieżka dokumentu TTS. Krótszej porcji reguła nie ocenia.
+- Konto trzyma na urządzeniu najwyżej 2 strumienie naraz: przy 3 nowy strumień zamyka starszy. Dlatego
+  `MAX_PARALLEL_DOCUMENTS` = 2.
+- Brak retry w transporcie. Ponowne otwarcie dokumentu z Play (do `PLAY_ATTEMPTS`, gdy przez `START_TIMEOUT_S` nie
+  przyszedł dźwięk) i pętla dołączania do CDP to czynności jednej próby; ponowienia próby robi wywołujący.
+- Firebase App Check potrafi odrzucić profil (`APP_CHECK_REFUSAL` w konsoli); `raise_if_refused` kończy próbę trwałym
+  `TtsAuthError` przed dźwiękiem, a po dźwięku kończy ją z tym, co przyszło.
+- `request.deadline_s` (`within_deadline`) jest jedynym górnym limitem próby; po nim próba kończy się
+  `TtsTimeoutError` (przejściowy), także po dźwięku.
+- Token, `read_id` i adres WebSocketu nie trafiają do logów, wyjątków ani plików.
+- Część pusta po neutralizacji, równa `LINE_SEPARATOR` albo z `<break` to `TtsInputError` z `validate_part`.
+- `request.tags` (gdy `keeps_tags`) przepuszcza nawiasy kwadratowe do serwera jako znaczniki v4.
+- Błąd zapisu nagrania (`OSError`) zatrzymuje `StreamRecorder`; `_record` rzuca `TtsClipValidationError`.
+- Prośba strony o prędkość ≠ 1 przed dźwiękiem oznacza model v2 → błąd przejściowy.
+- `download_document` odmawia dokumentu, który strona wznawia od środka (`start_position` > 0 → `TtsInputError`).
+- Serwer potrafi oddać porcję z tekstem prawie bez dźwięku (`SILENT_CHUNK_MIN_LETTERS`,
+  `SILENT_CHUNK_MS_PER_LETTER`); części na niej dostają pusty `PartTiming`, a ponowny odczyt robi wywołujący.

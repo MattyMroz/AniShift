@@ -236,6 +236,7 @@ def test_document_contract_types_have_exact_fields() -> None:
         "voice_id",
         "request_time_ms",
         "parts",
+        "incomplete",
     )
     assert tuple(item.name for item in fields(ClipSpan)) == (
         "request_id",

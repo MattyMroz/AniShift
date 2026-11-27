@@ -19,7 +19,6 @@ __all__ = [
     "CONNECT_ATTEMPTS",
     "CONNECT_INTERVAL_S",
     "DEFAULT_VOICE_ALIAS",
-    "DOCUMENT_NAME",
     "END_IDLE_S",
     "END_SLACK_CHARS",
     "LIBRARY_LOAD_S",
@@ -36,6 +35,7 @@ __all__ = [
     "READING_SPEED",
     "READS_URL",
     "READY_TIMEOUT_S",
+    "SIGN_IN_TIMEOUT_S",
     "SILENT_CHUNK_MIN_LETTERS",
     "SILENT_CHUNK_MS_PER_LETTER",
     "SITE_COOKIE_DOMAIN",
@@ -77,9 +77,6 @@ MAX_PARALLEL_DOCUMENTS: Final[int] = 2
 
 LINE_SEPARATOR: Final[str] = "…"
 """Paragraph placed between lines so ElevenReader pauses; never spoken and never a line itself."""
-
-DOCUMENT_NAME: Final[str] = "anishift.txt"
-"""Name of the uploaded file; the library titles the document by its first sentence instead."""
 
 SITE_ORIGIN: Final[str] = "https://elevenreader.io"
 """Origin of the ElevenReader web app, whose stored data holds the sign-in."""
@@ -124,7 +121,7 @@ LIBRARY_LOAD_S: Final[float] = 45.0
 """Wait for the library to show its Import button before the site counts as unavailable."""
 
 UNAVAILABLE_RETRY_S: Final[float] = 60.0
-"""Retry delay suggested to the shared scheduler when the site or browser is unavailable."""
+"""Retry delay suggested to the caller when the site or browser is unavailable."""
 
 POLL_S: Final[float] = 1.0
 """Recording loop tick."""
@@ -174,6 +171,9 @@ CONNECT_INTERVAL_S: Final[float] = 0.5
 CLEANUP_STEP_TIMEOUT_S: Final[float] = 15.0
 """Deadline of one account cleanup step."""
 
+SIGN_IN_TIMEOUT_S: Final[float] = 600.0
+"""Time the sign-in window waits for the owner to sign in."""
+
 CHROME_STEM: Final[str] = "chrome"
 """Executable stem of Google Chrome looked up on ``PATH``."""
 
@@ -186,19 +186,19 @@ CHROME_LOCATIONS: Final[tuple[tuple[str, str], ...]] = (
 
 SPEED_JS: Final[str] = """
 (() => {
-    if (window.__anishiftState) return;
-    window.__anishiftSpeed = __INITIAL_SPEED__;
+    if (window.__readerState) return;
+    window.__readerSpeed = __INITIAL_SPEED__;
     const playing = new Set();
     const contexts = new WeakSet();
     let contextCount = 0;
-    window.__anishiftSetSpeed = (speed) => {
-        window.__anishiftSpeed = speed;
+    window.__readerSetSpeed = (speed) => {
+        window.__readerSpeed = speed;
         for (const src of playing) {
             try { src.playbackRate.value = speed; } catch (e) {}
         }
     };
-    window.__anishiftState = () => ({
-        target: window.__anishiftSpeed,
+    window.__readerState = () => ({
+        target: window.__readerSpeed,
         rates: [...playing].map((src) => src.playbackRate.value),
         contexts: contextCount,
     });
@@ -213,8 +213,8 @@ SPEED_JS: Final[str] = """
             const src = originalCreate.call(this);
             const originalStart = src.start;
             src.start = function () {
-                if (window.__anishiftSpeed !== 1) {
-                    try { src.playbackRate.value = window.__anishiftSpeed; } catch (e) {}
+                if (window.__readerSpeed !== 1) {
+                    try { src.playbackRate.value = window.__readerSpeed; } catch (e) {}
                 }
                 playing.add(src);
                 src.addEventListener("ended", () => playing.delete(src));
@@ -225,9 +225,9 @@ SPEED_JS: Final[str] = """
     }
 })();
 """
-"""Init script playing page audio buffers at ``window.__anishiftSpeed``; ``__INITIAL_SPEED__`` is substituted."""
+"""Init script playing page audio buffers at ``window.__readerSpeed``; ``__INITIAL_SPEED__`` is substituted."""
 
-SPEED_STATE_JS: Final[str] = "() => window.__anishiftState ? window.__anishiftState() : null"
+SPEED_STATE_JS: Final[str] = "() => window.__readerState ? window.__readerState() : null"
 """Read the speed script state of a frame, or null when the script is absent."""
 
 PLAYER_STATE_JS: Final[str] = """

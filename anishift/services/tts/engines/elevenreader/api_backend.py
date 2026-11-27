@@ -14,20 +14,6 @@ from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Final
 
-from anishift.errors import ErrorCode, ErrorContext
-from anishift.platform.process_lock import ProcessLock
-from anishift.services.tts.artifacts import atomic_json_snapshot
-from anishift.services.tts.errors import (
-    TtsAuthError,
-    TtsError,
-    TtsProviderUnavailableError,
-    TtsQuotaError,
-    TtsRateLimitError,
-    TtsTimeoutError,
-    TtsVoiceError,
-)
-from anishift.utils.logger import get_logger
-
 from .config import lock_file, profile_dir, session_file
 from .constants import (
     ACTION_TIMEOUT_S,
@@ -42,12 +28,33 @@ from .constants import (
     READING_SPEED,
     READS_URL,
     READY_TIMEOUT_S,
+    SIGN_IN_TIMEOUT_S,
     SPEED_JS,
     SPEED_STATE_JS,
     SPEED_TOLERANCE,
     STREAM_PATH,
     UNAVAILABLE_RETRY_S,
     USER_CONFIG_URL,
+)
+from .host import (
+    ACCOUNT_BLOCKED_HINT,
+    QUOTA_HINT,
+    REFUSED_HINT,
+    REFUSED_MESSAGE,
+    SIGN_IN_HINT,
+    VOICE_HINT,
+    ErrorCode,
+    ErrorContext,
+    ProcessLock,
+    TtsAuthError,
+    TtsError,
+    TtsProviderUnavailableError,
+    TtsQuotaError,
+    TtsRateLimitError,
+    TtsTimeoutError,
+    TtsVoiceError,
+    atomic_json_snapshot,
+    get_logger,
 )
 from .types import (
     AccountCleanup,
@@ -69,13 +76,13 @@ if TYPE_CHECKING:
     from playwright.async_api import Error as PlaywrightError
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-    from .browser import ChromeSession
     from .recorder import StreamRecorder
 
 __all__ = [
-    "FALLBACK_HINT",
+    "SIGN_IN_HINT",
     "ReaderPage",
     "auth_error",
+    "await_sign_in",
     "claim_profile",
     "clean_account",
     "document_titles",
@@ -97,12 +104,6 @@ __all__ = [
 logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-FALLBACK_HINT: Final[str] = "Albo przełącz silnik na ElevenBytes w Ustawienia → Lektor."
-"""Closing sentence of the permanent-failure suggestions, except the browser refusal."""
-
-SIGN_IN_HINT: Final[str] = f"Zaloguj się w oknie z Ustawienia → Lektor → Zaloguj (otwórz okno Chrome). {FALLBACK_HINT}"
-"""Suggestion for a signed-out or rejected session."""
 
 _UNAUTHORIZED: Final[int] = 401
 """HTTP status of a missing or expired session."""
@@ -131,6 +132,9 @@ _SIGN_IN_NAME: Final[re.Pattern[str]] = re.compile(r"sign in|sign up|log in|cont
 _SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|sign-?up|log-?in|auth", re.IGNORECASE)
 """Address fragments of the sign-in and sign-up pages a signed-out visitor is sent to."""
 
+_SIGN_IN_POLL_S: Final[float] = 1.0
+"""Interval between checks of the sign-in window."""
+
 _CHROME_LOCK_FILE_NAME: Final[str] = "lockfile"
 """File Chrome on Windows keeps open in its profile while it runs, so deleting it fails then."""
 
@@ -156,7 +160,7 @@ def map_http_status(status: int, *, action: str, retry_after: str | None = None)
         context: ErrorContext = ErrorContext(
             code=ErrorCode.TTS_AUTH_FAILED,
             message="ElevenReader refused access to the account",
-            suggestion=f"Konto ElevenReader mogło zostać zablokowane. {FALLBACK_HINT}",
+            suggestion=ACCOUNT_BLOCKED_HINT,
             details=details,
         )
         return TtsAuthError(context=context)
@@ -164,7 +168,7 @@ def map_http_status(status: int, *, action: str, retry_after: str | None = None)
         quota: ErrorContext = ErrorContext(
             code=ErrorCode.TTS_QUOTA_EXHAUSTED,
             message="ElevenReader account has no credits left",
-            suggestion=f"Poczekaj na odnowienie kredytów ElevenReader. {FALLBACK_HINT}",
+            suggestion=QUOTA_HINT,
             details=details,
         )
         return TtsQuotaError(context=quota)
@@ -206,12 +210,8 @@ def refused_error(console: str) -> TtsAuthError:
     """Return the permanent error for a browser the site's App Check refused; the page then blocks it for a day."""
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_AUTH_FAILED,
-        message="ElevenReader odrzucił przeglądarkę AniShift",
-        suggestion=(
-            "Blokada trwa dobę. W Ustawienia → Lektor użyj Wyloguj (usuń ciasteczka ElevenReadera), potem "
-            "Zaloguj (otwórz okno Chrome) i zaloguj się w otwartym oknie; albo spróbuj ponownie po dobie, albo "
-            "wybierz inny silnik lektora."
-        ),
+        message=REFUSED_MESSAGE,
+        suggestion=REFUSED_HINT,
         details={"console": console},
     )
     return TtsAuthError(context=context)
@@ -222,7 +222,7 @@ def voice_error(message: str) -> TtsVoiceError:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_VOICE_INVALID,
         message=message,
-        suggestion=f"Wybierz głos Piotr Fronczewski albo Adam w Ustawienia → Lektor. {FALLBACK_HINT}",
+        suggestion=VOICE_HINT,
     )
     return TtsVoiceError(context=context)
 
@@ -293,6 +293,11 @@ class ReaderPage:
         """Return the newest authorization token seen on an API request of this tab."""
         return self._token
 
+    @property
+    def is_closed(self) -> bool:
+        """Whether the tab or its window is gone."""
+        return self._page.is_closed()
+
     async def open_library(self) -> LibraryState:
         """Load the library and report whether it is usable, signed out or unavailable."""
         try:
@@ -308,9 +313,10 @@ class ReaderPage:
             return LibraryState.SIGNED_OUT if _SIGN_IN_URL.search(self._page.url) else LibraryState.UNAVAILABLE
         except _playwright_error():
             return LibraryState.UNAVAILABLE
-        return LibraryState.READY if await self._library_ready() else LibraryState.SIGNED_OUT
+        return LibraryState.READY if await self.library_ready() else LibraryState.SIGNED_OUT
 
-    async def _library_ready(self) -> bool:
+    async def library_ready(self) -> bool:
+        """Whether the library Import button is visible now, without navigating."""
         try:
             return await self._button("Import").count() > 0
         except _playwright_error():
@@ -416,7 +422,7 @@ class ReaderPage:
         """Retune every frame of the tab, including buffers already playing, to *speed*."""
         for frame in self._page.frames:
             try:
-                await frame.evaluate(f"window.__anishiftSetSpeed && window.__anishiftSetSpeed({speed!r})")
+                await frame.evaluate(f"window.__readerSetSpeed && window.__readerSetSpeed({speed!r})")
             except _playwright_error():
                 continue
 
@@ -430,7 +436,7 @@ class ReaderPage:
                     await frame.evaluate(speed_script(speed))
                     fixed += 1
                 elif _off_speed(state, speed):
-                    await frame.evaluate(f"window.__anishiftSetSpeed({speed!r})")
+                    await frame.evaluate(f"window.__readerSetSpeed({speed!r})")
                     fixed += 1
             except _playwright_error():
                 continue
@@ -546,18 +552,18 @@ def _off_speed(state: dict[str, object], speed: float) -> bool:
 async def prepare_account(
     page: ReaderPage,
     token: str,
-    voice_id: str,
+    voice_id: str | None,
     cleanup: AccountCleanup,
     save: Callable[[], None],
 ) -> None:
-    """Set the account voice and speed 1x after registering (then *save*) the restore; refuse a voice not taken."""
+    """Set speed 1x and the voice unless None after registering (then *save*) the restore; refuse settings not taken."""
     current: dict[str, object] = await page.get_json(USER_CONFIG_URL, token, action="read_account")
     if cleanup.restore is None:
         cleanup.restore = _settings(current)
         save()
     await page.post_json(USER_CONFIG_URL, token, _with_settings(current, voice_id, READING_SPEED), action="set_account")
     check: AccountSettings = _settings(await page.get_json(USER_CONFIG_URL, token, action="check_account"))
-    if check.voice_id != voice_id or check.speed != READING_SPEED:
+    if (voice_id is not None and check.voice_id != voice_id) or check.speed != READING_SPEED:
         message: str = "ElevenReader account did not take the voice or reading speed"
         raise voice_error(message)
 
@@ -834,7 +840,7 @@ async def sign_out(root: Path) -> SignOutOutcome:
     """Delete only the ElevenReader cookies and site data while no browser uses the profile, keeping owed cleanup."""
     from .browser import ChromeBusyError, ChromeMissingError, ChromeSession  # noqa: PLC0415 - keeps Playwright lazy
 
-    session: ChromeSession = ChromeSession(root)
+    session: ChromeSession = ChromeSession(root, headless=True)
     try:
         await session.start()
         await session.forget_site()
@@ -850,3 +856,41 @@ async def sign_out(root: Path) -> SignOutOutcome:
     write_session(root, signed_in=False)
     logger.info("ElevenReader cookies and site data deleted")
     return SignOutOutcome.SIGNED_OUT
+
+
+async def await_sign_in(root: Path, *, timeout_s: float = SIGN_IN_TIMEOUT_S) -> SignInOutcome:
+    """Open a driven Chrome window on the library, wait for the owner to sign in or close it, then clean the account."""
+    from .browser import ChromeBusyError, ChromeMissingError, ChromeSession  # noqa: PLC0415 - keeps Playwright lazy
+
+    session: ChromeSession = ChromeSession(root, headless=False)
+    cleanup: AccountCleanup = load_cleanup(root)
+    try:
+        await session.start()
+        page: ReaderPage = await session.new_page()
+        signed_in: bool = await _wait_for_library(page, timeout_s)
+        if signed_in:
+            await clean_account(page, cleanup, restore=True)
+    except ChromeMissingError:
+        return SignInOutcome.NO_CHROME
+    except ChromeBusyError:
+        return SignInOutcome.BUSY
+    except TtsError as error:
+        logger.warning("ElevenReader sign-in failed", code=error.context.code.value)
+        return SignInOutcome.FAILED
+    finally:
+        await session.close()
+    write_session(root, signed_in=signed_in)
+    save_cleanup(root, cleanup)
+    logger.info("ElevenReader sign-in checked", signed_in=signed_in, cleanup=list(cleanup.pending))
+    return SignInOutcome.SIGNED_IN if signed_in else SignInOutcome.SIGNED_OUT
+
+
+async def _wait_for_library(page: ReaderPage, timeout_s: float) -> bool:
+    if await page.open_library() is LibraryState.READY:
+        return True
+    deadline: float = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and not page.is_closed:
+        if await page.library_ready():
+            return True
+        await asyncio.sleep(_SIGN_IN_POLL_S)
+    return False

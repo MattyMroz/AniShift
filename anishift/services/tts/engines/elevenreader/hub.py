@@ -11,12 +11,19 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Final
 
-from anishift.errors import ErrorCode, ErrorContext
-from anishift.services.tts.cancellation import TtsCancellation
-from anishift.services.tts.errors import TtsCancelledError, TtsError, TtsProviderUnavailableError, TtsTimeoutError
-from anishift.utils.logger import get_logger
-
 from .api_backend import clean_account, load_cleanup, require_signed_in, save_cleanup
+from .host import (
+    CLEANUP_WARNING,
+    NAME,
+    Cancellation,
+    ErrorCode,
+    ErrorContext,
+    TtsCancelledError,
+    TtsError,
+    TtsProviderUnavailableError,
+    TtsTimeoutError,
+    get_logger,
+)
 from .types import AccountCleanup
 
 if TYPE_CHECKING:
@@ -24,10 +31,9 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
     from pathlib import Path
 
-    from anishift.services.tts.protocols import CancellationToken
-
     from .api_backend import ReaderPage
     from .browser import ChromeSession
+    from .host import CancellationToken
     from .types import AccountSettings, DocumentTrace
 
 __all__ = [
@@ -46,13 +52,7 @@ logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-CLEANUP_WARNING: Final[str] = (
-    "ElevenReader: nie udało się posprzątać konta — usuń z biblioteki ostatni dokument wgrany przez AniShift "
-    "(jego tytuł to pierwsze zdanie odcinka) i sprawdź głos w aplikacji"
-)
-"""Owner-facing warning left when account cleanup failed for good."""
-
-_THREAD_NAME: Final[str] = "anishift-elevenreader"
+_THREAD_NAME: Final[str] = f"{NAME}-elevenreader"
 """Name of the thread running the host loop."""
 
 _SUSPECT_ERRORS: Final[tuple[type[TtsError], ...]] = (TtsCancelledError, TtsProviderUnavailableError, TtsTimeoutError)
@@ -149,7 +149,7 @@ class ReaderHub:
         cancel: CancellationToken,
     ) -> T:
         """Run *read* in its own tab on the host loop; return only after the tab and its documents are cleaned up."""
-        stop: TtsCancellation = TtsCancellation()
+        stop: Cancellation = Cancellation()
         attempt: concurrent.futures.Future[T] = asyncio.run_coroutine_threadsafe(
             self._attempt(read, voice_id, deadline_s, stop), self._loop
         )
@@ -327,7 +327,7 @@ def headless_session(root: Path) -> ChromeSession:
     """Return a headless Chrome session on the profile under *root*, loading Playwright only now."""
     from .browser import ChromeSession  # noqa: PLC0415 - keeps Playwright out of the package import
 
-    return ChromeSession(root)
+    return ChromeSession(root, headless=True)
 
 
 async def unless_cancelled[T](work: Awaitable[T], cancel: CancellationToken) -> T:
@@ -397,7 +397,7 @@ async def _take(lock: asyncio.Lock, cancel: CancellationToken) -> None:
         raise
 
 
-async def _until_done[T](work: asyncio.Future[T], cancel: CancellationToken, stop: TtsCancellation) -> T:
+async def _until_done[T](work: asyncio.Future[T], cancel: CancellationToken, stop: Cancellation) -> T:
     watcher: asyncio.Future[None] = asyncio.ensure_future(cancel.wait())
     watcher.add_done_callback(partial(_relay, stop))
     interrupted: bool = False
@@ -415,6 +415,6 @@ async def _until_done[T](work: asyncio.Future[T], cancel: CancellationToken, sto
     return work.result()
 
 
-def _relay(stop: TtsCancellation, watcher: asyncio.Future[None]) -> None:
+def _relay(stop: Cancellation, watcher: asyncio.Future[None]) -> None:
     if not watcher.cancelled():
         stop.cancel()
