@@ -90,6 +90,15 @@ def test_prune_deletes_payloads_without_a_cover_or_of_another_encoding(tmp_path:
     ]
 
 
+def test_prune_reports_the_id_of_a_deleted_temporary_cover(tmp_path: Path) -> None:
+    (tmp_path / "3.jpg.tmp").write_bytes(b"x")
+
+    pruned: tuple[frozenset[int], int] = prune_covers(tmp_path, frozenset())
+
+    assert pruned == (frozenset({3}), 0)
+    assert _files(tmp_path) == []
+
+
 def test_prune_counts_a_cover_it_cannot_delete_and_goes_on(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for name in ("2.jpg", "3.jpg"):
         (tmp_path / name).write_bytes(b"x")

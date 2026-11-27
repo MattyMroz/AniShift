@@ -59,10 +59,10 @@ def prune_covers(directory: Path, kept: frozenset[int]) -> tuple[frozenset[int],
         match: re.Match[str] | None = _COVER_NAME.fullmatch(path.name.removesuffix(_TEMPORARY_SUFFIX))
         if match is None or int(match.group(1)) in kept:
             continue
-        if not _deleted(path):
-            failed += 1
-        elif path.name == match.group(0):
+        if _deleted(path):
             removed.add(int(match.group(1)))
+        else:
+            failed += 1
     covers: frozenset[int] = stored_covers(directory)
     for path in _files(directory / COVER_PAYLOADS):
         temporary: re.Match[str] | None = _PAYLOAD_TEMPORARY.fullmatch(path.name)
