@@ -10,6 +10,7 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
 - Regresja klasyfikatora ma allowlistę znanych pudeł (`_KNOWN_MISSED_DIALOG`) i faila na KAŻDE nowe pudło, nie tylko na spadek dokładności. `services/subtitles/test_regression_classifier.py`
 - Wątek `AnimeController` zeruje `_worker` przed swoimi ostatnimi skutkami (np. przejściem na listę subskrypcji), więc `_worker is None` nie dowodzi końca pracy; czekaj na koniec wątków `_WORKER_NAME` uruchomionych przez klawisz (`test_subscription_draft._keys`). `cli/test_subscription_draft.py`
 - Pomocnik oczekiwania ma zwracać sukces przy pierwszej obserwacji warunku, nie oceniać go drugi raz: `run_result` wraca chwilowo do `running` przy ponowieniu odroczonej relokacji. Plik przekazany do Auto bywa otwarty przez sondę `mkvmerge`; test usuwający go na Windows używa `_unlink_when_released`. `application/test_automation.py`
+- Test, który czeka na rezydenta, wątek albo zdarzenie, czeka na trwały fakt (zapis w `owner.state`, zlecenie w atrapie), nigdy na stan trwający chwilę, i nie czyta `state.json` w trakcie pracy ownera: odczyt blokuje podmianę pliku na Windows. Przed scaleniem taki test przechodzi 200 razy z `-n 6` przy obciążonej maszynie (`uv run --with pytest-repeat`). `application/test_selective_lifecycle.py`
 
 ## Konwencje
 
