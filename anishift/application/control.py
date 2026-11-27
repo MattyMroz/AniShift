@@ -1021,14 +1021,17 @@ def record_command(state: WatchState, receipt: CommandReceipt) -> WatchState:
 
 
 def latest_deletion(state: WatchState) -> PendingDeletion | None:
-    """Return the deletion Ctrl+Z restores: the newest sent-out one that is neither restored nor gone from the bin."""
-    return next(
-        (
-            item
-            for item in reversed(state.pending_deletions)
-            if _sent_out(item) and (item.restore is None or not item.restore.completed) and not restore_gone(item)
-        ),
-        None,
+    """Return the deletion Ctrl+Z restores: the newest of the restorable deletions."""
+    restorable: tuple[PendingDeletion, ...] = restorable_deletions(state)
+    return restorable[-1] if restorable else None
+
+
+def restorable_deletions(state: WatchState) -> tuple[PendingDeletion, ...]:
+    """Return the deletions Ctrl+Z can restore, oldest first: sent out, neither restored nor gone from the bin."""
+    return tuple(
+        item
+        for item in state.pending_deletions
+        if _sent_out(item) and (item.restore is None or not item.restore.completed) and not restore_gone(item)
     )
 
 

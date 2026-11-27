@@ -107,7 +107,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   i czystego `library_series`; daje nazwę serii i numer sezonu, a `entry_title` to tytuł wpisu (sezonu), pod którym
   Biblioteka grupuje zestawy. Wiersze Przetwarzania (`_download_materials`, zlecenie grupy z `ready_groups`) niosą
   `anilist_id/series/entry_title/season/episode` z tego samego `episode_entry`; `library_entries` obejmuje każde
-  zamówione pobranie, także w toku, więc seria i okładka są znane przed gotowym wynikiem. Zestaw ręczny (`hand_key`) owner szuka raz
+  zamówione pobranie, także w toku, więc seria jest znana przed gotowym wynikiem. Zestaw ręczny (`hand_key`) owner szuka raz
   (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie, żaden
   remake z rokiem ani wpis o mniejszej liczbie odcinków); inaczej zostaje `name`. Wynik (wpis albo brak dopasowania)
   trafia do `recognition.json` obok `state.json` (`load_recognized`/`save_recognized`, zły plik = pusta pamięć), który
@@ -117,7 +117,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   (`RequestControl.cooling`). Tytuł spoza budżetu albo z nieudanego zapytania nie wraca w wyniku i niczego nie
   zapisuje; owner szuka go w następnym wyszukiwaniu, najwcześniej `RECOGNITION_RETRY_S` po poprzednim. Serie i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
   puli I/O do katalogu podanego przez `run_resident(cover_dir=...)`; bez katalogu (testy) okładek nie ma. Snapshot
-  `covers` to ID z plikiem w cache. Testy: `test_library_series.py`.
+  `covers` to ID z plikiem w cache. Przed pierwszą pełną inwentaryzacją (`_library`) owner publikuje każdą okładkę
+  z dysku (odczyt przy starcie `serve`), potem tylko te z `_cover_entries`. Pobiera i trzyma tylko `_cover_entries`:
+  zestawy Biblioteki, które panel pokazuje (`_shown`, ta sama reguła co `_status`) albo Ctrl+Z przywróci
+  (`restorable_deletions`), wiersze Przetwarzania, subskrypcje, wyniki wyszukiwania sesji; nigdy samą historię
+  pobrań. Po tej inwentaryzacji i przy każdym tytule, który z nich wypadł, jedyny sprząta `config/covers/` w puli I/O
+  (`prune_covers`: jpg spoza zbioru, `.six` bez jpg albo innej `COVER_ENCODING`, ich `.tmp`; skasowany `.tmp` zwalnia
+  ID do ponownego pobrania; plik, którego nie dało się usunąć, czeka na następne sprzątanie), a po każdym udanym
+  sprzątaniu sprawdza zbiór ponownie, bo mógł się zmienić w trakcie.
+  Testy: `test_library_series.py`.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli
   I/O, ponowne sprawdzenie przed przyjęciem). Undo zapisuje przyjęcie `PendingDeletion.restore` i start każdego
   pliku przed skutkami natywnymi; `DeletionRestore.unsettled` chroni nierozstrzygnięte skutki po restarcie.

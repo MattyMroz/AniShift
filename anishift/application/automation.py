@@ -95,6 +95,7 @@ from anishift.application.control import (
     record_request,
     release,
     reserve,
+    restorable_deletions,
     restore_gone,
     retain_deletions,
 )
@@ -1001,6 +1002,8 @@ class AutomationOwner:
         self._covers: set[int] = set()
         self._covers_requested: set[int] = set()
         self._cover_urls: dict[int, str] = {}
+        self._covers_pruned: bool = False
+        self._pruning_covers: bool = False
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
@@ -1174,6 +1177,7 @@ class AutomationOwner:
         self._prepare_transfers()
         self._schedule_transfers()
         self._retry_ready()
+        self._request_covers(listing=True)
         try:
             self._loop()
         finally:
@@ -2004,11 +2008,7 @@ class AutomationOwner:
                 for group in library
                 if group.available
             ],
-            "library_problems": [
-                encode_view(group)
-                for group in library
-                if not group.available and any(item.identity is not None for item in group.files)
-            ],
+            "library_problems": [encode_view(group) for group in library if not group.available and _shown(group)],
             "covers": sorted(self._covers),
             "deletions": [
                 {
@@ -8678,6 +8678,7 @@ class AutomationOwner:
         self._request_recognition()
         self._request_series()
         self._request_covers()
+        self._prune_covers()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
     def _project_ready(self, groups: tuple[SourceGroup, ...]) -> None:
@@ -8780,15 +8781,27 @@ class AutomationOwner:
     def _known_entries(self) -> frozenset[int]:
         return library_entries(self._state) | {value for value in self._recognized.values() if value is not None}
 
-    def _request_covers(self) -> None:
+    def _cover_entries(self) -> frozenset[int]:
+        """Return the entries of panel rows: Library sets shown or restorable, processing, subscriptions, search."""
+        restorable: frozenset[str] = frozenset(item.set_id for item in restorable_deletions(self._state))
+        library: set[int] = {
+            item.anilist_id
+            for item in self._named(self._ready_library)
+            if item.anilist_id is not None and (_shown(item) or item.set_id in restorable)
+        }
+        processing: set[int] = {
+            entry for row in self._processing_materials() if isinstance(entry := row.get("anilist_id"), int)
+        }
+        followed: set[int] = {item.anilist_id for item in self._state.subscriptions if item.anilist_id is not None}
+        return frozenset(library | processing | followed | self._cover_urls.keys())
+
+    def _request_covers(self, *, listing: bool = False) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         directory: Path | None = self._cover_directory
         if acquisition is None or directory is None or self._shutting_down:
             return
-        wanted: frozenset[int] = (
-            (self._known_entries() | self._cover_urls.keys()) - self._covers - self._covers_requested
-        )
-        if not wanted:
+        wanted: frozenset[int] = self._cover_entries() - self._covers - self._covers_requested
+        if not wanted and not listing:
             return
         self._covers_requested.update(wanted)
         self._active_io += 1
@@ -8802,8 +8815,8 @@ class AutomationOwner:
         failures: dict[str, int] = {}
         skipped: int = 0
         try:
-            stored |= acquisition.stored_covers(directory) & set(anilist_ids)
-            cached: frozenset[int] = frozenset(stored)
+            cached: frozenset[int] = acquisition.stored_covers(directory)
+            stored |= cached & set(anilist_ids)
             self._queue.put(lambda: self._add_covers(cached))
             missing: list[int] = [anilist_id for anilist_id in anilist_ids if anilist_id not in stored]
             urls: dict[int, str] = {item: known[item] for item in missing if item in known}
@@ -8848,9 +8861,56 @@ class AutomationOwner:
         self._add_covers(frozenset(stored))
 
     def _add_covers(self, stored: frozenset[int]) -> None:
-        if stored - self._covers:
-            self._covers |= stored
+        shown: frozenset[int] = stored if self._library is None else stored & self._cover_entries()
+        if shown != stored:
+            self._covers_pruned = False
+            self._prune_covers()
+        if shown - self._covers:
+            self._covers |= shown
             self._publish_state()
+
+    def _prune_covers(self) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        directory: Path | None = self._cover_directory
+        if acquisition is None or directory is None or self._shutting_down or self._pruning_covers:
+            return
+        if self._library is None:
+            return
+        entries: frozenset[int] = self._cover_entries()
+        if self._covers_pruned and self._covers <= entries:
+            return
+        self._pruning_covers = True
+        self._active_io += 1
+        stale: frozenset[int] = frozenset(self._covers - entries)
+        self._pool.submit(self._remove_covers, acquisition, directory, entries, stale)
+
+    def _remove_covers(
+        self, acquisition: AcquisitionService, directory: Path, entries: frozenset[int], stale: frozenset[int]
+    ) -> None:
+        removed: frozenset[int] = frozenset()
+        failed: int = 0
+        try:
+            removed, failed = acquisition.prune_covers(directory, entries)
+        except OSError as error:
+            failed = 1
+            logger.warning("Library covers were not pruned", error_class=type(error).__name__)
+        finally:
+            logger.info("Library covers pruned", kept=len(entries), removed=len(removed), failed=failed)
+            self._queue.put(lambda: self._record_pruned(entries, stale, removed, failed))
+
+    def _record_pruned(
+        self, entries: frozenset[int], stale: frozenset[int], removed: frozenset[int], failed: int
+    ) -> None:
+        self._active_io -= 1
+        self._pruning_covers = False
+        self._covers_pruned = not failed
+        gone: frozenset[int] = removed if failed else removed | stale
+        self._covers_requested -= gone
+        if removed or gone & self._covers:
+            self._covers -= gone
+            self._publish_state()
+        elif not failed and self._cover_entries() != entries:
+            self._prune_covers()
 
     def _request_series(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
@@ -9157,6 +9217,11 @@ class _OwnerSink:
     def emit(self, event: RunEvent) -> None:
         """Publish one event without owning any workflow state."""
         self._publish(event)
+
+
+def _shown(group: LibrarySet) -> bool:
+    """Whether the panel shows *group*: an available set or an unavailable one with a file still on disk."""
+    return group.available or any(item.identity is not None for item in group.files)
 
 
 def _marked(
