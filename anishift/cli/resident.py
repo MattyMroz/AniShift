@@ -62,6 +62,9 @@ _DISCOVER_ATTEMPTS: Final[int] = 3
 _WORKSPACE_CHANGING: Final[str] = "The workspace kept changing while it was read"
 """Refusal raised when no read returned every page from one workspace revision."""
 
+WORKSPACE_CHANGING_REASON: Final[str] = "workspace_changing"
+"""Machine-readable reason of a workspace read refused because its pages kept changing."""
+
 
 class ResidentSession:
     """Keep one editing identity and delegate its work to the authenticated owner."""
@@ -95,7 +98,9 @@ class ResidentSession:
                     groups=tuple(group for page in pages for group in page.groups),
                     warnings=tuple(warning for page in pages for warning in page.warnings),
                 )
-        raise ControlError(_WORKSPACE_CHANGING, code=ControlErrorCode.REFUSED, answered=True)
+        raise ControlError(
+            _WORKSPACE_CHANGING, code=ControlErrorCode.REFUSED, reason=WORKSPACE_CHANGING_REASON, answered=True
+        )
 
     def _discover_page(self, offset: int, token: CancellationToken) -> WorkspacePage:
         token.raise_if_cancelled()

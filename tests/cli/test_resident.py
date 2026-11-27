@@ -29,6 +29,7 @@ from anishift.application.acquisition import episode_read_timeout_s
 from anishift.cli import control as cli_control
 from anishift.cli import watch as watch_module
 from anishift.cli.exit_codes import EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS
+from anishift.cli.interactive.state_texts import refusal_text
 from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import RESIDENT_LOCK_FILE_NAME, run_resident, spawn_resident
 from anishift.config.settings import Settings
@@ -98,6 +99,7 @@ def test_discover_refuses_a_workspace_that_changes_between_every_page(tmp_path: 
 
     assert refusal.value.code is ControlErrorCode.REFUSED
     assert not refusal.value.connection_lost
+    assert refusal_text(refusal.value) == "Pliki zmieniały się w trakcie odczytu · spróbuj ponownie"
     assert offsets == [0, 1, 0, 1, 0, 1]
 
 
