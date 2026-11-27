@@ -548,13 +548,20 @@ def test_a_season_batch_named_with_its_end_year_matches(year: int, *, matches: b
     assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
 
 
-def test_a_movie_target_keeps_only_its_own_airing_year() -> None:
+def test_a_movie_target_carries_no_airing_years() -> None:
     graph: FranchiseGraph = _graph(
         _node(7, "MOVIE", {"romaji": "Hoshi no Niwa Gekijouban"}, year=2022, edges=[_edge("PREQUEL", 1)]),
         _node(1, "TV", {"romaji": "Hoshi no Niwa"}, year=2018, edges=[_edge("SEQUEL", 7)]),
         root_id=7,
     )
-    assert identity_target(graph, 7, _mapping({}), 1, now=_NOW)["years"] == [2022]
+    target: dict[str, object] = identity_target(graph, 7, _mapping({}), 1, now=_NOW)
+    assert target["years"] == []
+    candidate: dict[str, str | None] = {
+        "release": None,
+        "path": None,
+        "filename": "Hoshi no Niwa Gekijouban (2023).mkv",
+    }
+    assert classify(target, candidate).verdict is IdentityVerdict.MATCH
 
 
 def _aired_target(selected: int, status: str, end: int | None) -> dict[str, object]:
