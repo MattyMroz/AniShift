@@ -509,7 +509,7 @@ def test_identity_target_returns_a_new_json_object_per_call() -> None:
         (1, "FINISHED", None, 2018, True),
         (2, "FINISHED", None, 2018, True),
         (2, "FINISHED", None, 2020, True),
-        (1, "FINISHED", None, 2020, True),
+        (1, "FINISHED", None, 2020, False),
         (1, "FINISHED", 2019, 2019, True),
         (1, "FINISHED", None, 2019, False),
         (1, "FINISHED", 2019, 2024, False),
@@ -546,6 +546,15 @@ def test_a_season_batch_named_with_its_end_year_matches(year: int, *, matches: b
     }
     target: dict[str, object] = _aired_target(1, "FINISHED", 2019)
     assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
+
+
+def test_a_movie_target_keeps_only_its_own_airing_year() -> None:
+    graph: FranchiseGraph = _graph(
+        _node(7, "MOVIE", {"romaji": "Hoshi no Niwa Gekijouban"}, year=2022, edges=[_edge("PREQUEL", 1)]),
+        _node(1, "TV", {"romaji": "Hoshi no Niwa"}, year=2018, edges=[_edge("SEQUEL", 7)]),
+        root_id=7,
+    )
+    assert identity_target(graph, 7, _mapping({}), 1, now=_NOW)["years"] == [2022]
 
 
 def _aired_target(selected: int, status: str, end: int | None) -> dict[str, object]:

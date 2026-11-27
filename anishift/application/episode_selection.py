@@ -130,6 +130,9 @@ _YEAR_END_MONTH: Final[int] = 13
 _RELEASING: Final[str] = "RELEASING"
 """AniList status whose aired count comes from past schedule dates."""
 
+_MOVIE_FORMAT: Final[str] = "MOVIE"
+"""AniList format whose release years are only its own airing years."""
+
 _FINISHED: Final[str] = "FINISHED"
 """AniList status whose aired count is the AniList episode count."""
 
@@ -503,10 +506,13 @@ def identity_target(  # noqa: PLR0913 - the airing clock and the numbering stay 
         titles.extend(_titles(first_season))
     key: str = str(number)
     episode: JsonObject = (mapping.raw_episodes.get(key) or {}) if numbering else {}
-    years: set[int] = set(_airing_years(nodes[selected_id], now.year))
-    for identifier in chain:
-        if identifier in nodes and nodes[identifier]["format"] in SEASON_FORMATS:
-            years.update(_airing_years(nodes[identifier], now.year))
+    own: range = _airing_years(nodes[selected_id], now.year)
+    years: set[int] = set(own)
+    seasons: list[range] = [
+        _airing_years(nodes[item], now.year) for item in chain if nodes[item]["format"] in SEASON_FORMATS
+    ]
+    if own and nodes[selected_id]["format"] != _MOVIE_FORMAT:
+        years.update(year for season in seasons if season and season[0] <= own[-1] for year in season)
     return {
         "aliases": list(dict.fromkeys(titles)),
         "years": sorted(years),
