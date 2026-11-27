@@ -21,7 +21,7 @@ _STEM: str = "[Grp] Show - 02 [1080p]"
 
 def _episode(directory: Path, stem: str = _STEM) -> None:
     directory.mkdir(parents=True, exist_ok=True)
-    for suffix, body in ((".mkv", b"video"), (".eac3", b"narration"), (".pl.ass", b"subtitles")):
+    for suffix, body in ((".mkv", b"video"), (".eac3", b"narration"), (".pl.ass", b"Polish subtitles")):
         (directory / f"{stem}{suffix}").write_bytes(body)
 
 
