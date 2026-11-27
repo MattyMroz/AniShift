@@ -683,8 +683,12 @@ def _similarity(text: str, title: str, threshold: float) -> float:
     return matcher.ratio()
 
 
+def _years(text: str) -> set[int]:
+    return {int(year) for year in re.findall(r"\b(?:19|20)\d{2}\b", text)}
+
+
 def _year(text: str, target: _Target) -> tuple[str, bool]:
-    years: set[int] = {int(year) for year in re.findall(r"\b(?:19|20)\d{2}\b", text)}
+    years: set[int] = _years(text)
     if not years:
         return text, True
     allowed: bool = (
@@ -1071,7 +1075,8 @@ def _context_qualifier_conflict(rest: str, target: _Target, *, anchor: str, mult
         )
         if target.kind != kind:
             return "Package explicitly identifies a different media type."
-    if not multiple and target.years and not _year(rest, target)[1]:
+    named: set[int] = _years(rest)
+    if not multiple and target.years and named and not named & target.years:
         return "Package year conflicts with target metadata."
     if anchor and re.fullmatch(r"\d{1,2}", rest) and int(rest) != target.named_season:
         return "Package explicitly identifies a numbered sequel."

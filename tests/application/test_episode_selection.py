@@ -525,6 +525,17 @@ def test_a_year_in_the_file_name_matches_only_inside_the_airing_years(
     assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
 
 
+@pytest.mark.parametrize(("years", "matches"), [("2018-2024", True), ("2020-2024", False)])
+def test_a_complete_series_pack_matches_when_its_years_meet_the_airing_years(years: str, *, matches: bool) -> None:
+    candidate: dict[str, str | None] = {
+        "release": f"Star Garden ({years}) Complete Series [BD 1080p]",
+        "path": "Star Garden - 05.mkv",
+        "filename": "Star Garden - 05.mkv",
+    }
+    target: dict[str, object] = _aired_target(1, "FINISHED", 2019)
+    assert (classify(target, candidate).verdict is IdentityVerdict.MATCH) is matches
+
+
 @pytest.mark.parametrize(("year", "matches"), [(2018, True), (2019, True), (2024, False)])
 def test_a_season_batch_named_with_its_end_year_matches(year: int, *, matches: bool) -> None:
     candidate: dict[str, str | None] = {
