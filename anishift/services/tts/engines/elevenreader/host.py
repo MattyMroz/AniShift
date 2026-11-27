@@ -384,7 +384,11 @@ def mono_pcm(recording: Path) -> array[int]:
     ]  # fmt: skip
     try:
         decoded: subprocess.CompletedProcess[bytes] = subprocess.run(  # noqa: S603 - fixed arguments, no shell
-            command, capture_output=True, check=True, timeout=_DECODE_TIMEOUT_S
+            command,
+            capture_output=True,
+            check=True,
+            timeout=_DECODE_TIMEOUT_S,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise OSError(errno.EIO, "FFmpeg could not decode the ElevenReader take") from error

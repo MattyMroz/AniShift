@@ -55,6 +55,7 @@ from anishift.services.tts import (
 from anishift.services.tts.engines.elevenreader import (
     CLEANUP_WARNING,
     ElevenReaderTtsEngine,
+    host,
     hub,
     read_session,
     service,
@@ -1021,6 +1022,22 @@ def test_cancelled_recording_keeps_shared_browser_until_the_others_finish(
     assert len(site.sessions) == 2
     assert site.sessions[0].closed
     assert site.sessions[1].alive
+
+
+def test_mono_pcm_runs_ffmpeg_without_a_console_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(command: list[str], **options: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(options)
+        return subprocess.CompletedProcess(command, 0, stdout=bytes(4))
+
+    monkeypatch.setattr(host, "require_binary", lambda binary: tmp_path / binary.value)
+    monkeypatch.setattr(host.subprocess, "run", run)
+
+    pcm = host.mono_pcm(tmp_path / "take.mp3")
+
+    assert list(pcm) == [0, 0]
+    assert [call["creationflags"] for call in calls] == [getattr(subprocess, "CREATE_NO_WINDOW", 0)]
 
 
 def test_recording_timed_out_before_speech_keeps_shared_browser_until_the_others_finish(
