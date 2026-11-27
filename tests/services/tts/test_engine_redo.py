@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from engine_host import make_engine, make_request
+from loguru import logger as loguru_logger
 
 from anishift.services.tts.engines.elevenreader import Redo, redo, service
 from anishift.services.tts.engines.elevenreader.api_backend import refused_error
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from engine_host import DocumentResult
+    from loguru import Message
 
     from anishift.services.tts.engines.elevenreader.browser import ChromeSession
     from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
@@ -527,7 +529,7 @@ def test_page_call_hanging_into_the_deadline_keeps_the_speech_and_reads_only_the
     assert result.incomplete == ()
 
 
-def test_redo_join_failing_on_a_bug_raises_it_instead_of_leaving_the_redo_out(
+def test_redo_join_failing_on_a_bug_logs_it_as_a_bug_and_keeps_the_first_recording(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken(recording: Path) -> array[int]:
@@ -536,9 +538,19 @@ def test_redo_join_failing_on_a_bug_raises_it_instead_of_leaving_the_redo_out(
 
     monkeypatch.setattr(redo, "mono_pcm", broken)
     site = Site(script=drop_words(2, "trzy "))
+    captured: list[Message] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{message}", level="WARNING")
 
-    with pytest.raises(ValueError, match="bug while decoding"):
-        record(tmp_path, site, Redo.LINE)
+    try:
+        result = record(tmp_path, site, Redo.LINE)
+    finally:
+        loguru_logger.remove(handler_id)
+
+    assert result.incomplete == ("part-2",)
+    assert fills(result.recording) == [1, 2, 3, 4, 5]
+    assert len(site.uploads) == 2
+    assert [message.record["level"].name for message in captured if "bug in the code" in message] == ["ERROR"]
+    assert not any("is not joined" in message for message in captured)
 
 
 def test_cancel_during_a_redo_stops_and_keeps_every_take(tmp_path: Path) -> None:

@@ -496,6 +496,8 @@ def _joined(main: Take, reading: Reading, redone: list[Redone], output: Path, co
             chunks, _ = splice(main, reading, redone, output, count)
         except OSError as error:
             logger.warning("ElevenReader redo is not joined; the recording stays", error_class=type(error).__name__)
+        except ValueError, IndexError:
+            logger.exception("ElevenReader join failed on a bug in the code; the first recording stays the result")
         else:
             return chunks
     _copy_new(main.recording, output)
