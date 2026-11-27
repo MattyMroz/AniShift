@@ -35,6 +35,7 @@ from anishift.services.tts.engines.elevenlabs.constants import DEFAULT_MODEL_ID
 from anishift.services.tts.engines.elevenreader.constants import DEFAULT_VOICE_ALIAS, PROVIDER_MODEL_ID, VOICES
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_replace
 
 __all__ = [
     "PALANTIR_ENROLLMENT_URL_PATTERN",
@@ -923,7 +924,7 @@ def save_user_settings(settings: UserSettings) -> None:
     payload = json.dumps(serialized, indent=2, ensure_ascii=False) + "\n"
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(path)
+    safe_replace(tmp, path)
     logger.info(
         "User settings saved",
         translation_engine=settings.translation_engine,

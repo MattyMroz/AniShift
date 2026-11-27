@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -313,6 +314,48 @@ def test_store_rejects_another_schema_version_and_leaves_the_file(tmp_path: Path
     assert failure.value.context.suggestion is not None
     assert "state.json" in failure.value.context.suggestion
     assert path.read_bytes() == original
+
+
+def test_saving_waits_out_a_reader_that_briefly_holds_the_state_file(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    opened: threading.Event = threading.Event()
+    released: threading.Event = threading.Event()
+
+    def hold() -> None:
+        with (tmp_path / WATCH_STATE_FILE_NAME).open("rb"):
+            opened.set()
+            released.wait(0.2)
+
+    reader: threading.Thread = threading.Thread(target=hold)
+    reader.start()
+    assert opened.wait(5)
+    try:
+        store.save(replace(_state(), policy=AutomationPolicy(auto_enabled=False)))
+    finally:
+        released.set()
+        reader.join()
+
+    assert store.load().policy.auto_enabled is False
+
+
+def test_one_refused_replace_of_the_state_file_loses_no_save(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    replace_path = Path.replace
+    refused: list[Path] = []
+
+    def refuse_once(self: Path, target: Path) -> Path:
+        if Path(target).name == WATCH_STATE_FILE_NAME and not refused:
+            refused.append(self)
+            raise PermissionError(13, "Access is denied")
+        return replace_path(self, target)
+
+    monkeypatch.setattr(Path, "replace", refuse_once)
+    store.save(replace(_state(), policy=AutomationPolicy(auto_enabled=False)))
+
+    assert len(refused) == 1
+    assert store.load().policy.auto_enabled is False
 
 
 def test_saving_keeps_the_previous_version_and_leaves_no_temporary_file(tmp_path: Path) -> None:

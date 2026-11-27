@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Final
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
 from anishift.platform.binaries import is_windows
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_replace
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -281,7 +282,7 @@ def write_instance(state_dir: Path, record: InstanceRecord) -> None:
         "started_at": record.started_at,
     }
     temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
-    temporary.replace(path)
+    safe_replace(temporary, path)
 
 
 def read_instance(state_dir: Path) -> InstanceRecord | None:

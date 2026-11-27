@@ -12,6 +12,7 @@ from typing import Final
 
 from anishift.paths import env_path
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_replace
 
 __all__ = ["env_path", "update_env_value"]
 
@@ -120,7 +121,7 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             os.fsync(temporary.fileno())
         if original_mode is not None:
             temporary_path.chmod(original_mode)
-        temporary_path.replace(path)
+        safe_replace(temporary_path, path)
         _fsync_directory(path.parent)
     finally:
         if temporary_path is not None and temporary_path.exists():

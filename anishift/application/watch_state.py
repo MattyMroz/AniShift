@@ -72,6 +72,7 @@ from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.paths import run_journal_dir, watch_dir
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_replace
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -427,8 +428,8 @@ def load_recognized(path: Path) -> dict[tuple[str, int], int | None]:
 def save_recognized(path: Path, recognized: Mapping[tuple[str, int], int | None]) -> None:
     """Replace the recognition cache with *recognized* in one atomic step."""
     titles: list[list[object]] = [[title, season, entry] for (title, season), entry in sorted(recognized.items())]
-    _staged(path, json.dumps({"version": _RECOGNITION_VERSION, "titles": titles}, ensure_ascii=False) + "\n").replace(
-        path
+    safe_replace(
+        _staged(path, json.dumps({"version": _RECOGNITION_VERSION, "titles": titles}, ensure_ascii=False) + "\n"), path
     )
 
 
@@ -492,7 +493,7 @@ class WatchStateStore:
     def _write(self, state: WatchState) -> None:
         temporary: Path = _staged(self._path, json.dumps(_encode_state(state), indent=2, ensure_ascii=False) + "\n")
         self._back_up()
-        temporary.replace(self._path)
+        safe_replace(temporary, self._path)
         self._readable = True
 
     def _back_up(self) -> None:
@@ -515,7 +516,7 @@ class WatchStateStore:
             return
         except OSError:
             staged.write_bytes(self._path.read_bytes())
-        staged.replace(backup)
+        safe_replace(staged, backup)
 
 
 def _parse(text: str) -> WatchState:

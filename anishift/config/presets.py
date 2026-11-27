@@ -19,6 +19,7 @@ from anishift.application.intents import (
     TranslationAction,
 )
 from anishift.paths import config_dir
+from anishift.utils.safe_fs import safe_replace
 
 __all__ = [
     "AutoPresetFile",
@@ -121,7 +122,7 @@ def save_presets(preset_file: AutoPresetFile) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path = path.with_name(f"{path.name}.tmp")
     temporary.write_text(payload, encoding="utf-8")
-    temporary.replace(path)
+    safe_replace(temporary, path)
 
 
 def _decode_file(raw: object) -> AutoPresetFile:

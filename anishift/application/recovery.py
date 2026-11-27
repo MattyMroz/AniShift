@@ -13,6 +13,7 @@ from anishift.application.control_views import cached_adapter
 from anishift.application.planning import ExecutionPlan, PlanTask
 from anishift.application.results import ProducedArtifact, TaskResult
 from anishift.errors import AniShiftError, ExecutionError
+from anishift.utils.safe_fs import safe_replace
 
 if TYPE_CHECKING:
     from anishift.application.ready import ReadyMove
@@ -304,7 +305,7 @@ class RunJournal:
                 stream.flush()
                 os.fsync(stream.fileno())
             with _CHECKPOINT_FILES:
-                temporary.replace(self._path)
+                safe_replace(temporary, self._path)
         except OSError:
             self._failed = True
             raise

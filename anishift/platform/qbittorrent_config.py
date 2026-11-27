@@ -18,6 +18,7 @@ from anishift.paths import torrent_data_dir, torrent_download_dir
 from anishift.platform.binaries import is_windows
 from anishift.platform.installed import find_installed
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_replace
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -195,7 +196,7 @@ def write_managed_profile(root: Path, *, web_port: int, torrent_port: int, passw
         parser.write(handle, space_around_delimiters=False)
         handle.flush()
         os.fsync(handle.fileno())
-    temporary.replace(target)
+    safe_replace(temporary, target)
 
 
 def _import_connection_settings(target: configparser.ConfigParser) -> None:
