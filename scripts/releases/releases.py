@@ -264,12 +264,13 @@ def _verdict_changes(case: str, old: dict[str, Any], new: dict[str, Any]) -> Ite
     for mode in ("manual", "subscription"):
         if not old[mode] or not new[mode]:
             continue
-        previous: dict[tuple[str, str], dict[str, Any]] = {(row["hash"], row["file"]): row for row in old[mode]["rows"]}
+        previous: dict[str, dict[str, Any]] = {row["hash"]: row for row in old[mode]["rows"]}
         for row in new[mode]["rows"]:
-            was: dict[str, Any] | None = previous.get((row["hash"], row["file"]))
+            was: dict[str, Any] | None = previous.get(row["hash"])
             if was is not None and was["verdict"] != row["verdict"]:
+                file: str = row["file"] if was["file"] == row["file"] else f"{was['file']} → {row['file']}"
                 yield (
-                    f"| {case} | {mode} | {_cell(row['release'])} | {_cell(row['file'])} | {new['years']} "
+                    f"| {case} | {mode} | {_cell(row['release'])} | {_cell(file)} | {new['years']} "
                     f"| {was['verdict']} → {row['verdict']} | {row['reason']} |"
                 )
 
