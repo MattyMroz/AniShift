@@ -493,7 +493,7 @@ def _joined(main: Take, reading: Reading, redone: list[Redone], output: Path, co
     """Write *main* with the redone blocks cut in to *output*, or *main* alone when they cannot be joined."""
     if redone:
         try:
-            chunks, _ = splice(main, reading, redone, output, count)
+            chunks: tuple[AlignmentChunk, ...] = splice(main, reading, redone, output, count)
         except OSError as error:
             logger.warning("ElevenReader redo is not joined; the recording stays", error_class=type(error).__name__)
         except ValueError, IndexError:

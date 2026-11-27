@@ -7,12 +7,11 @@ from bisect import bisect_right
 from typing import TYPE_CHECKING
 
 import pytest
-from conftest import alignment_chunks, requires_binaries
+from conftest import alignment_chunks, part_timings, requires_binaries
 
 from anishift.paths import quality_dir
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.tts import DocumentPart
-from anishift.services.tts.engines.elevenreader.redo import part_spans
 from anishift.services.tts.engines.elevenreader.types import AlignmentChunk
 from anishift.text.boundaries import ends_sentence
 from anishift.utils.mp3_frames import iter_frames, splice_times
@@ -54,7 +53,7 @@ def _spans(work: Path, voice: str) -> list[LineSpan]:
     chunks: tuple[AlignmentChunk, ...] = alignment_chunks(work / f"anishift-test-{voice}.align.jsonl")
     return [
         LineSpan(start_ms=timing.start_ms, end_ms=timing.end_ms, open_end=not ends_sentence(part.text))
-        for timing, part in zip(part_spans(chunks, parts), parts, strict=True)
+        for timing, part in zip(part_timings(chunks, parts), parts, strict=True)
     ]
 
 

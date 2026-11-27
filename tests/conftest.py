@@ -9,10 +9,13 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from anishift.platform.binaries import Binary, resolve_binary
+from anishift.services.tts.engines.elevenreader.redo import read_parts, timings
 from anishift.services.tts.engines.elevenreader.types import AlignmentChunk
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from anishift.services.tts import DocumentPart, PartTiming
 
 DATA_DIR: Final[Path] = Path(__file__).resolve().parent / "data"
 
@@ -36,6 +39,11 @@ def alignment_chunks(path: Path) -> tuple[AlignmentChunk, ...]:
         json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line
     ]
     return tuple(_alignment_chunk(row) for row in rows)
+
+
+def part_timings(chunks: tuple[AlignmentChunk, ...], parts: tuple[DocumentPart, ...]) -> tuple[PartTiming, ...]:
+    text: str = "".join(char for chunk in chunks for char in chunk.chars)
+    return timings(chunks, parts, read_parts(text, [part.text for part in parts]).ranges)
 
 
 def _alignment_chunk(row: dict[str, list[object] | float]) -> AlignmentChunk:

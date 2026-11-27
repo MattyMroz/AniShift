@@ -11,6 +11,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import pytest
+from conftest import part_timings
 from elevenreader_fakes import (
     ADAM_ID,
     BREAK,
@@ -62,7 +63,7 @@ from anishift.services.tts.engines.elevenreader import browser as browser_module
 from anishift.services.tts.engines.elevenreader import config as config_module
 from anishift.services.tts.engines.elevenreader.api_backend import save_cleanup, write_session
 from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
-from anishift.services.tts.engines.elevenreader.redo import part_spans, read_parts
+from anishift.services.tts.engines.elevenreader.redo import read_parts
 from anishift.services.tts.engines.elevenreader.service import document_text
 from anishift.services.tts.engines.elevenreader.types import (
     AccountCleanup,
@@ -1201,28 +1202,28 @@ def _parts(*texts: str) -> tuple[DocumentPart, ...]:
 
 
 def _spans(chunks: tuple[AlignmentChunk, ...], *texts: str) -> list[tuple[float, float]]:
-    return [(timing.start_ms, timing.end_ms) for timing in part_spans(chunks, _parts(*texts))]
+    return [(timing.start_ms, timing.end_ms) for timing in part_timings(chunks, _parts(*texts))]
 
 
-def test_part_spans_break_tags_split_parts_in_server_time() -> None:
+def test_part_timings_break_tags_split_parts_in_server_time() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (250.0, 280.0)]
 
 
-def test_part_spans_separator_paragraph_is_not_a_part() -> None:
+def test_part_timings_separator_paragraph_is_not_a_part() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> … <break time="0.6s"/> Cd.'),)
 
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (480.0, 510.0)]
 
 
-def test_part_spans_adjacent_break_tags_form_one_boundary() -> None:
+def test_part_timings_adjacent_break_tags_form_one_boundary() -> None:
     chunks = (_chunk('Ab.<break time="0.6s"/> <break time="0.6s"/>Cd.'),)
 
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (440.0, 470.0)]
 
 
-def test_part_spans_part_the_server_did_not_speak_returns_empty_span() -> None:
+def test_part_timings_part_the_server_did_not_speak_returns_empty_span() -> None:
     silent = AlignmentChunk(
         offset_ms=250.0, chars=tuple("j g"), starts_ms=(0.0, 0.0, 0.0), durations_ms=(0.0, 0.0, 0.0)
     )
@@ -1231,46 +1232,46 @@ def test_part_spans_part_the_server_did_not_speak_returns_empty_span() -> None:
     assert _spans(chunks, "Ab.", "j g", "Cd.") == [(0.0, 30.0), (250.0, 250.0), (520.0, 550.0)]
 
 
-def test_part_spans_parts_touching_a_silent_chunk_return_empty_spans() -> None:
+def test_part_timings_parts_touching_a_silent_chunk_return_empty_spans() -> None:
     chunks = (
         _chunk('Ab. <break time="0.6s"/> C'),
         _chunk('d. <break time="0.6s"/> Ef.', offset_ms=300.0, step_ms=1.0, silent=True),
         _chunk(' <break time="0.6s"/> Gh.', offset_ms=330.0),
     )
 
-    timings = part_spans(chunks, _parts("Ab.", "Cd.", "Ef.", "Gh."))
+    timings = part_timings(chunks, _parts("Ab.", "Cd.", "Ef.", "Gh."))
 
     assert [timing.spoken for timing in timings] == [True, False, False, True]
     assert _spans(chunks, "Ab.", "Cd.", "Ef.", "Gh.")[3] == (550.0, 580.0)
 
 
-def test_part_spans_ellipsis_ending_a_part_stays_in_its_text() -> None:
+def test_part_timings_ellipsis_ending_a_part_stays_in_its_text() -> None:
     chunks = (_chunk('Zobacz filmik… <break time="0.6s"/> … <break time="0.6s"/> Cd.'),)
 
-    timings = part_spans(chunks, _parts("Zobacz filmik…", "Cd."))
+    timings = part_timings(chunks, _parts("Zobacz filmik…", "Cd."))
 
     assert [(timing.start_ms, timing.end_ms) for timing in timings] == [(0.0, 140.0), (590.0, 620.0)]
 
 
-def test_part_spans_final_break_adds_no_empty_part() -> None:
+def test_part_timings_final_break_adds_no_empty_part() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd. <break time="2s"/>'),)
 
     assert len(_spans(chunks, "Ab.", "Cd.")) == 2
 
 
-def test_part_spans_tag_cut_between_chunks_still_splits() -> None:
+def test_part_timings_tag_cut_between_chunks_still_splits() -> None:
     chunks = (_chunk("Ab. <break ti"), _chunk('me="0.6s"/> Cd.', offset_ms=1000.0))
 
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (1120.0, 1150.0)]
 
 
-def test_part_spans_unclosed_tag_at_end_is_dropped() -> None:
+def test_part_timings_unclosed_tag_at_end_is_dropped() -> None:
     chunks = (_chunk('Ab. <break time="2'),)
 
     assert _spans(chunks, "Ab.") == [(0.0, 30.0)]
 
 
-def test_part_spans_part_ending_before_it_starts_returns_empty_span() -> None:
+def test_part_timings_part_ending_before_it_starts_returns_empty_span() -> None:
     reversed_chunk = AlignmentChunk(
         offset_ms=0.0, chars=tuple("Ab."), starts_ms=(100.0, 50.0, 0.0), durations_ms=(10.0, 10.0, 10.0)
     )
@@ -1278,25 +1279,25 @@ def test_part_spans_part_ending_before_it_starts_returns_empty_span() -> None:
     assert _spans((reversed_chunk,), "Ab.") == [(100.0, 100.0)]
 
 
-def test_part_spans_surrounding_whitespace_is_trimmed() -> None:
+def test_part_timings_surrounding_whitespace_is_trimmed() -> None:
     chunks = (_chunk("  Ab  "),)
 
     assert _spans(chunks, "Ab") == [(20.0, 40.0)]
 
 
-def test_part_spans_bracketed_part_matches_round_brackets_in_server_text() -> None:
+def test_part_timings_bracketed_part_matches_round_brackets_in_server_text() -> None:
     chunks = (_chunk("(Ab)"),)
 
     assert _spans(chunks, "[Ab]") == [(0.0, 40.0)]
 
 
-def test_part_spans_part_the_server_split_in_two_lines_spans_both() -> None:
+def test_part_timings_part_the_server_split_in_two_lines_spans_both() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
     assert _spans(chunks, "Ab. Cd.") == [(0.0, 280.0)]
 
 
-def test_part_spans_part_ending_with_em_dash_matches_server_text_without_it() -> None:
+def test_part_timings_part_ending_with_em_dash_matches_server_text_without_it() -> None:
     chunks = (_chunk('Szybki Kr <break time="0.6s"/> Kula ognia!'),)
 
     assert _spans(chunks, "Szybki Kr—", "Kula ognia!") == [(0.0, 90.0), (310.0, 420.0)]
@@ -1312,18 +1313,18 @@ def test_part_spans_part_ending_with_em_dash_matches_server_text_without_it() ->
         ("Nie wiem", "Nie, wiem?!"),
     ],
 )
-def test_part_spans_punctuation_only_difference_is_accepted(received: str, sent: str) -> None:
-    timings = part_spans((_chunk(received),), _parts(sent))
+def test_part_timings_punctuation_only_difference_is_accepted(received: str, sent: str) -> None:
+    timings = part_timings((_chunk(received),), _parts(sent))
 
     assert [timing.request_id for timing in timings] == ["line-0"]
 
 
-def test_part_spans_part_with_other_words_gets_no_span_and_counts_as_missing() -> None:
+def test_part_timings_part_with_other_words_gets_no_span_and_counts_as_missing() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
     assert _spans(chunks, "Ab.", "Ef.") == [(0.0, 30.0), (30.0, 30.0)]
     assert read_parts('Ab. <break time="0.6s"/> Cd.', ["Ab.", "Ef."]).missing == (1,)
 
 
-def test_part_spans_no_chunks_and_no_parts_returns_nothing() -> None:
-    assert part_spans((), ()) == ()
+def test_part_timings_no_chunks_and_no_parts_returns_nothing() -> None:
+    assert part_timings((), ()) == ()

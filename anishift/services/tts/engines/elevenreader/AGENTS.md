@@ -18,7 +18,7 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
   bazową silnika z tym, czego program wymaga od silnika poza wspólnymi metodami.
 - `config.py`, `constants.py`, `types.py`, `service.py` (silnik, `document_text`) i `api_backend.py` (karta
   Playwright: `ReaderPage`, konto, sesja, logowanie, wylogowanie, mapowanie błędów dostawcy).
-- `redo.py`: porównanie słów (`read_parts`), czasy części (`timings`, `part_spans`), bloki dogrywania
+- `redo.py`: porównanie słów (`read_parts`), czasy części (`timings`), bloki dogrywania
   (`redo_blocks`) i sklejanie (`splice`).
 - `browser.py` (proces Chrome i CDP: `ChromeSession(root, headless=…)`, `open_window`), `hub.py` (`ReaderHub`: jedna
   przeglądarka profilu w procesie, karta na nagranie, wspólne sprzątanie konta), `recorder.py` (czyste ramki WebSocket

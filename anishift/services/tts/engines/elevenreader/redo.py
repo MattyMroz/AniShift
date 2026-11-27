@@ -40,7 +40,6 @@ __all__ = [
     "Redone",
     "Take",
     "new_file",
-    "part_spans",
     "read_parts",
     "redo_blocks",
     "splice",
@@ -219,26 +218,18 @@ def timings(
     return tuple(spans)
 
 
-def part_spans(chunks: tuple[AlignmentChunk, ...], parts: tuple[DocumentPart, ...]) -> tuple[PartTiming, ...]:
-    """Return the server timing of every part found by its words in the streamed text of *chunks*."""
-    text: str = "".join(char for chunk in chunks for char in chunk.chars)
-    return timings(chunks, parts, read_parts(text, [part.text for part in parts]).ranges)
-
-
 def splice(
     main: Take, reading: Reading, redone: Sequence[Redone], output: Path, count: int
-) -> tuple[tuple[AlignmentChunk, ...], tuple[Redone, ...]]:
-    """Write *main* with the redone blocks cut in at heard pauses to *output*; return its chunks and blocks left out."""
+) -> tuple[AlignmentChunk, ...]:
+    """Write *main* with the redone blocks cut in at heard pauses to *output* and return its chunks."""
     audio: _Audio = _audio(main.recording)
     stream: _Stream = _Stream.of(main.chunks)
     cuts: list[_Cut] = []
-    left_out: list[Redone] = []
     last_after_ms: float = 0.0
     for block in redone:
         cut: _Cut | None = _cut(block, audio, stream, reading, count)
         if cut is None or (cut.before_ms is not None and cut.before_ms < last_after_ms):
             logger.warning("ElevenReader redo is not joined: no pause to cut in", first=block.first, last=block.last)
-            left_out.append(block)
             continue
         cuts.append(cut)
         last_after_ms = audio.duration_ms if cut.after_ms is None else cut.after_ms
@@ -264,7 +255,7 @@ def splice(
     joined.add(audio.data, main.chunks, (main_ms, None), (main_char, len(stream.text)))
     with new_file(output) as file:
         file.write(joined.data)
-    return tuple(joined.chunks), tuple(left_out)
+    return tuple(joined.chunks)
 
 
 def new_file(path: Path) -> BinaryIO:
