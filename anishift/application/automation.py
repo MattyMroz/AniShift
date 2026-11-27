@@ -154,7 +154,7 @@ from anishift.application.episode_selection import (
 )
 from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
 from anishift.application.history import HistoryEvent, HistoryJournal, HistoryKind
-from anishift.application.inspection import InspectedWorkspace, workspace_page
+from anishift.application.inspection import EncodedWorkspace, InspectedWorkspace, encode_workspace, workspace_page
 from anishift.application.intents import (
     AutoPreset,
     ExternalAudioRole,
@@ -989,6 +989,7 @@ class AutomationOwner:
         self._inspecting: bool = False
         self._inspection_at: float | None = None
         self._library: InspectedWorkspace | None = None
+        self._discovered: tuple[InspectedWorkspace, dict[str, WorkflowTarget], EncodedWorkspace] | None = None
         self._subtitles_missing: frozenset[str] = frozenset()
         self._ready_library: tuple[LibrarySet, ...] = ()
         self._ready_groups: tuple[SourceGroup, ...] = ()
@@ -3564,8 +3565,13 @@ class AutomationOwner:
         offset: object = request.payload.get("offset")
         if type(offset) is not int or offset < 0:
             return _invalid("A discovery page needs a non-negative integer `offset`")
-        workspace: InspectedWorkspace = self._recorded_library(self._service.discover())
-        return ControlResponse.succeeded(encode_view(workspace_page(workspace, offset)))
+        inspected: InspectedWorkspace = self._service.discover()
+        recorded: dict[str, WorkflowTarget] = self._recorded_targets()
+        cached: tuple[InspectedWorkspace, dict[str, WorkflowTarget], EncodedWorkspace] | None = self._discovered
+        if cached is None or cached[0] is not inspected or cached[1] != recorded:
+            cached = (inspected, recorded, encode_workspace(self._recorded_library(inspected)))
+            self._discovered = cached
+        return ControlResponse.succeeded(encode_view(workspace_page(cached[2], offset)))
 
     def _recovered_intents(self, intents: tuple[GroupIntent, ...]) -> tuple[GroupIntent, ...]:
         """Restore the target of a finished set from its record, because ``ready`` names no target of its own."""

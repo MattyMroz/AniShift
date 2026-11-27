@@ -131,22 +131,40 @@ class WorkspacePage:
     revision: str
 
 
-def workspace_page(workspace: InspectedWorkspace, offset: int) -> WorkspacePage:
-    """Return the groups from *offset* that fit one page, their warnings and the revision of the whole workspace."""
+@dataclass(frozen=True, slots=True)
+class EncodedWorkspace:
+    """One inspected workspace with the encoded size of every group and the revision of the whole."""
+
+    workspace: InspectedWorkspace
+    sizes: tuple[int, ...]
+    revision: str
+
+
+def encode_workspace(workspace: InspectedWorkspace) -> EncodedWorkspace:
+    """Encode *workspace* once, measuring each group and naming its revision."""
     document: dict[str, object] = encode_view(workspace)
-    sizes: list[int] = [len(_json_bytes(group)) for group in cast("list[object]", document["groups"])]
+    return EncodedWorkspace(
+        workspace=workspace,
+        sizes=tuple(len(_json_bytes(group)) for group in cast("list[object]", document["groups"])),
+        revision=sha256(_json_bytes(document)).hexdigest(),
+    )
+
+
+def workspace_page(encoded: EncodedWorkspace, offset: int) -> WorkspacePage:
+    """Return the groups from *offset* that fit one page, with their warnings and the workspace revision."""
+    sizes: tuple[int, ...] = encoded.sizes
     end: int = offset
     used: int = 0
     while end < len(sizes) and (end == offset or used + sizes[end] <= _WORKSPACE_PAGE_BYTES):
         used += sizes[end]
         end += 1
-    groups: tuple[InspectedSourceGroup, ...] = workspace.groups[offset:end]
+    groups: tuple[InspectedSourceGroup, ...] = encoded.workspace.groups[offset:end]
     shown: frozenset[str] = frozenset(group.group_id for group in groups)
     return WorkspacePage(
         groups=groups,
-        warnings=tuple(warning for warning in workspace.warnings if warning.group_id in shown),
+        warnings=tuple(warning for warning in encoded.workspace.warnings if warning.group_id in shown),
         next_offset=end if end < len(sizes) else None,
-        revision=sha256(_json_bytes(document)).hexdigest(),
+        revision=encoded.revision,
     )
 
 
