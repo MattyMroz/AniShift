@@ -24,6 +24,7 @@ from elevenreader_fakes import (
     audio_frame,
     document_trace,
     fake_engine,
+    mp3_frames,
     read_id_of,
     read_url,
     stream_frames,
@@ -385,7 +386,11 @@ def test_synthesize_document_stalled_stream_keeps_the_speech_and_lists_what_its_
     assert result.incomplete == ("line-1",)
     assert [timing.spoken for timing in result.parts] == [True, False]
     assert len(site.uploaded) == 2
-    assert result.recording.read_bytes() == (tmp_path / "rec" / "recording.take1.mp3").read_bytes()
+    assert result.recording.read_bytes() == mp3_frames(3)
+    assert sorted(path.name for path in result.recording.parent.iterdir()) == [
+        "recording.mp3",
+        "recording.stream.txt",
+    ]
 
 
 def test_synthesize_document_progress_reports_received_characters_on_engine_thread(

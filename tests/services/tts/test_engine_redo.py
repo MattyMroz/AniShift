@@ -394,24 +394,40 @@ def test_redo_still_missing_words_is_not_joined_listed_and_not_read_again(tmp_pa
     assert fills(result.recording) == [1, 2, 3, 4, 5]
 
 
-def test_every_take_keeps_its_own_file_and_streamed_text(tmp_path: Path) -> None:
-    site = Site(script=drop_words(1, "lesie"))
+@pytest.mark.parametrize(
+    "script",
+    [drop_words(1, "lesie"), lambda _, parts: [part.replace("lesie", "") for part in parts]],
+    ids=["joined", "left_out"],
+)
+def test_result_keeps_only_its_recording_and_streamed_text_without_takes(tmp_path: Path, script: Script) -> None:
+    site = Site(script=script)
 
     result = record(tmp_path, site, Redo.LINE)
 
     folder: Path = result.recording.parent
-    assert sorted(path.name for path in folder.iterdir()) == [
-        "doc.mp3",
-        "doc.stream.txt",
-        "doc.take1.mp3",
-        "doc.take1.stream.txt",
-        "doc.take2.mp3",
-        "doc.take2.stream.txt",
-    ]
-    assert fills(folder / "doc.take1.mp3") == [1, 2, 3, 4, 5]
-    assert fills(folder / "doc.take2.mp3") == [fill_of(1, 0)]
-    assert "lesie" not in (folder / "doc.take1.stream.txt").read_text(encoding="utf-8")
-    assert "lesie" in (folder / "doc.stream.txt").read_text(encoding="utf-8")
+    assert len(site.uploads) == 2
+    assert sorted(path.name for path in folder.iterdir()) == ["doc.mp3", "doc.stream.txt"]
+    assert (folder / "doc.stream.txt").read_text(encoding="utf-8").startswith(PARTS[0])
+
+
+def test_redo_take_left_out_is_deleted_before_the_next_redo(tmp_path: Path) -> None:
+    seen: list[list[str]] = []
+
+    def watch(take: int) -> None:
+        if take == 2:
+            seen.append(sorted(path.name for path in (tmp_path / "out").iterdir()))
+
+    def script(take: int, parts: list[str]) -> list[str]:
+        if take == 1:
+            return ["Druga kwestia."]
+        return parts if take else [parts[0], "Druga kwestia.", parts[2], "Czwarta kwestia.", parts[4]]
+
+    site = Site(script=script, on_upload=watch)
+
+    result = record(tmp_path, site, Redo.LINE)
+
+    assert seen == [["doc.take1.mp3", "doc.take1.stream.txt"]]
+    assert result.incomplete == ("part-1",)
 
 
 def test_stream_stalling_after_speech_keeps_it_and_reads_only_the_rest(tmp_path: Path) -> None:
@@ -447,7 +463,8 @@ def test_redo_ending_in_an_error_leaves_its_parts_incomplete_and_keeps_the_recor
 
     assert len(site.uploads) == 2
     assert result.incomplete == ("part-2",)
-    assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+    assert fills(result.recording) == [1, 2, 3, 4, 5]
+    assert not (tmp_path / "out" / "doc.take1.mp3").exists()
 
 
 def test_redo_refused_by_app_check_stops_the_redo_and_gives_its_cause_to_the_incomplete_parts(
@@ -475,7 +492,8 @@ def test_redo_without_a_pause_to_cut_in_is_left_out(tmp_path: Path) -> None:
 
     assert len(site.uploads) == 2
     assert result.incomplete == ("part-2",)
-    assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+    assert fills(result.recording) == [1, PAUSE_NOISE, 2, PAUSE_NOISE, 3, PAUSE_NOISE, 4, PAUSE_NOISE, 5, PAUSE_NOISE]
+    assert not (tmp_path / "out" / "doc.take1.mp3").exists()
 
 
 def test_redo_that_cannot_be_decoded_keeps_the_recording(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -489,7 +507,8 @@ def test_redo_that_cannot_be_decoded_keeps_the_recording(tmp_path: Path, monkeyp
     result = record(tmp_path, site, Redo.LINE)
 
     assert result.incomplete == ("part-2",)
-    assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+    assert fills(result.recording) == [1, 2, 3, 4, 5]
+    assert not (tmp_path / "out" / "doc.take1.mp3").exists()
 
 
 def test_page_call_hanging_into_the_deadline_keeps_the_speech_and_reads_only_the_rest(

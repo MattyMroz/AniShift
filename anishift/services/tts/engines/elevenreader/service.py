@@ -142,7 +142,9 @@ class ElevenReaderTtsEngine(EngineSurface):
         tags: bool = keeps_tags(request)
         texts: list[str] = [part.text for part in request.parts]
         reported: DocumentSynthesisRequest = _reported_here(request)
-        main: Take = await self._take(reported, request.parts, voice, cancel, progress=reported.progress)
+        main: Take = await self._take(
+            reported, request.parts, voice, cancel, recording=_next_take(request.recording), progress=reported.progress
+        )
         reading: Reading = _read(main, texts, offset=0)
         redone: list[Redone] = []
         cause: ErrorContext | None = None
@@ -153,6 +155,8 @@ class ElevenReaderTtsEngine(EngineSurface):
         )
         final: Take = Take(request.recording, chunks)
         _write_stream_text(final)
+        for take in (main, *(block.take for block in redone)):
+            _discard(take.recording)
         joined: Reading = read_parts(final.text, texts)
         parts: tuple[PartTiming, ...] = timings(chunks, request.parts, joined.ranges)
         incomplete: tuple[str, ...] = tuple(request.parts[index].request_id for index in joined.missing)
@@ -205,6 +209,7 @@ class ElevenReaderTtsEngine(EngineSurface):
         )
         await asyncio.to_thread(_copy_new, take.recording, recording)
         _write_stream_text(Take(recording, take.chunks))
+        _discard(take.recording)
         return document_result(
             request_id=_DOWNLOAD_REQUEST_ID,
             recording=recording,
@@ -241,11 +246,13 @@ class ElevenReaderTtsEngine(EngineSurface):
         for first, last in redo_blocks(reading.missing, len(request.parts), self._config.redo):
             parts: tuple[DocumentPart, ...] = request.parts[first : last + 1]
             logger.info("ElevenReader block is read again", first=first, last=last, mode=self._config.redo.value)
+            recording: Path = _next_take(request.recording)
             try:
-                take: Take = await self._take(request, parts, voice, cancel, progress=None)
+                take: Take = await self._take(request, parts, voice, cancel, recording=recording, progress=None)
             except TtsCancelledError:
                 raise
             except FatalError as error:
+                _discard(recording)
                 logger.warning(
                     "ElevenReader redo stopped; the blocks left stay incomplete",
                     first=first,
@@ -253,24 +260,26 @@ class ElevenReaderTtsEngine(EngineSurface):
                 )
                 return redone, error.context
             except (TtsError, OSError) as error:
+                _discard(recording)
                 logger.warning("ElevenReader redo failed", first=first, last=last, error_class=type(error).__name__)
                 continue
             if _read(take, [part.text for part in parts], offset=first).missing:
+                _discard(recording)
                 logger.warning("ElevenReader redo still lacks words and is not joined", first=first, last=last)
                 continue
             redone.append(Redone(first=first, last=last, take=take))
         return redone, None
 
-    async def _take(
+    async def _take(  # noqa: PLR0913 - one take needs its request, parts, voice, cancel, file and progress
         self,
         request: DocumentSynthesisRequest,
         parts: tuple[DocumentPart, ...],
         voice: ElevenReaderVoice,
         cancel: CancellationToken,
         *,
+        recording: Path,
         progress: Callable[[int, int], Awaitable[None]] | None,
     ) -> Take:
-        recording: Path = _next_take(request.recording)
         logger.info("ElevenReader take started", take=recording.name, parts=len(parts))
         return await self._hub.record(
             partial(
@@ -507,11 +516,23 @@ def _copy_new(source: Path, destination: Path) -> None:
 
 def _write_stream_text(take: Take) -> None:
     """Write the text the server streamed next to the recording; a failure only reaches the log."""
-    target: Path = take.recording.with_name(f"{_head(take.recording)}{_STREAM_SUFFIX}")
     try:
-        target.write_text(take.text, encoding="utf-8")
+        _stream_file(take.recording).write_text(take.text, encoding="utf-8")
     except OSError as error:
         logger.warning("ElevenReader streamed text could not be written", error_class=type(error).__name__)
+
+
+def _stream_file(recording: Path) -> Path:
+    return recording.with_name(f"{_head(recording)}{_STREAM_SUFFIX}")
+
+
+def _discard(take: Path) -> None:
+    """Delete a take and its streamed text, which no result needs; a failure only reaches the log."""
+    try:
+        take.unlink(missing_ok=True)
+        _stream_file(take).unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning("ElevenReader take could not be deleted", error_class=type(error).__name__)
 
 
 def _check(page: ReaderPage, recorder: StreamRecorder, char_count: int | None) -> None:

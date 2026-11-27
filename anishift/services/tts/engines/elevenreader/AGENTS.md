@@ -52,10 +52,12 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
 ## Pliki nagrań
 
 - Każda próba ma własny plik `<nazwa>.take<n>.mp3` obok `request.recording` (nazwa to nazwa nagrania do `.mp3`,
-  `open("xb")`), także pobranie (`download_document`); silnik niczego nie kasuje. Wynik trafia do
-  `request.recording`, który nie może zawierać danych (pusty plik zastępczy jest dozwolony), więc żadne nagranie nie
-  jest nadpisywane.
-- Obok każdej próby i wyniku zawsze leży `<nazwa>.stream.txt` z tekstem, który przysłał serwer.
+  `open("xb")`), także pobranie (`download_document`). Wynik trafia do `request.recording`, który nie może zawierać
+  danych (pusty plik zastępczy jest dozwolony), więc żadne nagranie nie jest nadpisywane.
+- Obok każdej próby i wyniku leży `<nazwa>.stream.txt` z tekstem, który przysłał serwer.
+- Dźwięk próby znika dopiero, gdy nie jest potrzebny wynikowi: dogranie niewklejane (błąd albo brak słów) od razu,
+  a próba główna i wklejone dogrania po zapisie wyniku i jego `stream.txt`. Po wyniku zostają tylko
+  `request.recording` i jego `stream.txt`. Błąd albo anulowanie przed wynikiem zostawia próby; sprząta je wywołujący.
 - Gdy wgrany dokument dał już dźwięk, każdy błąd próby poza anulowaniem (zastój `STALL_S`, odmowa App Check, błąd
   Playwright, błąd zapisu, prośba strony o inną prędkość, `deadline_s` o jeden takt `POLL_S` przed końcem) kończy ją
   z tym, co przyszło, a brakujące części idą do dogrania; silnik nie zgłasza wtedy błędu, więc wywołujący nie nagrywa

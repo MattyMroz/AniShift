@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import glob
 import itertools
 import threading
 from dataclasses import dataclass, replace
@@ -376,11 +377,6 @@ class _DocumentAttempt:
         return self._expectation
 
     @property
-    def paths(self) -> tuple[Path, ...]:
-        """Return the recording and clip paths reserved by the current attempt."""
-        return tuple(self._paths)
-
-    @property
     def unspoken(self) -> frozenset[str]:
         """Return the request ids of the accepted recording's lines the engine did not speak."""
         return self._unspoken
@@ -401,10 +397,19 @@ class _DocumentAttempt:
         """Return the accepted clip receipt of one document line."""
         return self._receipts.get(request_id)
 
+    def discard(self) -> None:
+        """Delete the attempt's recording, clips and every file the engine wrote under the recording's name."""
+        _discard_paths(tuple(self._paths))
+        recording: Path | None = self._recording
+        if recording is None:
+            return
+        name: str = recording.name.removesuffix(f".{self._recording_format.value}.tmp")
+        _discard_paths(tuple(recording.parent.glob(f"{glob.escape(name)}.*")))
+
     async def call(self, attempt: int) -> EngineDocumentResult:
         """Discard the previous attempt's files, then record the document into a fresh owned path."""
         del attempt
-        _discard_paths(tuple(self._paths))
+        self.discard()
         self._paths.clear()
         self._receipts = {}
         self._unspoken = frozenset()
@@ -1251,7 +1256,7 @@ class TtsService:
                 for position, line in enumerate(lines)
             ]
         finally:
-            _discard_paths(attempt.paths)
+            attempt.discard()
         logger.debug(
             "TTS document finished",
             scope_id=batch.scope_id,
@@ -1694,7 +1699,7 @@ def _split_error() -> TtsRecordingSplitError:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_CLIP_INVALID,
         message="TTS document recording could not be split into valid line clips",
-        suggestion="Retry the task; the engine's take files stay next to the recording.",
+        suggestion="Retry the task; its lines are recorded again from the start.",
     )
     return TtsRecordingSplitError(context=context)
 

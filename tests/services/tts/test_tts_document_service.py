@@ -159,11 +159,15 @@ class _DocumentEngine:
         self.document_ids.append(request.request_id)
         self.recordings.append(request.recording)
         self.stale_files.append(
-            sorted(path.name for path in request.recording.parent.glob("*.tmp") if path != request.recording)
+            sorted(path.name for path in request.recording.parent.glob(".clip-*") if path != request.recording)
         )
+        head: str = request.recording.name.partition(".mp3")[0]
+        request.recording.with_name(f"{head}.take1.mp3").write_bytes(b"take")
+        request.recording.with_name(f"{head}.take1.stream.txt").write_text("take", encoding="utf-8")
         if self.failures:
             raise self.failures.pop(0)
         request.recording.write_bytes(b"recording")
+        request.recording.with_name(f"{head}.stream.txt").write_text("result", encoding="utf-8")
         total: int = sum(len(part.text) for part in request.parts)
         if request.progress is not None:
             await request.progress(total // 2, total)
@@ -315,6 +319,17 @@ def test_document_batch_success_discards_recording_and_temporary_clips(tmp_path:
     assert engine.recordings
     assert not any(path.exists() for path in engine.recordings)
     assert list((tmp_path / "episode").rglob("*.tmp")) == []
+    assert list((tmp_path / "episode").rglob(".clip-*")) == []
+
+
+def test_document_batch_failed_and_retried_recording_leaves_no_engine_file(tmp_path: Path) -> None:
+    engine = _DocumentEngine(failures=(TtsClipValidationError("cut"), TtsQuotaError("no credits")))
+
+    _run(tmp_path, engine, _Splitter(), _batch("Raz dwa."))
+
+    assert len(engine.documents) == 2
+    assert engine.stale_files == [[], []]
+    assert list((tmp_path / "episode").rglob(".clip-*")) == []
 
 
 def test_document_batch_all_lines_resumed_makes_no_engine_call(tmp_path: Path) -> None:

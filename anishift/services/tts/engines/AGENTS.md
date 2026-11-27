@@ -36,7 +36,9 @@ Leniwy rejestr adapterów providerów TTS.
   `check_request` (`eleven_v4`, bez opcji), `mono_pcm` (FFmpeg z `anishift.platform.binaries`, bo domena TTS nie
   importuje `services.audio`) i `ChromeBusyError` jako błąd przejściowy z `retry_after_s`. Panel loguje przez
   `sign_in` (okno bez sterowania) i wylogowuje przez `sign_out`. Linia z `incomplete` w wyniku dokumentu kończy się
-  w `TtsService` błędem tej linii bez kolejnego odczytu; pozostałe linie zostają. Chrome jest dzieckiem rezydenta
+  w `TtsService` błędem tej linii bez kolejnego odczytu (z `incomplete_cause`, gdy jest); pozostałe linie zostają.
+  `TtsService` po każdej próbie dokumentu usuwa nagranie i każdy plik, który silnik zapisał pod jego nazwą (próby,
+  `stream.txt`), bo wynikiem AniShift są przyjęte klipy linii, a nie nagranie. Chrome jest dzieckiem rezydenta
   (Job Object kończy go z rezydentem), okno logowania dostaje `independent_child_flags`. Testy sieciowe silnika:
   `test_tts_elevenreader_network.py` (`-m network`, prawdziwe konto, nie uruchamiaj bez polecenia).
 - `sapi/` — lokalny, architekturowo izolowany worker Windows SAPI.
