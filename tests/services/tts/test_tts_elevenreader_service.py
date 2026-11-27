@@ -462,7 +462,7 @@ def test_synthesize_document_cancel_while_page_hangs_stops_quickly_and_cleans(
 
 
 def test_synthesize_document_hung_page_times_out_at_deadline_and_cleans(tmp_path: Path, engine_for: EngineFor) -> None:
-    site = FakeSite(texts=TEXTS, char_count=10_000, hang_on="player_state")
+    site = FakeSite(texts=TEXTS, char_count=10_000, hang_on="press_play")
     engine = engine_for(site)
 
     async def scenario() -> None:
@@ -991,19 +991,21 @@ def test_cancelling_one_recording_closes_only_its_tab_and_keeps_the_other(
     assert site.account["default_voice_id"] == "previous-voice"
 
 
-def test_timed_out_recording_keeps_shared_browser_until_the_others_finish(
+def test_cancelled_recording_keeps_shared_browser_until_the_others_finish(
     tmp_path: Path, engine_for: EngineFor
 ) -> None:
     site = FakeSite(texts=TEXTS, held={0, 1})
     first, second = engine_for(site), engine_for(site)
+    stop = TtsCancellation()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        expiring = _in_thread(pool, first, _request(tmp_path, deadline_s=1.0, name="first"))
+        cancelled = _in_thread(pool, first, _request(tmp_path, name="first"), stop)
         _wait_until(lambda: site.streams == 1)
         kept = _in_thread(pool, second, _request(tmp_path, name="second"))
         _wait_until(lambda: site.streams == 2)
-        with pytest.raises(TtsTimeoutError, match="deadline"):
-            expiring.result(timeout=5.0)
+        stop.cancel()
+        with pytest.raises(TtsCancelledError):
+            cancelled.result(timeout=5.0)
         assert site.sessions[0].alive
         site.held.clear()
         kept.result(timeout=5.0)
@@ -1013,6 +1015,18 @@ def test_timed_out_recording_keeps_shared_browser_until_the_others_finish(
     assert len(site.sessions) == 2
     assert site.sessions[0].closed
     assert site.sessions[1].alive
+
+
+def test_recording_reaching_its_deadline_after_speech_ends_with_what_came(
+    tmp_path: Path, engine_for: EngineFor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service, "POLL_S", 0.1)
+    site = FakeSite(texts=TEXTS, held={0})
+
+    result = _run(_record(engine_for(site), _request(tmp_path, deadline_s=1.0)))
+
+    assert all(timing.spoken for timing in result.parts)
+    assert site.sessions[0].alive
 
 
 def test_last_engine_closing_stops_browser_and_host_thread(tmp_path: Path) -> None:

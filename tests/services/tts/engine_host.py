@@ -35,7 +35,7 @@ def make_engine(root: Path, factory: Callable[[Path], ChromeSession], mode: Redo
     return engine
 
 
-def make_request(texts: tuple[str, ...], recording: Path) -> DocumentSynthesisRequest:
+def make_request(texts: tuple[str, ...], recording: Path, deadline_s: float) -> DocumentSynthesisRequest:
     return DocumentSynthesisRequest(
         request_id="document-0",
         parts=tuple(DocumentPart(request_id=f"part-{index}", text=text) for index, text in enumerate(texts)),
@@ -43,5 +43,5 @@ def make_request(texts: tuple[str, ...], recording: Path) -> DocumentSynthesisRe
         provider_model_id="eleven_v4",
         options={},
         recording=recording,
-        deadline_s=60.0,
+        deadline_s=deadline_s,
     )

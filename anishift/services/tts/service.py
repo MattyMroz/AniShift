@@ -21,6 +21,7 @@ from anishift.services.tts.errors import (
     TtsConfigError,
     TtsError,
     TtsInputError,
+    TtsRecordingSplitError,
     TtsUnsupportedError,
 )
 from anishift.services.tts.fingerprint import SynthesisIdentity
@@ -453,7 +454,7 @@ class _DocumentAttempt:
                 self._expectation,
             )
             if receipt is None:
-                raise _invalid_audio_error()
+                raise _split_error()
             receipts[span.request_id] = receipt
         self._receipts = receipts
         self._incomplete = incomplete
@@ -1677,13 +1678,13 @@ def _document_timing_error() -> TtsClipValidationError:
     return TtsClipValidationError(context=context)
 
 
-def _split_error() -> TtsClipValidationError:
+def _split_error() -> TtsRecordingSplitError:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_CLIP_INVALID,
-        message="TTS document recording could not be split into line clips",
-        suggestion="Retry the document or inspect the shared audio clip splitter.",
+        message="TTS document recording could not be split into valid line clips",
+        suggestion="Retry the task; the engine's take files stay next to the recording.",
     )
-    return TtsClipValidationError(context=context)
+    return TtsRecordingSplitError(context=context)
 
 
 def _assembly_error() -> TtsClipValidationError:

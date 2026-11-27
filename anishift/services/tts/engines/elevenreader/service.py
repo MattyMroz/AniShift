@@ -355,7 +355,14 @@ class ElevenReaderTtsEngine(EngineSurface):
                 played_at: float = time.monotonic()
                 await _stream_opened(page, recorder, stream_voices, played_at, cancel)
                 attempt.started()
-                await self._record(attempt, recorder, char_count, progress, read_id=read_id, played_at=played_at)
+                try:
+                    async with asyncio.timeout_at(attempt.deadline_at - POLL_S):
+                        await self._record(
+                            attempt, recorder, char_count, progress, read_id=read_id, played_at=played_at
+                        )
+                except TimeoutError:
+                    reason: str = "ElevenReader document reached the end of its deadline"
+                    raise timeout_error(reason) from None
             except (TtsError, OSError) as error:
                 if not _keeps(recorder, char_count, error):
                     raise
@@ -390,9 +397,6 @@ class ElevenReaderTtsEngine(EngineSurface):
             await unless_cancelled(asyncio.sleep(POLL_S), cancel)
             _check(page, recorder, char_count)
             now = time.monotonic()
-            if now >= attempt.deadline_at - POLL_S:
-                reason: str = "ElevenReader document reached the end of its deadline"
-                raise timeout_error(reason)
             if now - last_speed_check >= SPEED_CHECK_S:
                 last_speed_check = now
                 await unless_cancelled(page.check_page_speed(PAGE_SPEED), cancel)
@@ -400,7 +404,7 @@ class ElevenReaderTtsEngine(EngineSurface):
                 if now - played_at < START_TIMEOUT_S:
                     continue
                 if plays >= PLAY_ATTEMPTS:
-                    reason = "ElevenReader sent no audio after Play"
+                    reason: str = "ElevenReader sent no audio after Play"
                     raise timeout_error(reason)
                 logger.warning("ElevenReader sent no audio; the document is opened again", attempt=plays + 1)
                 await unless_cancelled(page.open_document(read_id), cancel)
@@ -468,7 +472,7 @@ def _joined(main: Take, reading: Reading, redone: list[Redone], output: Path, co
     if redone:
         try:
             chunks, _ = splice(main, reading, redone, output, count)
-        except OSError as error:
+        except (OSError, ValueError, IndexError, TtsError) as error:
             logger.warning("ElevenReader redo is not joined; the recording stays", error_class=type(error).__name__)
         else:
             return chunks

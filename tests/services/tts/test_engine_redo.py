@@ -125,6 +125,7 @@ class Site:
     stalls: set[int] = field(default_factory=set)
     failing: set[int] = field(default_factory=set)
     broken: set[int] = field(default_factory=set)
+    hangs: set[int] = field(default_factory=set)
     loud_pauses: set[int] = field(default_factory=set)
     on_upload: Callable[[int], None] | None = None
     uploads: list[list[str]] = field(default_factory=list)
@@ -200,6 +201,8 @@ class Page:
         if self.take in self.site.broken:
             message: str = "fake page closed"
             raise TtsProviderUnavailableError(message)
+        if self.take in self.site.hangs:
+            await asyncio.Event().wait()
 
     def watch_stream(self, recorder: StreamRecorder, on_url: Callable[[str], None]) -> None:
         self.recorder = recorder
@@ -241,7 +244,9 @@ def _fast_and_heard(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(redo, "mono_pcm", fill_pcm)
 
 
-def record(tmp_path: Path, site: Site, mode: Redo, cancel: Cancellation | None = None) -> DocumentResult:
+def record(
+    tmp_path: Path, site: Site, mode: Redo, cancel: Cancellation | None = None, deadline_s: float = 60.0
+) -> DocumentResult:
     def factory(root: Path) -> ChromeSession:
         del root
         return cast("ChromeSession", Session(site))
@@ -249,7 +254,7 @@ def record(tmp_path: Path, site: Site, mode: Redo, cancel: Cancellation | None =
     async def run() -> DocumentResult:
         engine = make_engine(tmp_path / "home", factory, mode)
         try:
-            request = make_request(PARTS, tmp_path / "out" / "doc.mp3")
+            request = make_request(PARTS, tmp_path / "out" / "doc.mp3", deadline_s)
             return await engine.synthesize_document(request, cancel=cancel or Cancellation())
         finally:
             await engine.close()
@@ -453,6 +458,38 @@ def test_redo_that_cannot_be_decoded_keeps_the_recording(tmp_path: Path, monkeyp
     def broken(recording: Path) -> array[int]:
         message: str = f"cannot decode {recording.name}"
         raise OSError(message)
+
+    monkeypatch.setattr(redo, "mono_pcm", broken)
+    site = Site(script=drop_words(2, "trzy "))
+
+    result = record(tmp_path, site, Redo.LINE)
+
+    assert result.incomplete == ("part-2",)
+    assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+
+
+def test_page_call_hanging_into_the_deadline_keeps_the_speech_and_reads_only_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def script(take: int, parts: list[str]) -> list[str]:
+        return parts if take else parts[:3]
+
+    monkeypatch.setattr(service, "POLL_S", 0.1)
+    site = Site(script=script, stalls={0}, hangs={0})
+
+    result = record(tmp_path, site, Redo.LINE, deadline_s=1.0)
+
+    assert site.uploads[1] == list(PARTS[3:5])
+    assert fills(result.recording) == [1, 2, 3, fill_of(1, 0), fill_of(1, 1)]
+    assert result.incomplete == ()
+
+
+def test_redo_failing_to_join_with_any_error_keeps_the_recording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(recording: Path) -> array[int]:
+        message: str = f"no frames in {recording.name}"
+        raise ValueError(message)
 
     monkeypatch.setattr(redo, "mono_pcm", broken)
     site = Site(script=drop_words(2, "trzy "))

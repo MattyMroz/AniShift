@@ -17,6 +17,7 @@ __all__ = [
     "TtsProviderUnavailableError",
     "TtsQuotaError",
     "TtsRateLimitError",
+    "TtsRecordingSplitError",
     "TtsResumeConflictError",
     "TtsResumeError",
     "TtsResumeSchemaError",
@@ -101,6 +102,12 @@ class TtsResumeConflictError(TtsResumeError):
 
 class TtsClipValidationError(TtsError, TransientError):
     """Provider output is empty, corrupt, or not decodable."""
+
+    error_code = ErrorCode.TTS_CLIP_INVALID
+
+
+class TtsRecordingSplitError(TtsError, FatalError):
+    """A recorded document could not be cut into valid line clips; recording it again would not help."""
 
     error_code = ErrorCode.TTS_CLIP_INVALID
 

@@ -160,7 +160,7 @@ def test_normalization_fingerprint_reuses_timing_changes_but_tracks_audio_inputs
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("EDGE_TRIM_DBFS", -40.0),
+        ("SILENT_DBFS", -40.0),
         ("EDGE_TRIM_MARGIN_MS", 20.0),
         ("EDGE_TRIM_CLICK_MS", 40.0),
         ("EDGE_TRIM_PAUSE_MS", 100.0),

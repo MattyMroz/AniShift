@@ -500,41 +500,23 @@ def test_document_batch_without_any_spoken_part_fails_its_lines_without_split(tm
     assert splitter.calls == []
 
 
-def test_document_batch_splitter_failure_retries_document(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "splitter",
+    [_Splitter(failures=1), _Splitter(missing_clip_once=True), _Splitter(invalid_clip_once=True)],
+    ids=["split_failure", "missing_clip", "invalid_clip"],
+)
+def test_document_batch_recording_that_cannot_be_cut_fails_its_lines_without_recording_again(
+    tmp_path: Path, splitter: _Splitter
+) -> None:
     engine = _DocumentEngine()
-    splitter = _Splitter(failures=1)
 
     (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
 
-    assert result.status is SpeechBatchStatus.COMPLETED
-    assert len(engine.documents) == 2
-    assert [item.retries for item in result.requests] == [1, 0]
-    assert result.stats.provider_calls == 2
-    assert result.stats.retries == 1
-
-
-def test_document_batch_missing_written_clip_retries_without_previous_files(tmp_path: Path) -> None:
-    engine = _DocumentEngine()
-    splitter = _Splitter(missing_clip_once=True)
-
-    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
-
-    assert result.status is SpeechBatchStatus.COMPLETED
-    assert len(splitter.calls) == 2
-    assert engine.stale_files == [[], []]
+    assert _statuses(result) == [SynthesisStatus.FAILED, SynthesisStatus.FAILED]
+    assert [item.error_code for item in result.requests] == ["TTS_CLIP_INVALID", "TTS_CLIP_INVALID"]
+    assert len(engine.documents) == 1
+    assert len(splitter.calls) == 1
     assert not any(span.destination.exists() for span in splitter.calls[0])
-
-
-def test_document_batch_invalid_split_clip_retries_document(tmp_path: Path) -> None:
-    engine = _DocumentEngine()
-    splitter = _Splitter(invalid_clip_once=True)
-
-    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
-
-    assert result.status is SpeechBatchStatus.COMPLETED
-    assert len(engine.documents) == 2
-    assert len(splitter.calls) == 2
-    assert engine.stale_files == [[], []]
 
 
 def test_document_batch_uncertain_boundaries_commits_every_line(tmp_path: Path) -> None:

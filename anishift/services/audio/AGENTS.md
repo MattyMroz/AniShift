@@ -26,7 +26,7 @@ sidecara audio przez FFmpeg.
   jest trafieniem resume. `timeline.py`, `fingerprint.py`
 - Każdy klip każdego silnika przechodzi przez FFmpeg i po `atempo` traci ciszę na
   brzegach: zostaje zakres od pierwszej do ostatniej ramki 10 ms powyżej
-  `EDGE_TRIM_DBFS` plus `EDGE_TRIM_MARGIN_MS` z obu stron; klip bez takiej ramki
+  `SILENT_DBFS` (`utils/pauses.py`, jedno źródło progu ciszy) plus `EDGE_TRIM_MARGIN_MS` z obu stron; klip bez takiej ramki
   zostaje cały. Dźwięk do `EDGE_TRIM_CLICK_MS` przed ciszą co najmniej
   `EDGE_TRIM_PAUSE_MS` na początku klipu to trzask albo wdech i odpada; krótki
   dźwięk po ciszy na końcu zostaje, bo to wybuch końcowej spółgłoski zwartej. Nie
@@ -43,7 +43,7 @@ sidecara audio przez FFmpeg.
   `uncertain`. Stałe są 1:1 z prototypu i przechodzą test zgodności na nagraniach
   z `quality_dir()`; zmiana progu lub okna wymaga ponownego testu. Jedyne odejście
   od prototypu: gdy środek wybranej pauzy (poniżej `NOISE_DBFS`) jest jeszcze
-  słyszalny (powyżej `SILENT_DBFS`, −45 dBFS jak `EDGE_TRIM_DBFS`, wybrzmienie słowa albo wybuch spółgłoski),
+  słyszalny (powyżej `SILENT_DBFS`, wybrzmienie słowa albo wybuch spółgłoski),
   cięcie pada w środku najdłuższej ciszy tej pauzy (`silent_cut`), bo inaczej koniec słowa
   zaczynałby następny klip. Ta sama reguła tnie dogrania silnika ElevenReader.
 - Brak klipów spoken zwraca `skipped_no_spoken`; nie twórz pustego narratora ani
