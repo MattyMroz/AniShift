@@ -6,7 +6,7 @@ from typing import Final
 
 from anishift.application import AdmissionConflict, EpisodeReason
 from anishift.application.events import sanitize_event_message
-from anishift.cli.interactive.state_texts import STATES, state_word
+from anishift.cli.interactive.state_texts import STATES, refusal_text, state_word
 from anishift.errors import AniShiftError, ErrorCode
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
@@ -69,8 +69,6 @@ COMMAND_FAILED: Final[str] = "AniShift w tle nie wykonał polecenia · uruchom A
 
 def stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  # noqa: PLR0911
     """Translate domain codes preserved locally or carried by a resident refusal."""
-    from anishift.cli.interactive.state import refusal_text  # noqa: PLC0415
-
     if not isinstance(problem, AniShiftError):
         return refusal_text(problem), ""
     if isinstance(problem, ControlError) and problem.reason == "response_too_large":

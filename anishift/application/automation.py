@@ -5433,6 +5433,8 @@ class AutomationOwner:
         """Return the phase every view shows for *target*, or nothing while its transfers speak for it."""
         if target.state is TargetState.EXHAUSTED:
             return EpisodeReason.SUBSCRIPTION_EXHAUSTED
+        if target.state is TargetState.ATTEMPTING:
+            return EpisodeReason.ADMITTED
         if target.state not in {TargetState.AWAITING_AIRING, TargetState.DUE}:
             return None
         if record.paused or not self._state.policy.auto_enabled:

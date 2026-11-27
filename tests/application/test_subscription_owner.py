@@ -1067,6 +1067,19 @@ def _listed_word(text: str) -> str:
         (_due(Blocker.NO_ADMISSIBLE), True, False, "Brak pewnego wydania"),
         (_due(Blocker.THRESHOLD), True, False, "Brak pewnego wydania"),
         (_exhausted(), True, False, "Próby wyczerpane"),
+        (
+            SubscriptionTarget(
+                23,
+                (_NOW - timedelta(hours=1)).isoformat(),
+                TargetState.ATTEMPTING,
+                attempts=1,
+                started=1,
+                admission_id="admission",
+            ),
+            True,
+            False,
+            "Zlecono",
+        ),
         (_exhausted(), False, False, "Próby wyczerpane"),
         (
             SubscriptionTarget(23, (_NOW + timedelta(hours=2)).isoformat(), TargetState.AWAITING_AIRING),

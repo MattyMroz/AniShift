@@ -79,6 +79,7 @@ from anishift.cli.interactive.anime_texts import (
 )
 from anishift.cli.interactive.anime_view import WIDE_COLUMNS, highlighted_row, overflows, shown_rows
 from anishift.cli.interactive.pointer import Click, ClickKind
+from anishift.cli.interactive.state_texts import state_word
 from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
     SubscriptionState,
@@ -1601,7 +1602,7 @@ class AnimeController:
             return
         self._sync_view()
         if result.reason == EpisodeReason.ADMITTED:
-            self._panel.result(str(result.key.number), admitted=True)
+            self._panel.result(str(result.key.number), admitted=True, status=state_word(EpisodeReason.ADMITTED))
         else:
             status, cause = refused_result(result.reason)
             self._panel.result(str(result.key.number), admitted=False, status=status, cause=cause)

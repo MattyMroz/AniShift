@@ -16,7 +16,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   w czystych `state_subscriptions.py`, `state_processing.py` (z Historią), `state_library.py` i liściu
   `state_texts.py`; importy tylko `state` → `state_*` → `state_texts`. `PANEL_ACTIONS` leży w `actions.py`.
 - `interactive/anime.py` — `AnimeController` (stan, klawisze, mysz, workery); importy `anime` → `anime_rows`/`anime_releases`
-  → liść `anime_texts` (`stated` importuje `state.refusal_text` leniwie). Render w `interactive/anime_view.py`;
+  → `anime_texts`, który importuje tylko liść `state_texts` (słownik stanów, `refusal_text`). Render w `interactive/anime_view.py`;
   `AnimePanel` posiada zaznaczenie, kopiowanie i wiersze.
 - Słowo i styl każdego stanu (odcinek, pobranie, wiersz Przetwarzania, automat) daje jeden słownik
   `state_texts.STATES` przez `state_word`/`state_style`; nie wpisuj słowa stanu literałem. Stan odcinka z owner

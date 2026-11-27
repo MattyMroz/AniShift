@@ -176,9 +176,8 @@ def _due_state(label: str, due: datetime, row: Mapping[str, object], now: dateti
     state: object = row.get("due_state")
     reason: object = row.get("due_reason")
     word: str = episode_state(state, None if reason is None else str(reason)) if isinstance(state, str) else ""
-    if not word:
-        return _plain(label)
-    text: str = f"{label} · {word}"
+    unordered: str = state_word(EpisodeReason.RESULT_MISSING if due <= now else EpisodeReason.EPISODE_NOT_AIRED)
+    text: str = f"{label} · {word or unordered}"
     if reason == EpisodeReason.SUBSCRIPTION_AWAITING_AIRING and due > now:
         return _plain(f"{text} · {_when(due, now)}")
     if reason == EpisodeReason.SUBSCRIPTION_EXHAUSTED:

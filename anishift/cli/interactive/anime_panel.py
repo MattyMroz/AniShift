@@ -8,7 +8,7 @@ from dataclasses import replace
 from prompt_toolkit.mouse_events import MouseEvent
 from rich.text import Text
 
-from anishift.application.episode_commands import MAX_EPISODE_KEYS, EpisodeReason
+from anishift.application.episode_commands import MAX_EPISODE_KEYS
 from anishift.cli.interactive.anime_clipboard import copy_text
 from anishift.cli.interactive.anime_state import (
     FLASH_SECONDS,
@@ -19,7 +19,6 @@ from anishift.cli.interactive.anime_state import (
 )
 from anishift.cli.interactive.anime_view import AnimeFrame, render_anime
 from anishift.cli.interactive.pointer import COPY_KEYS, Click, ClickKind, Gesture, PointerGesture, is_copy_press
-from anishift.cli.interactive.state_texts import state_word
 from anishift.cli.interactive.text_input import TextInput
 
 
@@ -212,14 +211,12 @@ class AnimePanel:
         self.state.notice = "Szukam wydań…"
         self.state.notice_kind = NoticeKind.INFO
 
-    def result(self, key: str, *, admitted: bool, status: str = "", cause: str = "") -> None:
-        """Apply one confirmed result and expire its acknowledgement independently."""
+    def result(self, key: str, *, admitted: bool, status: str, cause: str = "") -> None:
+        """Apply one confirmed result and its Stan word, and expire its acknowledgement independently."""
         self.state.batch_results[key] = None if admitted else cause
         self.state.searching.discard(key)
         self.state.items = tuple(
-            replace(item, status=state_word(EpisodeReason.ADMITTED) if admitted else status, eligible=not admitted)
-            if item.key == key
-            else item
+            replace(item, status=status, eligible=not admitted) if item.key == key else item
             for item in self.state.items
         )
         if admitted:

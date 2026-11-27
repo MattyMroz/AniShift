@@ -69,7 +69,7 @@ def test_selection_and_results_preserve_row_positions_and_footer(width: int) -> 
     busy: str = view.frame(width, 24).plain
     assert "⠋ Szukam" in busy
     assert "Zlecam" not in busy
-    view.result("one", admitted=True)
+    view.result("one", admitted=True, status="Zlecono")
     assert view.state.selected == {"three"}
     assert view.state.searching == {"three"}
     assert "Zlecono" in view.frame(width, 24).plain.splitlines()[top]
@@ -231,7 +231,7 @@ def test_cjk_hit_testing_preserves_whole_graphemes_and_columns() -> None:
 def test_confirmed_status_has_no_temporary_background_style() -> None:
     view: AnimePanel
     view, _, _ = panel()
-    view.result("one", admitted=True)
+    view.result("one", admitted=True, status="Zlecono")
     snapshot: AnimeSnapshot = view.state.snapshot()
     first: AnimeFrame = render_anime(snapshot, 80, 24, 10.0)
     expired: AnimeFrame = render_anime(snapshot, 80, 24, 10.41)
@@ -653,22 +653,22 @@ def test_batch_results_are_aggregated_once_and_reset_for_next_batch() -> None:
     view: AnimePanel
     view, _, _ = panel()
     view.searching(("one", "three"))
-    view.result("one", admitted=True)
+    view.result("one", admitted=True, status="Zlecono")
     assert view.state.notice == "Zlecono 1"
     assert view.state.snapshot().notice_kind is NoticeKind.SUCCESS
-    view.result("three", admitted=False)
-    view.result("one", admitted=True)
+    view.result("three", admitted=False, status="Brak pewnego wydania")
+    view.result("one", admitted=True, status="Zlecono")
     assert view.state.notice == "Zlecono 1 · nie zlecono 3 · I wydania"
     assert view.state.snapshot().notice_kind is NoticeKind.WARNING
     view.searching(("special",))
-    view.result("special", admitted=True)
+    view.result("special", admitted=True, status="Zlecono")
     assert view.state.notice == "Zlecono 7.5"
 
 
 def test_frame_removes_expired_flash_deadlines() -> None:
     clock: Mock = Mock(return_value=10.0)
     view: AnimePanel = AnimePanel(AnimeViewState(items=rows()), Mock(), clock)
-    view.result("one", admitted=True)
+    view.result("one", admitted=True, status="Zlecono")
     clock.return_value = 10.41
     view.frame(80, 24)
     assert not view.state.flashes

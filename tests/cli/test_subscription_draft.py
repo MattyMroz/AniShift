@@ -437,7 +437,12 @@ def _waiting(reason: str) -> dict[str, object]:
             },
             _plain("E8 · Czeka na wydanie"),
         ),
-        ({"due_at": _NOW.isoformat(), "due_number": 8}, _plain("E8")),
+        ({"due_at": _NOW.isoformat(), "due_number": 8}, _plain("E8 · Do pobrania")),
+        ({"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "not_ordered"}, _plain("E8 · Do pobrania")),
+        (
+            {"due_at": (_NOW + timedelta(hours=1)).isoformat(), "due_number": 8, "due_state": "not_ordered"},
+            _plain("E8 · Przed emisją"),
+        ),
         ({"catalog_status": "HIATUS"}, _plain("Przerwa w emisji")),
         ({"catalog_status": "RELEASING"}, _plain("Termin nieznany")),
         (
