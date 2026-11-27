@@ -74,6 +74,15 @@ class Recorder:
     sent: dict[str, float] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
+    @classmethod
+    def of(cls, transport: httpx.BaseTransport, responses: list[dict[str, Any]]) -> Recorder:
+        """Continue a recording, appending new answers to *responses*."""
+        rows: dict[support.RequestKey, int] = {
+            support.request_key(row["method"], httpx.URL(row["url"]), row.get("request_body")): index
+            for index, row in enumerate(responses)
+        }
+        return cls(transport, responses, rows=rows)
+
     def __call__(self, request: httpx.Request) -> httpx.Response:
         """Return the recorded answer to *request*, fetching it first when it is new."""
         with self.lock:
@@ -106,43 +115,48 @@ class Recorder:
 
 
 def record(cases: list[tuple[int, int]], directory: Path) -> None:
-    """Record the manual search and the subscription check of each case not recorded yet."""
+    """Record each new case and fetch only the answers the current code asks for and a recorded case lacks."""
     directory.mkdir(parents=True, exist_ok=True)
     transport: httpx.HTTPTransport = httpx.HTTPTransport()
     try:
         for anilist_id, number in cases:
             path: Path = directory / f"{anilist_id}-{number}.json.gz"
-            if path.exists():
+            document: dict[str, Any] = (
+                json.loads(gzip.decompress(path.read_bytes())) if path.exists() else _new_case(anilist_id, number)
+            )
+            known: int = len(document["responses"])
+            if not _record_case(Recorder.of(transport, document["responses"]), document):
                 continue
-            document: dict[str, Any] | None = _record_case(Recorder(transport), anilist_id, number)
-            if document is not None:
+            if not path.exists() or len(document["responses"]) > known:
                 path.write_bytes(gzip.compress(json.dumps(document, ensure_ascii=False).encode()))
-                print(f"{path.name}: {len(document['responses'])} responses", flush=True)
+                print(f"{path.name}: {len(document['responses']) - known} new responses", flush=True)
     finally:
         transport.close()
 
 
-def _record_case(recorder: Recorder, anilist_id: int, number: int) -> dict[str, Any] | None:
-    case: str = f"{anilist_id}-{number}"
-    document: dict[str, Any] = {
-        "case": case,
+def _new_case(anilist_id: int, number: int) -> dict[str, Any]:
+    return {
+        "case": f"{anilist_id}-{number}",
         "anilist": {"id": anilist_id},
         "number": number,
         "captured_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "notes": {},
         "modes": {},
-        "responses": recorder.responses,
+        "responses": [],
     }
+
+
+def _record_case(recorder: Recorder, document: dict[str, Any]) -> bool:
     runs: tuple[tuple[str, Any], ...] = (("manual", support.manual_search), ("subscription", support.subscription))
     for mode, run in runs:
         recorder.used.clear()
         try:
             run(document, recorder)
         except (AniShiftError, ValueError, LookupError, StopIteration) as error:
-            print(f"{case} {mode}: skipped, {error!r}", flush=True)
-            return None
-        document["modes"][mode] = sorted(recorder.used)
-    return document
+            print(f"{document['case']} {mode}: skipped, {error!r}", flush=True)
+            return False
+        document["modes"][mode] = sorted(recorder.used | set(document["modes"].get(mode, ())))
+    return True
 
 
 def decision_cases(decisions: Path) -> list[tuple[int, int]]:
