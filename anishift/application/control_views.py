@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from functools import cache
 from typing import TYPE_CHECKING, cast
 
@@ -89,6 +90,14 @@ class LibraryFile:
     identity: LibraryFileIdentity | None
 
 
+class TitleSource(StrEnum):
+    """Where the series title of a Library set comes from."""
+
+    KEY = "key"
+    RECOGNIZED = "recognized"
+    NAME = "name"
+
+
 @dataclass(frozen=True, slots=True)
 class LibrarySet:
     """Present a completed set and its selected result without substituting another file."""
@@ -105,6 +114,9 @@ class LibrarySet:
     series: str | None = None
     season: int | None = None
     episode: int | None = None
+    anilist_id: int | None = None
+    entry_title: str | None = None
+    title_source: TitleSource = TitleSource.NAME
 
 
 @dataclass(frozen=True, slots=True)

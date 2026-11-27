@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 
-from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
+from prompt_toolkit.mouse_events import MouseEvent
 from rich.text import Text
 
 from anishift.application.episode_commands import MAX_EPISODE_KEYS
@@ -264,9 +264,10 @@ class AnimePanel:
         gesture: Gesture | None = self._gesture.track(event)
         if gesture is None:
             return Click()
-        if event.event_type is MouseEventType.MOUSE_DOWN:
-            self._clear_notice()
         click: Click = self._gesture.resolve(self._frame.text if self._frame is not None else Text(), gesture)
+        if gesture.pressed:
+            return click
+        self._clear_notice()
         self.state.selection = None if click.anchor is not None else gesture.selection
         if click.kind not in {ClickKind.ROW, ClickKind.LINE, ClickKind.TOGGLE}:
             return click

@@ -77,8 +77,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `TerminalRenderer` jest jedynym ownerem aplikacji Prompt Toolkit, klawiszy i alternate screen przez całą sesję;
   nie zastępuj go `console.screen()` (Rich pomija alternate screen przy części `legacy_windows`). Zachowaj
   `mouse_support=True`; redraw do 30 fps, resize i zegar co 100 ms. `interactive/prompts.py`
-- Render nie robi I/O ani sieci (klatka odświeża się cyklicznie). Wyjątek: `_offset` i `_visible_count`, bo budżet
-  wierszy znany jest dopiero w renderze. Opóźnione zapisy sprawdza `after_render`.
+- Render nie robi I/O, sieci ani kodowania obrazów (klatka odświeża się cyklicznie); okładki bierze z pamięci
+  `CoverImages`. Wyjątek: `_offset` i `_visible_count`, bo budżet wierszy znany jest dopiero w renderze. Opóźnione zapisy sprawdza `after_render`.
   `_fit_frame` obcina KAŻDY wiersz do szerokości terminala; szerszy zawinąłby się i przesunął raster maskotki.
 - Klawisze mają jedną tabelę `_NORMALISED_KEYS`. Na Windowsie klawisz specjalny ma puste `data`, więc `Keys.Any`
   zlepia je w `"any"` — nowy klawisz MUSI dostać własny binding. Paste: `Keys.BracketedPaste` → `paste:`.
@@ -148,7 +148,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `target_not_waiting` odświeża stany. Czas wyniku sprawdzenia mierzy wstrzyknięty zegar (`CHECK_SHOWN_S`). Zmiana
   zakładki porzuca kontekst subskrypcji z edytorem zakresu i zaznaczeniami, nie przyjętą partię. Układ i teksty:
   `test_subscriptions_panel.py`, `test_subscription_draft.py`.
-- Przetwarzanie używa `_processing_rows` do renderu, wyboru i akcji. Wiersz zlecenia wymaga dowodu rozpoczętej,
+- Przetwarzanie używa `_processing_rows` do renderu, wyboru i akcji. Wiersz z `entry_title` ownera nazywa
+  `state_library.episode_name` jak Biblioteka („<tytuł wpisu> · SxxEyy · <tytuł odcinka>”, tytuł odcinka z
+  `_episode_info`, czytany raz na wpis po wejściu na zakładkę); bez wpisu zostaje nazwa pliku. Wiersz zlecenia wymaga dowodu rozpoczętej,
   nieterminalnej pracy (`RichRunProgress.group_active`); `accepted` może mieć wykonujące się taski, sam cache postępu
   nie wystarcza; żywe zlecenie bez taska to przygotowanie. Niepewne pobrania nie trafiają do wierszy. Hashe tylko
   ze snapshotów ownera. Nieznane fakty zostają nieznane; brak odczytu zachowuje ostatnie zweryfikowane wartości.
@@ -176,6 +178,35 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Etykiety z `library_label` fasady i pól `series/season/episode` (`state_library._series_label`), inaczej z pliku.
   Brak akcji P i wiersza relokacji — owner sam ponawia relokacje. Odmowy przeżywają obce snapshoty, nie zmianę
   wyboru; spóźniony wynik nie nadpisze nowszego kontekstu. Testy: `test_library_actions.py`, `test_library_columns.py`.
+- Biblioteka ma dwa poziomy: tytuły (`library_titles`: `entry:<id>` jeden wiersz na wpis AniList z `entry_title`, `name:<tytuł>`,
+  „Nie rozpoznano” na końcu) i odcinki otwartego tytułu (`_library_title`, prezentacja `AnimeScreen.EPISODES`,
+  okruszki `Biblioteka › <tytuł>`). Esc/Backspace/okruszek wracają na ten sam tytuł; zmiana zakładki zamyka tytuł,
+  zaznaczenia, pole `/` i pytanie, filtr zostaje. `/` dopasowuje tytuł wiersza, `series`, tytuł z nazwy i `name`
+  zestawów. Gdy zestawy otwartego albo zaznaczonego tytułu przechodzą pod inny klucz (rozpoznanie `name:` →
+  `entry:<id>`), `_follow_title` idzie za nimi i pokazuje „Przeniesiono do <tytuł>”. Tytuły i daty odcinków czyta wątek `anishift-library-episodes`
+  własną sesją; wynik innego tytułu ginie. Del więcej niż jednego zestawu pyta (`_library_confirm`), potem jeden wątek
+  i jedna sesja usuwają zestaw po zestawie; odmowa jednego wraca sama. Testy: `test_library_titles.py`.
+- Okładka: slot stałego rozmiaru stoi po lewej, okładka i tabela są wyśrodkowane jako blok z odstępem
+  `_COVER_GAP`, a margines od krawędzi nie spada poniżej odstępu; przy braku miejsca najpierw skraca się tytuł,
+  potem znika okładka (`anime_view._layout`). Blok wyśrodkowuje się w pionie z wysokością slotu, a okruszki i
+  podsumowanie nad tabelą stoją na środku bloku. Pas slotu zaczyna się od nagłówka kolumn (w Przetwarzaniu od
+  pierwszego wiersza) i kończy nad stopką; slot nigdy nie wchodzi na okruszki, podsumowanie ani stopkę. Gdy
+  wszystkie wiersze mają tę samą okładkę (odcinki jednego tytułu), slot stoi nieruchomo na środku wierszy listy;
+  inaczej jest wyśrodkowany na podświetlonym wierszu (hover z `FrameSelection.hovered_row`, inaczej kursor;
+  `highlighted_row`). Przy krótkiej liście dokleja się do krawędzi pasa; kursor przewinięty poza widok trzyma
+  swoją okładkę przy krawędzi pasa od swojej strony, więc slot nie znika, a blok nie skacze. Tabele (`render_anime`) i lista
+  Przetwarzania (`_list_lines`) podają tylko wiersze nad pasem i wiersze treści: pas zaczyna się od pierwszego
+  wiersza treści (w tabeli nagłówka kolumn), a pionowe wyśrodkowanie, pas i to, czy slot się mieści, liczy jedno
+  `cover_block`; wiersz, krawędź i kotwicę `place_cover`, kolumny `beside_cover` i `cover_columns`, okładkę
+  `_place_cover`.
+  `StateController.cover()` zwraca obraz tego wiersza. Każdy snapshot ownera i każdy render wołają
+  `CoverImages.prepare`; jedyny wątek `anishift-cover` najpierw wczytuje zapisane ładunki SIXEL
+  (`config/covers/sixel/<id>-<komórka>-v<wersja>.six`, zapis atomowy; wpis nieczytelny albo starszy niż jpg = brak),
+  dopiero potem koduje brakujące i zapisuje je na dysk. `CoverImages.image` bierze okładkę tylko z pamięci: gdy jej
+  nie ma, zwraca `None`, a okładka dostaje pierwszeństwo w kolejce i po przygotowaniu woła `changed`
+  (`invalidate`); slot zostaje zarezerwowany, więc układ nie skacze. Potwierdzenie Del (`_library_confirm`) nie ma slotu. Bez SIXEL,
+  miejsca albo okładki w snapshot `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py` (układ),
+  `test_raster.py` (rysowanie).
 
 ## Auto, postęp i maskotka
 
@@ -192,15 +223,27 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Home: `Panel`, `Ręczny`, `Ustawienia`, `Wyjście`. Mutacje `settings.json`, `presets.json` i `.env` idą przez
   `AppService`. Manual trzyma drafty lokalnie, rejestruje pliki zewnętrzne przez `AppService`, waliduje
   `plan_manual()` i wykonuje ścieżką Auto. Wynik niepełny pokazuje się przez sanitizację w tym samym rendererze.
-- Maskotkę animuje `TerminalRenderer.after_render`; konstruktor nie koduje obrazu, `run()` sprawdza SIXEL i metryki
+- Maskotkę animuje `TerminalRenderer.before_render`; konstruktor nie koduje obrazu, `run()` sprawdza SIXEL i metryki
   przed pętlą wejścia, bez placeholdera. Rozmiar w WIERSZACH (`MASCOT_FRAME_ROWS` × wysokość komórki), nie w
-  pikselach. `native_mascot_cell()` pyta terminal tylko przy `isatty`, przywraca `ConsoleMode`, ma 250 ms; nie czytaj
+  pikselach. `native_image.native_cell()` pyta terminal tylko przy `isatty`, przywraca `ConsoleMode`, ma 250 ms; nie czytaj
   raportów terminala z workera ani przy klawiszach. Rezerwacja i kasowanie: `cell_rows`/`cell_columns`, wordmark:
   `layout_rows`. Przesunięcie w prawo wspólne dla animacji (`_shared_right_shift`). `MascotController` nie ma
   workera ani zapisu do terminala. VS Code wymaga śledzonego `terminal.integrated.enableImages=true`.
-- Zniknięcie lub ruch rastra obsługuje `before_render`: `reset(leave_alternate_screen=False)` + buforowane `\x1b[2J`
-  z nową klatką; domyślne `reset()` odsłania starą konsolę, końcowy redraw (`is_done`) nie maluje rastra. Nie używaj
-  `RIS` ani `\x1b[3J` — kasują historię użytkownika. `interactive/prompts.py`
+- Renderer ma jeden slot obrazu (`NATIVE_IMAGE_ANCHOR`, kolumna liczona w komórkach); obraz klatki daje
+  `image_provider` aplikacji (panel: okładka, reszta: maskotka). Okładkę i maskotkę rysuje i kasuje tylko
+  `interactive/raster.py`, w zapisie samego Prompt Toolkit, bez osobnego zapisu w `after_render`: komórki slotu są
+  spacjami ze stylem `class:raster-slot`, których żadna klatka nie używa, więc Prompt Toolkit nigdy w nich nie pisze;
+  SIXEL jedzie jako `[ZeroWidthEscape]` (z `\x1b7`/`\x1b8`) przy komórce tuż za ostatnim wierszem slotu, której styl
+  zmienia się z każdym nowym obrazem albo miejscem, więc Prompt Toolkit wypisuje go po tekście slotu w tej samej
+  różnicy. Spacje, które zakrywał poprzedni obraz, dostają w następnej klatce styl `class:raster-release`, więc
+  Prompt Toolkit je nadpisuje (pisanie znaku kasuje piksele komórki). Styl liczony jako treść daje tylko kolor
+  (`fg:ansidefault`): Prompt Toolkit przycina końcowe spacje ze stylem bez koloru (także `bold`) przez `\x1b[K`, a
+  `\x1b[K`, `\x1b[J` i ECH nie kasują pikseli. Zmiana rozmiaru i wyjście (`is_done`) przy narysowanym obrazie
+  dają w `_drop_raster` `reset(leave_alternate_screen=False)` + buforowane `\x1b[2J`; pełne przerysowanie przy tym
+  samym rozmiarze pisze każdą komórkę slotu i nośnik, więc nie potrzebuje kasowania. Domyślne `reset()` odsłania
+  starą konsolę. Nie używaj `RIS` ani `\x1b[3J` — kasują
+  historię użytkownika. Testy: `test_raster.py` z modelem ekranu `terminal_model.py` (bajty wyjścia → siatka
+  komórek tekstu i pikseli, sprawdzana po każdym zapisie).
 
 ## Ustawienia
 

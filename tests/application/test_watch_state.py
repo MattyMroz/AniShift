@@ -56,7 +56,13 @@ from anishift.application.subscription_targets import (
     SubscriptionTarget,
     TargetState,
 )
-from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore, watch_state_path
+from anishift.application.watch_state import (
+    WATCH_STATE_FILE_NAME,
+    WatchStateStore,
+    load_recognized,
+    save_recognized,
+    watch_state_path,
+)
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode
 
@@ -813,3 +819,36 @@ def test_the_state_lives_beside_the_other_watch_files() -> None:
     assert path.name == WATCH_STATE_FILE_NAME
     assert path.parent.name == "watch"
     assert path.parent.parent.name == "config"
+
+
+def test_recognition_cache_reads_back_what_it_saved_beside_the_state(tmp_path: Path) -> None:
+    store: WatchStateStore = WatchStateStore(tmp_path / "watch" / WATCH_STATE_FILE_NAME)
+    recognized: dict[tuple[str, int], int | None] = {("zażółć show", 2): 7, ("unknown show", 1): None}
+
+    save_recognized(store.recognition_path(), recognized)
+
+    assert store.recognition_path().parent == tmp_path / "watch"
+    assert load_recognized(store.recognition_path()) == recognized
+    assert not store.recognition_path().with_name(f"{store.recognition_path().name}.tmp").exists()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"{not json",
+        b"\xff\xfe",
+        b"[]",
+        b'{"version": 2, "titles": []}',
+        b'{"version": 1, "titles": {}}',
+        b'{"version": 1, "titles": [["show", 1]]}',
+        b'{"version": 1, "titles": [["show", true, 1]]}',
+        b'{"version": 1, "titles": [["show", 1, "7"]], "extra": 1}',
+        b'{"version": 1, "titles": [["show", 1, 7], [3, 1, 7]]}',
+    ],
+)
+def test_unreadable_recognition_cache_reads_as_empty(tmp_path: Path, content: bytes) -> None:
+    path: Path = tmp_path / "recognition.json"
+    path.write_bytes(content)
+
+    assert load_recognized(path) == {}
+    assert load_recognized(tmp_path / "missing.json") == {}

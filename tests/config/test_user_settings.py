@@ -145,6 +145,15 @@ def test_processing_order_roundtrip_preserves_strict_policy(config_file: Path) -
     assert load_user_settings().processing_order_policy == "strict_natural"
 
 
+def test_covers_switch_defaults_on_and_saves_off(config_file: Path) -> None:
+    del config_file
+    assert load_user_settings().show_covers is True
+
+    save_user_settings(UserSettings(show_covers=False))
+
+    assert load_user_settings().show_covers is False
+
+
 def test_load_corrupt_json_returns_defaults(config_file: Path) -> None:
     config_file.write_text("{ not valid json ", encoding="utf-8")
     assert load_user_settings() == UserSettings()

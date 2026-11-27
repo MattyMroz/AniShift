@@ -101,6 +101,12 @@ WATCH_STATE_FILE_NAME: Final[str] = "state.json"
 _BACKUP_SUFFIX: Final[str] = ".bak"
 """Ending of the copy kept from the last state that could be read back."""
 
+RECOGNITION_FILE_NAME: Final[str] = "recognition.json"
+"""Filename of the cache of hand-added Library titles searched in AniList, beside the automation state."""
+
+_RECOGNITION_VERSION: Final[int] = 1
+"""Format version of the recognition cache; any other version reads as an empty cache."""
+
 _SUBSCRIPTION_KEYS: Final[frozenset[str]] = frozenset(
     {
         "subscription_id",
@@ -397,6 +403,45 @@ def watch_state_path() -> Path:
     return watch_dir() / WATCH_STATE_FILE_NAME
 
 
+def load_recognized(path: Path) -> dict[tuple[str, int], int | None]:
+    """Read the AniList entry, or no match, of each searched title and season; an unreadable cache reads empty."""
+    try:
+        stored: object = json.loads(path.read_bytes())
+    except OSError, ValueError:
+        return {}
+    titles: object = stored.get("titles") if isinstance(stored, dict) else None
+    if not isinstance(stored, dict) or stored.get("version") != _RECOGNITION_VERSION or not isinstance(titles, list):
+        return {}
+    recognized: dict[tuple[str, int], int | None] = {}
+    for item in titles:
+        match item:
+            case [str() as title, int() as season, None | int() as entry] if not isinstance(season, bool) and not (
+                isinstance(entry, bool)
+            ):
+                recognized[title, season] = entry
+            case _:
+                return {}
+    return recognized
+
+
+def save_recognized(path: Path, recognized: Mapping[tuple[str, int], int | None]) -> None:
+    """Replace the recognition cache with *recognized* in one atomic step."""
+    titles: list[list[object]] = [[title, season, entry] for (title, season), entry in sorted(recognized.items())]
+    _staged(path, json.dumps({"version": _RECOGNITION_VERSION, "titles": titles}, ensure_ascii=False) + "\n").replace(
+        path
+    )
+
+
+def _staged(path: Path, payload: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path = path.with_name(f"{path.name}{_TEMPORARY_SUFFIX}")
+    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return temporary
+
+
 def _fresh_state() -> WatchState:
     """Answer a never-stored configuration, where automation works without anybody switching it on."""
     return WatchState(policy=AutomationPolicy(auto_enabled=True))
@@ -420,6 +465,10 @@ class WatchStateStore:
         """Locate the nonauthoritative operational journal beside this owner's state."""
         return self._path.parent / "history.jsonl"
 
+    def recognition_path(self) -> Path:
+        """Locate the cache of hand-added Library titles searched in AniList beside this owner's state."""
+        return self._path.parent / RECOGNITION_FILE_NAME
+
     def load(self) -> WatchState:
         """Read the stored automation state, answering a fresh one only when none was ever stored."""
         self._readable = False
@@ -441,13 +490,7 @@ class WatchStateStore:
         self._write(state)
 
     def _write(self, state: WatchState) -> None:
-        payload: str = json.dumps(_encode_state(state), indent=2, ensure_ascii=False) + "\n"
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary: Path = self._path.with_name(f"{self._path.name}{_TEMPORARY_SUFFIX}")
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
+        temporary: Path = _staged(self._path, json.dumps(_encode_state(state), indent=2, ensure_ascii=False) + "\n")
         self._back_up()
         temporary.replace(self._path)
         self._readable = True

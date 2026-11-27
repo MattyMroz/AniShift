@@ -18,17 +18,15 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import FormattedTextControl, Layout, Window
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import ColorDepth
+from rich.cells import cell_len
 from rich.console import Console
 from rich.text import Text
 
 from anishift.cli.interactive.mascot import mascot_art
-from anishift.cli.interactive.mascot_native import (
-    NATIVE_MASCOT_ANCHOR,
-    NativeMascotImage,
-    load_native_mascot,
-    native_mascot_cell,
-)
+from anishift.cli.interactive.mascot_native import load_native_mascot
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage, native_cell
 from anishift.cli.interactive.palette import BRAND_THEME
+from anishift.cli.interactive.raster import Slot, image_write, raster_frame
 from anishift.utils.rich_console.theme import RICH_THEME
 
 if sys.platform == "win32":
@@ -148,17 +146,8 @@ _VT_CTRL_BACKSPACE: Final[str] = "\x08"
 _CONSOLE_CTRL_BACKSPACE: Final[str] = "\x7f"
 """Ctrl+Backspace data from the Windows console event reader, where plain Backspace sends BS."""
 
-_SAVE_CURSOR: Final[str] = "\x1b7"
-"""VT sequence preserving Prompt Toolkit's current cursor position."""
-
-_RESTORE_CURSOR: Final[str] = "\x1b8"
-"""VT sequence restoring Prompt Toolkit's current cursor position."""
-
-_ERASE_ROW: Final[str] = "\x1b[{row};{column}H\x1b[m{blanks}"
-"""Row erase that overwrites cells, because ECH leaves the image raster behind."""
-
 _CLEAR_SCREEN: Final[str] = "\x1b[2J"
-"""Alternate screen clear, the only sequence that drops the image raster."""
+"""Alternate screen clear, the only erase sequence that drops the image raster."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,20 +240,22 @@ class TerminalRenderer:
         *,
         mouse_handler: Callable[[MouseEvent], None] | None = None,
         hover_handler: Callable[[MouseEvent], bool] | None = None,
+        image_provider: Callable[[], NativeImage | None] | None = None,
         use_mascot: bool = True,
     ) -> None:
         self._frame_provider: Callable[[int, int], Text] = frame_provider
         self._key_handler: Callable[[str], None] = key_handler
         self._idle_handler: Callable[[], None] | None = idle_handler
+        self._image_provider: Callable[[], NativeImage | None] | None = image_provider
         self._use_mascot: bool = use_mascot
         self._render_width: int = 0
         self._render_stream: StringIO | None = None
         self._rich_console: Console | None = None
-        self._native_mascot: NativeMascotImage | None = None
+        self._native_cell: tuple[int, int] | None = None
+        self._native_mascot: NativeImage | None = None
         self._native_animation_started_at: float = time.monotonic()
-        self._native_position: tuple[int, int] | None = None
-        self._native_drawn_position: tuple[int, int] | None = None
-        self._native_drawn_payload: str | None = None
+        self._drawn: tuple[Slot, str] | None = None
+        self._parity: int = 0
         self._terminal_size: tuple[int, int] | None = None
         self._prepared_frame: AnyFormattedText = ""
         bindings: KeyBindings = self._key_bindings()
@@ -297,11 +288,21 @@ class TerminalRenderer:
 
     @property
     def native_mascot_size(self) -> tuple[int, int] | None:
-        """Return the cells this session reserves for its native image, if any."""
-        image: NativeMascotImage | None = self._native_mascot
+        """Return the cells this session reserves for its native mascot, if any."""
+        image: NativeImage | None = self._native_mascot
         if image is None:
             return None
         return image.cell_columns, image.cell_rows
+
+    @property
+    def native_mascot(self) -> NativeImage | None:
+        """Return the encoded native mascot, or None without SIXEL."""
+        return self._native_mascot
+
+    @property
+    def native_cell(self) -> tuple[int, int] | None:
+        """Return the pixel size of one cell of a SIXEL terminal, or None without SIXEL."""
+        return self._native_cell
 
     @property
     def animation_phase(self) -> int:
@@ -312,7 +313,8 @@ class TerminalRenderer:
 
     def run(self) -> None:
         """Run the terminal event loop until the user exits."""
-        cell: tuple[int, int] | None = native_mascot_cell() if self._use_mascot else None
+        cell: tuple[int, int] | None = native_cell() if self._use_mascot else None
+        self._native_cell = cell
         if cell is not None:
             self._native_mascot = load_native_mascot(cell_size=cell, query_terminal=False)
         if self._native_mascot is None and self._use_mascot:
@@ -326,83 +328,68 @@ class TerminalRenderer:
 
     def exit(self) -> None:
         """Finish the active interactive application."""
-        self._native_position = None
-        if self._native_drawn_position is not None:
-            self._clear_screen()
-            self._native_drawn_position = None
-            self._native_drawn_payload = None
         self._application.exit()
+
+    def _current_image(self) -> NativeImage | None:
+        return self._image_provider() if self._image_provider is not None else self._native_mascot
 
     def _before_render(self, application: Application[None]) -> None:
         if application.is_done:
             self._prepared_frame = ""
-            self._native_position = None
-            self._erase_native_mascot()
+            self._drop_raster()
             return
-        self._prepared_frame = self._formatted_frame()
-        if self._native_drawn_position != self._native_position:
-            self._erase_native_mascot()
-
-    def _formatted_frame(self) -> AnyFormattedText:
-        size = self._application.output.get_size()
+        size = application.output.get_size()
         columns: int = max(size.columns, 1)
         rows: int = max(size.rows, 1)
         frame: Text = self._frame_provider(columns, rows)
         anchor: tuple[int, int] | None = _native_anchor(frame.plain)
-        position: tuple[int, int] | None = None
-        if anchor is not None and self._native_mascot is not None:
-            position = (anchor[0], anchor[1] + _MASCOT_NUDGE_COLUMNS)
+        image: NativeImage | None = None
+        if anchor is not None:
+            image = self._current_image()
             frame = frame.copy()
-            frame.plain = frame.plain.replace(NATIVE_MASCOT_ANCHOR, " ")
+            frame.plain = frame.plain.replace(NATIVE_IMAGE_ANCHOR, " ")
+        if (columns, rows) != self._terminal_size:
+            self._drop_raster()
         self._terminal_size = (columns, rows)
-        self._native_position = position
-        render_console, stream = self._render_target(columns)
-        stream.seek(0)
-        stream.truncate(0)
-        render_console.print(frame, end="", soft_wrap=True)
-        return ANSI(stream.getvalue())
+        drawn: tuple[Slot, str] | None = None
+        if anchor is not None and image is not None:
+            nudge: int = _MASCOT_NUDGE_COLUMNS if image is self._native_mascot else 0
+            slot: Slot = Slot(anchor[0], anchor[1] + nudge, image.cell_columns, image.cell_rows)
+            payload: str = image.payload_at(time.monotonic() - self._native_animation_started_at)
+            drawn = (slot, payload) if slot.fits(columns, rows) else None
+        if drawn is not None and drawn != self._drawn:
+            self._parity ^= 1
+        self._prepared_frame = raster_frame(
+            to_formatted_text(ANSI(self._ansi(frame, columns))),
+            None if drawn is None else drawn[0],
+            "" if drawn is None or image is None else image_write(drawn[0], drawn[1], opaque=image.opaque),
+            None if self._drawn is None else self._drawn[0],
+            parity=self._parity,
+        )
+        self._drawn = drawn
 
     def _after_render(self, application: Application[None]) -> None:
         if application.is_done:
             return
-        self._draw_native_mascot(application)
-        # The loop refreshes on its own interval, so this is the only place a
-        # deferred write can run without doing I/O inside frame construction.
         if self._idle_handler is not None:
             self._idle_handler()
 
-    def _draw_native_mascot(self, application: Application[None]) -> None:
-        image: NativeMascotImage | None = self._native_mascot
-        position: tuple[int, int] | None = self._native_position
-        if image is None:
+    def _drop_raster(self) -> None:
+        """Clear the screen before Prompt Toolkit redraws all of it, the one erase that removes every image pixel."""
+        if self._drawn is None:
             return
-        if position is None:
-            return
-        row, column = position
-        output = application.output
-        elapsed_seconds: float = time.monotonic() - self._native_animation_started_at
-        payload: str = image.payload_at(elapsed_seconds)
-        if payload == self._native_drawn_payload and position == self._native_drawn_position:
-            return
-        erase: str = _native_erase_sequence(position, image.cell_columns, image.cell_rows)
-        output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
-        output.flush()
-        self._native_drawn_position = position
-        self._native_drawn_payload = payload
-
-    def _erase_native_mascot(self) -> None:
-        if self._native_drawn_position is None:
-            return
-        self._application.renderer.reset(leave_alternate_screen=False)
-        # Flush the raster clear together with the next text frame.
+        renderer = self._application.renderer
+        if renderer._last_screen is not None:
+            renderer.reset(leave_alternate_screen=False)
         self._application.output.write_raw(_CLEAR_SCREEN)
-        self._native_drawn_position = None
-        self._native_drawn_payload = None
+        self._drawn = None
 
-    def _clear_screen(self) -> None:
-        output = self._application.output
-        output.write_raw(_CLEAR_SCREEN)
-        output.flush()
+    def _ansi(self, frame: Text, columns: int) -> str:
+        render_console, stream = self._render_target(columns)
+        stream.seek(0)
+        stream.truncate(0)
+        render_console.print(frame, end="", soft_wrap=True)
+        return stream.getvalue()
 
     def _render_target(self, columns: int) -> tuple[Console, StringIO]:
         if self._rich_console is not None and self._render_stream is not None and columns == self._render_width:
@@ -462,22 +449,13 @@ def _ctrl_backspace_data(terminal_input: Input) -> str:
 
 
 def _native_anchor(frame: str) -> tuple[int, int] | None:
-    marker_index: int = frame.find(NATIVE_MASCOT_ANCHOR)
+    marker_index: int = frame.find(NATIVE_IMAGE_ANCHOR)
     if marker_index < 0:
         return None
     prefix: str = frame[:marker_index]
     row: int = prefix.count("\n")
-    column: int = len(prefix.rsplit("\n", maxsplit=1)[-1])
+    column: int = cell_len(prefix.rsplit("\n", maxsplit=1)[-1])
     return row, column
-
-
-def _native_erase_sequence(position: tuple[int, int], columns: int, rows: int) -> str:
-    """Overwrite only terminal cells occupied by the previous native frame."""
-    row, column = position
-    blanks: str = " " * max(columns, 1)
-    return "".join(
-        _ERASE_ROW.format(row=row + offset + 1, column=column + 1, blanks=blanks) for offset in range(max(rows, 1))
-    )
 
 
 def resolve_home_geometry(

@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Final
 
 from PIL import Image
 
 from anishift.application.cancellation import CancellationToken
-from anishift.application.episode_selection import AniZipMapping, FranchiseGraph, JsonObject, ListedEpisode
+from anishift.application.episode_selection import (
+    AniZipMapping,
+    FranchiseGraph,
+    JsonObject,
+    LibraryGraph,
+    ListedEpisode,
+)
 from anishift.application.events import RunEvent
 from anishift.application.planning import PlanTask, RunSettingsSnapshot, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
@@ -156,6 +162,9 @@ class FakeEpisodeCatalogue:
     def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
         raise AssertionError((text, limit))
 
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
+        raise AssertionError((texts, limit))
+
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         return ()
 
@@ -177,6 +186,18 @@ class FakeEpisodeCatalogue:
             "startDate": {"year": 2020, "month": 1, "day": 1},
         }
         return FranchiseGraph(anilist_id, {anilist_id: node}, frozenset({anilist_id}), True)
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        graphs: list[FranchiseGraph] = [self.franchise(anilist_id) for anilist_id in anilist_ids]
+        return LibraryGraph(
+            {key: node for graph in graphs for key, node in graph.nodes.items()}, frozenset(anilist_ids)
+        )
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        return {}
+
+    def cover(self, url: str) -> bytes:
+        raise AssertionError(url)
 
     def mapping(self, anilist_id: int) -> AniZipMapping:
         if self.down:

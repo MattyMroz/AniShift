@@ -12,6 +12,7 @@ import typer
 
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, run_exit_code
 from anishift.errors import AniShiftError
+from anishift.paths import covers_dir
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
 from anishift.setup.fonts import install_fonts
 from anishift.setup.installer import run_setup
@@ -233,7 +234,7 @@ def _watch(ctx: typer.Context) -> None:
         raise typer.Exit(code=EXIT_REFUSED)
     service: AppService = _composed_service(managed_torrents=True)
     _tell(_WATCH_STARTED)
-    raise typer.Exit(code=run_resident(service, state_dir=state_dir, enable_tray=True))
+    raise typer.Exit(code=run_resident(service, state_dir=state_dir, enable_tray=True, cover_dir=covers_dir()))
 
 
 def _tell(sentence: str) -> None:
@@ -271,7 +272,12 @@ def watch_resident() -> None:
     from anishift.cli.watch import run_resident, watch_state_dir  # noqa: PLC0415 - keep the loop lazy
 
     raise typer.Exit(
-        code=run_resident(_composed_service(managed_torrents=True), state_dir=watch_state_dir(), enable_tray=True)
+        code=run_resident(
+            _composed_service(managed_torrents=True),
+            state_dir=watch_state_dir(),
+            enable_tray=True,
+            cover_dir=covers_dir(),
+        )
     )
 
 

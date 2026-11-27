@@ -1,0 +1,347 @@
+from __future__ import annotations
+
+import threading
+from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime
+from typing import cast
+
+import pytest
+from test_interactive_mouse import _click
+from test_panel_keys import _app, _label_point, _list_probe, _Probe
+
+from anishift.application import EpisodeListing, ListedEpisode, TitleCandidate
+from anishift.application.episode_selection import LibraryGraph
+from anishift.application.library import LibrarySeries, library_series
+from anishift.cli.interactive import state as state_module
+from anishift.cli.interactive import state_library
+from anishift.cli.interactive.anime_rows import title_rows
+from anishift.cli.interactive.pointer import CRUMB_SEPARATOR
+from anishift.cli.interactive.state import StateController
+from anishift.cli.resident import ResidentSession
+from anishift.services.catalog import TitleStatus
+
+pytestmark = pytest.mark.unit
+
+
+def _keyed(
+    set_id: str, anilist_id: int, episode: int, *, entry_title: str | None = "Blue Box Season 2", season: int = 2
+) -> dict[str, object]:
+    known: bool = entry_title is not None
+    return {
+        "set_id": set_id,
+        "name": f"[Grp] File Name {anilist_id} - {episode:02} [1080p]",
+        "series": "Blue Box" if known else None,
+        "season": season if known else None,
+        "episode": episode if known else None,
+        "anilist_id": anilist_id,
+        "entry_title": entry_title,
+        "title_source": "key",
+    }
+
+
+def _hand(set_id: str, name: str) -> dict[str, object]:
+    return {"set_id": set_id, "name": name, "title_source": "name"}
+
+
+def _keys(snapshot: Mapping[str, object]) -> list[str]:
+    return [item.key for item in state_library.library_titles(snapshot)]
+
+
+class _Episodes:
+    def __init__(self) -> None:
+        self.release: threading.Event = threading.Event()
+        self.read: list[int] = []
+
+    def new_session(self) -> _Episodes:
+        return self
+
+    def close(self) -> None:
+        return
+
+    def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
+        return {"subscriptions": []}
+
+    def episodes(self, anilist_id: int) -> EpisodeListing:
+        self.read.append(anilist_id)
+        assert self.release.wait(5)
+        moment: datetime = datetime(2026, 4, 1, 12, tzinfo=UTC)
+        return EpisodeListing(
+            anilist_id,
+            None,
+            None,
+            "FINISHED",
+            2,
+            (ListedEpisode(1, title_en="First", airs_at=moment),),
+            (),
+            1,
+            None,
+            None,
+        )
+
+
+@pytest.fixture
+def panel(monkeypatch: pytest.MonkeyPatch) -> Iterator[StateController]:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", _Episodes()), lambda: None)
+    monkeypatch.setattr(controller, "_work", lambda action, **options: None)
+    controller._tab = state_module._Tab.FILES
+    controller._connected = True
+    controller._episode_info = {1: {}, 2: {}, 5: {}, 6: {}}
+    try:
+        yield controller
+    finally:
+        controller.close()
+        controller._thread.join(5)
+        for thread in threading.enumerate():
+            if thread.name == "anishift-library-episodes":
+                thread.join(5)
+
+
+def test_each_season_entry_is_its_own_title_with_its_cover() -> None:
+    snapshot: Mapping[str, object] = {
+        "library": [
+            _keyed("s3", 2, 1, season=3, entry_title="Blue Box Season 3"),
+            _keyed("s2b", 1, 12),
+            _keyed("s2a", 1, 11),
+        ]
+    }
+
+    titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot)
+
+    assert [(item.key, item.title, len(item.sets), item.cover_id) for item in titles] == [
+        ("entry:1", "Blue Box Season 2", 2, 1),
+        ("entry:2", "Blue Box Season 3", 1, 2),
+    ]
+
+
+def test_one_anilist_entry_has_one_title_in_the_anime_search_and_the_library() -> None:
+    node: dict[str, object] = {
+        "id": 2,
+        "type": "ANIME",
+        "format": "TV",
+        "title": {"romaji": "Ao no Hako 2nd Season", "english": "Blue Box Season 2 "},
+    }
+    series: dict[int, LibrarySeries] = library_series(LibraryGraph({2: node}, frozenset({2})), (2,))
+    candidate: TitleCandidate = TitleCandidate(
+        2, "Ao no Hako 2nd Season", "Blue Box Season 2 ", None, (), 2026, None, "TV", 12, TitleStatus.RELEASING, ()
+    )
+    library: list[state_library.LibraryTitle] = state_library.library_titles(
+        {"library": [_keyed("a", 2, 1, entry_title=series[2].entry_title)]}
+    )
+
+    assert title_rows((candidate,))[0].title == library[0].title == "Blue Box Season 2"
+
+
+def test_entry_without_a_known_series_groups_by_entry_under_its_file_title() -> None:
+    snapshot: Mapping[str, object] = {
+        "library": [
+            _keyed("a", 5, 1, entry_title=None),
+            _keyed("b", 5, 2, entry_title=None),
+            _keyed("c", 6, 1, entry_title=None),
+        ]
+    }
+
+    assert _keys(snapshot) == ["entry:5", "entry:6"]
+
+
+def test_hand_added_spellings_of_one_title_join_by_name() -> None:
+    snapshot: Mapping[str, object] = {
+        "library": [_hand("a", "[Grp] Blue Box - 01 [1080p]"), _hand("b", "Blue.Box.S01E02.1080p.WEB-DL")]
+    }
+
+    titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot)
+
+    assert [(item.key, len(item.sets)) for item in titles] == [("name:blue box", 2)]
+
+
+def test_hand_added_title_shows_from_name() -> None:
+    titles: list[state_library.LibraryTitle] = state_library.library_titles(
+        {"library": [_hand("a", "[Grp] Blue Box - 01 [1080p]")]}
+    )
+
+    assert state_library.title_row(titles[0]).status == "z nazwy"
+    assert titles[0].from_name
+    assert titles[0].cover_id is None
+
+
+def test_unparsed_names_go_to_the_unrecognized_row_last() -> None:
+    snapshot: Mapping[str, object] = {
+        "library": [_hand("z", "zeta_notes"), _hand("a", "[Grp] Abc - 01 [1080p]"), _hand("m", "moj_film")]
+    }
+
+    titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot)
+
+    assert [item.title for item in titles] == ["Abc", "Nie rozpoznano"]
+    assert len(titles[-1].sets) == 2
+    assert state_library.title_row(titles[-1]).status == "Gotowe"
+
+
+def test_hidden_and_deleting_sets_leave_their_title() -> None:
+    snapshot: Mapping[str, object] = {
+        "library": [_keyed("a", 1, 1), _keyed("b", 1, 2), _keyed("c", 1, 3)],
+        "deletions": [{"operation_id": "op", "set_id": "c", "active": True}],
+    }
+
+    titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot, hidden=("a",))
+
+    assert [state_library.library_row_id(item) for item in titles[0].sets] == ["b"]
+    assert state_library.library_titles(snapshot, hidden=("a", "b")) == []
+
+
+def test_problem_sets_are_counted_in_the_state_column() -> None:
+    snapshot: Mapping[str, object] = {
+        "library": [_keyed("a", 1, 1)],
+        "library_problems": [{**_keyed("b", 1, 2), "available": False, "problem": "library_result_missing"}],
+    }
+
+    row = state_library.title_row(state_library.library_titles(snapshot)[0])
+
+    assert (row.number, row.status) == ("2", "1 do sprawdzenia")
+
+
+def test_filter_keeps_titles_containing_the_normalized_text(panel: StateController) -> None:
+    panel._snapshot = {
+        "library": [_hand("a", "[Grp] Blue Box - 01"), _hand("b", "[Grp] Re-Zero - 01"), _hand("c", "[Grp] Zeta - 01")]
+    }
+
+    panel.handle_key("text:/")
+    for letter in "rezero":
+        panel.handle_key(f"text:{letter}")
+    typed: list[str] = [item.title for item in panel._titles()]
+    panel.handle_key("enter")
+    kept: str = panel.render(80, 24).plain
+    panel.handle_key("text:/")
+    panel.handle_key("escape")
+
+    assert typed == ["Re-Zero"]
+    assert panel._library_query == ""
+    assert "Filtr: rezero" in kept
+    assert "Blue Box" not in kept
+    assert [item.title for item in panel._titles()] == ["Blue Box", "Re-Zero", "Zeta"]
+
+
+def test_enter_opens_the_title_and_escape_returns_to_it(panel: StateController) -> None:
+    panel._snapshot = {"library": [_hand("a", "[Grp] Abc - 01"), _keyed("b", 1, 2), _keyed("c", 1, 1)]}
+
+    panel.handle_key("down")
+    panel.handle_key("enter")
+    opened: tuple[str, ...] = panel.breadcrumb()
+    episodes: list[str] = [state_library.library_row_id(item) for item in panel._episodes()]
+    panel.handle_key("escape")
+
+    assert opened == ("Biblioteka", "Blue Box Season 2")
+    assert episodes == ["c", "b"]
+    assert panel._library_title is None
+    assert panel._selected == 1
+    assert panel.breadcrumb() == ()
+
+
+def test_crumb_click_returns_to_the_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    probe: _Probe = _list_probe(monkeypatch, state_module._Tab.FILES, {"library": [_hand("a", "[Grp] Abc - 01")]})
+    probe.panel.handle_key("enter")
+    application = _app(monkeypatch, probe)
+
+    frame = application._render_frame(80, 24)
+    _click(application, _label_point(frame, "Biblioteka", f"Biblioteka{CRUMB_SEPARATOR}"))
+
+    assert probe.panel._library_title is None
+    probe.panel.close()
+    probe.panel._thread.join(5)
+
+
+def test_tray_target_opens_the_title_of_its_set(panel: StateController) -> None:
+    panel._snapshot = {"library": [_hand("a", "[Grp] Abc - 01"), _keyed("b", 1, 2), _keyed("c", 1, 1)]}
+
+    panel.show_library({"set_id": "b"})
+
+    assert panel._library_title == "entry:1"
+    assert state_library.library_row_id(panel._episodes()[panel._selected]) == "b"
+
+
+def test_tab_switch_closes_the_title_and_its_marks(panel: StateController) -> None:
+    panel._snapshot = {"library": [_keyed("b", 1, 2)]}
+    panel.handle_key("enter")
+    panel._library_query = "blue"
+
+    panel.handle_key("tab")
+    panel.handle_key("backtab")
+
+    assert panel._library_title is None
+    assert panel._library_input is None
+    assert panel._library_query == "blue"
+
+
+def test_late_episode_titles_of_another_title_are_dropped(panel: StateController) -> None:
+    owner: _Episodes = cast("_Episodes", panel._parent)
+    panel._episode_info = {}
+    panel._snapshot = {"library": [_keyed("a", 1, 1, entry_title="Alpha"), _keyed("b", 2, 1, entry_title="Beta")]}
+
+    panel.handle_key("enter")
+    panel.handle_key("escape")
+    panel.handle_key("down")
+    panel.handle_key("enter")
+    owner.release.set()
+    for thread in threading.enumerate():
+        if thread.name == "anishift-library-episodes":
+            thread.join(5)
+
+    assert sorted(owner.read) == [1, 2]
+    assert 1 not in panel._episode_info
+    assert panel._episode_info[2] == {1: ("First", datetime(2026, 4, 1, 12, tzinfo=UTC))}
+    assert "First" in panel.render(100, 30).plain
+
+
+@pytest.mark.parametrize("query", ["apothecary", "hitorigoto", "kusuriya no hitorigoto - 05"])
+def test_filter_finds_an_entry_title_by_its_series_and_its_file_names(query: str) -> None:
+    entry: dict[str, object] = {
+        **_keyed("a", 7, 5, entry_title="Kusuriya"),
+        "series": "The Apothecary Diaries",
+        "name": "[Grp] Kusuriya no Hitorigoto - 05 [1080p]",
+    }
+
+    titles: list[state_library.LibraryTitle] = state_library.library_titles({"library": [entry]}, query=query)
+
+    assert [item.key for item in titles] == ["entry:7"]
+
+
+def test_entry_title_names_its_row_even_when_an_earlier_set_lacks_it() -> None:
+    unnamed: dict[str, object] = {**_keyed("a", 5, 1, entry_title=None), "name": "[Grp] Aaa - 01 [1080p]"}
+    snapshot: Mapping[str, object] = {"library": [unnamed, _keyed("b", 5, 2)]}
+
+    titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot)
+
+    assert [(item.key, item.title) for item in titles] == [("entry:5", "Blue Box Season 2")]
+
+
+def _joined_episode_reads(owner: _Episodes) -> list[int]:
+    for thread in threading.enumerate():
+        if thread.name == "anishift-library-episodes":
+            thread.join(5)
+    return owner.read
+
+
+def _receive(panel: StateController, payload: Mapping[str, object]) -> None:
+    panel._receive(panel._parent, {"event": "state_changed", "payload": payload})
+
+
+@pytest.mark.parametrize("opened", [False, True])
+def test_recognition_moving_the_sets_of_a_title_follows_them_with_a_notice(
+    panel: StateController, *, opened: bool
+) -> None:
+    before: dict[str, object] = {"library": [_hand("z", "[Grp] Zeta - 01"), _hand("a", "[Grp] Abc - 01")]}
+    recognized: dict[str, object] = {**_hand("a", "[Grp] Abc - 01"), "anilist_id": 9, "entry_title": "Zzz Season"}
+    owner: _Episodes = cast("_Episodes", panel._parent)
+    owner.release.set()
+    _receive(panel, before)
+    if opened:
+        panel.handle_key("enter")
+
+    _receive(panel, {"library": [_hand("z", "[Grp] Zeta - 01"), recognized]})
+
+    if opened:
+        assert panel._library_title == "entry:9"
+        assert _joined_episode_reads(owner) == [9]
+    else:
+        assert panel._titles()[panel._selected].key == "entry:9"
+    assert "Przeniesiono do Zzz Season" in panel.render(100, 30).plain

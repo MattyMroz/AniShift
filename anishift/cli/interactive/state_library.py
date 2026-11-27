@@ -1,20 +1,26 @@
-"""Rows, set details and actions of the panel's Library tab."""
+"""Titles, episode rows, set details and actions of the panel's Library tab."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
-from dataclasses import replace
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import datetime
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Final
 
 from natsort import os_sort_keygen
 
-from anishift.application import LibraryFile, LibraryLabel, LibrarySet, library_label
+from anishift.application import LibraryFile, LibraryLabel, LibrarySet, library_label, normalize_series
 from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
+from anishift.cli.interactive.anime_rows import air_date
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.state_texts import (
+    LIBRARY_FROM_NAME,
     LIBRARY_PROBLEMS,
+    LIBRARY_READY,
+    LIBRARY_TO_CHECK,
+    LIBRARY_UNRECOGNIZED,
     RESTORING,
     deleted_sets,
     deleting_sets,
@@ -25,25 +31,64 @@ from anishift.cli.interactive.state_texts import (
 __all__ = [
     "EMPTY_LIBRARY",
     "LIBRARY_DELETED",
+    "NO_MATCHING_TITLES",
+    "UNRECOGNIZED_KEY",
+    "EpisodeInfo",
+    "LibraryTitle",
+    "delete_question",
+    "deleted_notice",
     "detail_actions",
     "detail_entries",
     "detail_file",
     "details_label",
-    "library_actions",
-    "library_row",
+    "episode_name",
+    "episode_row",
+    "episodes_actions",
     "library_row_id",
     "library_rows",
-    "library_title",
+    "library_titles",
+    "moved_notice",
+    "set_entry",
+    "title_entry",
+    "title_row",
+    "titles_actions",
     "unsettled_deletions",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+type EpisodeInfo = Mapping[int, Mapping[int, tuple[str | None, datetime | None]]]
+"""Title and air time of each listed episode number, per AniList entry."""
+
 EMPTY_LIBRARY: Final[str] = "Biblioteka jest pusta"
 """Only line of a Library the owner has inventoried and found empty."""
 
+NO_MATCHING_TITLES: Final[str] = "Brak tytułów pasujących do filtra"
+"""Only line of a Library whose titles the filter leaves out."""
+
 LIBRARY_DELETED: Final[str] = "Usunięto · Ctrl+Z cofnij"
 """Library notice kept after a deleted set leaves the list, until the next move."""
+
+_MOVED: Final[str] = "Przeniesiono do {title}"
+"""Library notice after the sets of the open or selected title move to another title, filled with its name."""
+
+_DELETED_SEVERAL: Final[str] = "Usunięto {count} · Ctrl+Z cofa po jednym"
+"""Library notice after several sets are deleted at once, filled with the number deleted."""
+
+_DELETE_QUESTION: Final[str] = "Usunąć {count} odcinków? Enter tak"
+"""Question asked before several sets are deleted at once, filled with their number."""
+
+_DELETE_ANSWER: Final[str] = "Esc nie"
+"""Key hint that leaves the deletion question without deleting anything."""
+
+UNRECOGNIZED_KEY: Final[str] = "none"
+"""Key of the one Library title gathering the sets whose names carry no title, season or episode."""
+
+_NO_VALUE: Final[str] = "—"
+"""Cell of an episode title or air date the catalogue does not know."""
+
+_PROBLEM: Final[str] = "Problem"
+"""State of a set whose owner problem has no Polish explanation."""
 
 _TITLE_KEY: Final[Callable[[str], object]] = os_sort_keygen()
 """Order Library titles the way the system file browser orders names."""
@@ -56,6 +101,18 @@ _FILE_ROLES: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 """Roles shown beside files without implying ownership of an external manual reference."""
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryTitle:
+    """One Library row: the sets of one series, one entry, one title read from names or the unrecognized names."""
+
+    key: str
+    title: str
+    sets: tuple[Mapping[str, object], ...]
+    cover_id: int | None
+    from_name: bool
+    problems: int
 
 
 def library_rows(
@@ -74,25 +131,91 @@ def library_rows(
     return sorted([*listed, *(item for item in restoring if library_row_id(item) not in present)], key=_order)
 
 
+def library_titles(
+    snapshot: Mapping[str, object],
+    hidden: Collection[str] = (),
+    restoring: Collection[Mapping[str, object]] = (),
+    query: str = "",
+) -> list[LibraryTitle]:
+    """Group the shown sets into titles containing the normalized *query*, the unrecognized names last."""
+    groups: dict[str, list[Mapping[str, object]]] = {}
+    names: dict[str, str] = {}
+    for item in library_rows(snapshot, hidden, restoring):
+        key, title = _title_key(item)
+        groups.setdefault(key, []).append(item)
+        if key not in names or _entry_title(item) is not None:
+            names[key] = title
+    wanted: str = normalize_series(query)
+    titles: list[LibraryTitle] = [
+        _grouped(key, names[key], tuple(sets))
+        for key, sets in groups.items()
+        if any(wanted in normalize_series(text) for text in _searched(names[key], sets))
+    ]
+    return sorted(titles, key=lambda item: (item.key == UNRECOGNIZED_KEY, _TITLE_KEY(item.title), item.key))
+
+
+def moved_notice(title: LibraryTitle) -> str:
+    """Return the notice after the open or selected title's sets move to *title*."""
+    return _MOVED.format(title=safe_text(title.title))
+
+
 def unsettled_deletions(snapshot: Mapping[str, object], hidden: Mapping[str, str]) -> dict[str, str]:
     """Keep hidden sets awaiting the owner's answer or a snapshot reporting their accepted deletion."""
     reported: set[str] = {str(item.get("operation_id")) for item in rows(snapshot.get("deletions"))}
     return {set_id: operation for set_id, operation in hidden.items() if not operation or operation not in reported}
 
 
-def library_row(item: Mapping[str, object]) -> AnimeRow:
-    """Return the `Nazwa · Odcinek` table row of one set."""
+def title_row(title: LibraryTitle) -> AnimeRow:
+    """Return the `Tytuł · Odcinki · Stan` table row of one Library title."""
+    state: str = LIBRARY_READY
+    if title.problems:
+        state = f"{title.problems} {LIBRARY_TO_CHECK}"
+    elif title.from_name and title.key != UNRECOGNIZED_KEY:
+        state = LIBRARY_FROM_NAME
+    return AnimeRow(title.key, safe_text(title.title), number=str(len(title.sets)), status=state)
+
+
+def episode_row(item: Mapping[str, object], info: EpisodeInfo) -> AnimeRow:
+    """Return the `Nr · Tytuł · Emisja · Stan` row of one set, its title and date from the catalogue when keyed."""
+    known: tuple[str | None, datetime | None] | None = _listed(item, info)
+    title: str = safe_text(item.get("name", "")) if _number(item.get("anilist_id")) is None else _NO_VALUE
+    if known is not None and known[0]:
+        title = safe_text(known[0])
+    problem: str = LIBRARY_PROBLEMS.get(str(item.get("problem")), _PROBLEM) if item.get("available") is False else ""
+    return AnimeRow(
+        library_row_id(item),
+        title,
+        number=_label(item).episode_text,
+        date=air_date(None if known is None else known[1]),
+        status=f"{RESTORING}…" if item.get("restoring") else problem or LIBRARY_READY,
+        detail=problem,
+    )
+
+
+def episode_name(item: Mapping[str, object], info: EpisodeInfo) -> str | None:
+    """Return `<entry title> · <Nr> · <episode title>` of a set keyed to an entry, or None without an entry title."""
+    entry_title: object = item.get("entry_title")
+    if not isinstance(entry_title, str) or not entry_title:
+        return None
     label: LibraryLabel = _label(item)
-    return AnimeRow(library_row_id(item), _restoring(item, safe_text(label.title)), number=label.episode_text)
+    known: tuple[str | None, datetime | None] | None = _listed(item, info)
+    parts: tuple[str | None, ...] = (
+        entry_title,
+        None if label.episode is None else label.episode_text,
+        None if known is None else known[0],
+    )
+    return " · ".join(safe_text(part) for part in parts if part)
 
 
-def library_title(item: Mapping[str, object]) -> str:
+def title_entry(title: LibraryTitle) -> str:
+    """Return a Library title with its number of sets for the narrow list."""
+    return f"{safe_text(title.title)} · {len(title.sets)}"
+
+
+def set_entry(item: Mapping[str, object]) -> str:
     """Return the full label of one set for the narrow list."""
-    return _restoring(item, safe_text(_label(item).text))
-
-
-def _restoring(item: Mapping[str, object], title: str) -> str:
-    return f"{title} · {RESTORING}" if item.get("restoring") else title
+    label: str = safe_text(_label(item).text)
+    return f"{label} · {RESTORING}" if item.get("restoring") else label
 
 
 def library_row_id(item: Mapping[str, object]) -> str:
@@ -106,12 +229,33 @@ def detail_actions(*, openable: bool) -> ScreenActions:
     return ScreenActions((*files, ("Del", "usuń")), (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS))
 
 
-def library_actions(*, listed: bool) -> ScreenActions:
-    """Return the actions of the Library list, file actions only on a listed set."""
+def titles_actions(*, listed: bool) -> ScreenActions:
+    """Return the actions of the Library titles, opening and deleting only on a listed title."""
+    title: tuple[Action, ...] = (("Enter", "odcinki"), ("Del", "usuń")) if listed else ()
+    return ScreenActions((*title, ("/", "szukaj")), (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS))
+
+
+def episodes_actions(*, listed: bool) -> ScreenActions:
+    """Return the actions of the episodes of one Library title, file actions only on a listed episode."""
     return ScreenActions(
-        (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń")) if listed else (),
-        (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS),
+        (("Enter", "obejrzyj"), ("Space", "zaznacz"), ("D", "szczegóły"), ("F", "folder"), ("Del", "usuń"))
+        if listed
+        else (),
+        ((("A", "wszystkie"),) if listed else ()) + (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS),
     )
+
+
+def delete_question(count: int) -> tuple[str, ...]:
+    """Return the footer asking whether to delete *count* sets at once."""
+    return _DELETE_QUESTION.format(count=count), _DELETE_ANSWER
+
+
+def deleted_notice(deleted: int, total: int, refusal: str) -> str:
+    """Return the notice after deleting *total* sets: the deleted count, Ctrl+Z and the first refusal."""
+    if total == 1:
+        return LIBRARY_DELETED if deleted else refusal
+    done: str = _DELETED_SEVERAL.format(count=deleted) if deleted else ""
+    return " · ".join(part for part in (done, refusal) if part)
 
 
 def detail_entries(details: LibrarySet) -> list[str]:
@@ -119,8 +263,6 @@ def detail_entries(details: LibrarySet) -> list[str]:
     entries: list[str] = [safe_text(details.name)]
     if details.target is None:
         entries.append("Cel nierozstrzygnięty · regeneracja wymaga wyboru")
-    if details.problem == "library_ownership_unknown":
-        entries.append(LIBRARY_PROBLEMS[details.problem])
     if details.provisional_timing:
         entries.append("Czasy robocze · skrypt lektora bez synchronizacji z nagraniem")
     entries.extend(
@@ -143,15 +285,66 @@ def details_label(details: LibrarySet) -> LibraryLabel:
     return _series_label(details.name, details.series, details.season, details.episode)
 
 
+def _title_key(item: Mapping[str, object]) -> tuple[str, str]:
+    label: LibraryLabel = _label(item)
+    anilist_id: int | None = _number(item.get("anilist_id"))
+    if anilist_id is not None:
+        return f"entry:{anilist_id}", _entry_title(item) or label.title
+    if label.season is None and label.episode is None and label.title == str(item.get("name", "")):
+        return UNRECOGNIZED_KEY, LIBRARY_UNRECOGNIZED
+    return f"name:{normalize_series(label.title)}", label.title
+
+
+def _entry_title(item: Mapping[str, object]) -> str | None:
+    value: object = item.get("entry_title")
+    return value if isinstance(value, str) and value else None
+
+
+def _searched(title: str, sets: Sequence[Mapping[str, object]]) -> Iterator[str]:
+    yield title
+    for item in sets:
+        series: object = item.get("series")
+        if isinstance(series, str):
+            yield series
+        yield library_label(str(item.get("name", ""))).title
+        yield str(item.get("name", ""))
+
+
+def _grouped(key: str, title: str, sets: tuple[Mapping[str, object], ...]) -> LibraryTitle:
+    keyed: list[Mapping[str, object]] = [item for item in sets if _number(item.get("anilist_id")) is not None]
+    newest: Mapping[str, object] | None = max(keyed, key=_newest, default=None)
+    return LibraryTitle(
+        key,
+        title,
+        sets,
+        None if newest is None else _number(newest.get("anilist_id")),
+        not keyed,
+        sum(item.get("available") is False for item in sets),
+    )
+
+
+def _newest(item: Mapping[str, object]) -> tuple[int, Decimal]:
+    label: LibraryLabel = _label(item)
+    return label.season or 0, label.episode or Decimal(0)
+
+
+def _listed(item: Mapping[str, object], info: EpisodeInfo) -> tuple[str | None, datetime | None] | None:
+    anilist_id: int | None = _number(item.get("anilist_id"))
+    episode: int | None = _number(item.get("episode"))
+    return None if anilist_id is None or episode is None else info.get(anilist_id, {}).get(episode)
+
+
+def _number(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _label(item: Mapping[str, object]) -> LibraryLabel:
     series: object = item.get("series")
-    season: object = item.get("season")
-    episode: object = item.get("episode")
     return _series_label(
         str(item.get("name", "")),
         series if isinstance(series, str) and series else None,
-        season if type(season) is int else None,
-        episode if type(episode) is int else None,
+        _number(item.get("season")),
+        _number(item.get("episode")),
     )
 
 

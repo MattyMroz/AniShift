@@ -170,13 +170,17 @@ def test_undo_refusal_is_visible_without_synthetic_operation_rows(
 class _DeletingOwner:
     def __init__(self, *, refuse: bool = False) -> None:
         self.refuse: bool = refuse
+        self.refused: set[str] = set()
         self.release: threading.Event = threading.Event()
         self.deleted: list[str] = []
         self.undone: list[str] = []
+        self.sessions: int = 0
+        self.workers: set[str] = set()
         self.answer: threading.Event = threading.Event()
         self.answer.set()
 
     def new_session(self) -> _DeletingOwner:
+        self.sessions += 1
         return self
 
     def close(self) -> None:
@@ -190,7 +194,8 @@ class _DeletingOwner:
         return DeletionPreview(f"preview-{set_id}", "instance", set_id, set_id, ())
 
     def delete_set(self, preview: DeletionPreview) -> str:
-        if self.refuse:
+        self.workers.add(threading.current_thread().name)
+        if self.refuse or preview.set_id in self.refused:
             raise ControlError("held", reason="library_source_held", answered=True)
         self.deleted.append(preview.set_id)
         return f"recycle-{preview.set_id}"
@@ -212,6 +217,7 @@ def _deleting_panel(monkeypatch: pytest.MonkeyPatch, owner: _DeletingOwner) -> S
     panel._tab = module._Tab.FILES
     panel._connected = True
     panel._snapshot = {"library": list(_SETS)}
+    panel._library_title = state_library.UNRECOGNIZED_KEY
     return panel
 
 
@@ -236,14 +242,13 @@ def _stop(owner: _DeletingOwner, panel: StateController) -> None:
             thread.join(5)
 
 
-@pytest.mark.parametrize("key", ["delete", "text:x"])
 def test_library_delete_hides_the_row_before_the_owner_answers_without_a_question(
-    monkeypatch: pytest.MonkeyPatch, key: str
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     owner: _DeletingOwner = _DeletingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)
     try:
-        panel.handle_key(key)
+        panel.handle_key("delete")
         assert _shown(panel) == ["Beta", "Gamma"]
         assert panel._selected == 0
         assert "Alpha" not in panel.render(80, 24).plain
@@ -346,6 +351,7 @@ def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_b
     failed: list[dict[str, object]] = [_failed_material("Alpha"), _failed_material("Beta")]
     deletion: dict[str, object] = {"operation_id": "recycle-Alpha", "set_id": "Alpha", "total": 1, "unrecorded": True}
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._snapshot = {"materials": failed}
     try:
         panel.handle_key("delete")
@@ -390,6 +396,10 @@ def _restore_frame(panel: StateController, owner: _DeletingOwner, payload: Mappi
     return panel.render(80, 24).plain
 
 
+def _restoring_alpha(frame: str) -> bool:
+    return any("Alpha" in line and "Przywracam…" in line for line in frame.splitlines())
+
+
 def test_library_ctrl_z_shows_the_set_restoring_at_once_and_normal_when_the_owner_lists_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -400,15 +410,15 @@ def test_library_ctrl_z_shows_the_set_restoring_at_once_and_normal_when_the_owne
     try:
         panel.handle_key("undo")
         assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
-        assert "Alpha · Przywracam" in panel.render(80, 24).plain
+        assert _restoring_alpha(panel.render(80, 24).plain)
         owner.answer.set()
         _until(lambda: owner.undone == ["latest"] and _answered(panel))
-        assert "Alpha · Przywracam" in panel.render(80, 24).plain
+        assert _restoring_alpha(panel.render(80, 24).plain)
         working: dict[str, object] = {
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "active": True, "restoring": True}],
         }
-        assert "Alpha · Przywracam" in _restore_frame(panel, owner, working)
+        assert _restoring_alpha(_restore_frame(panel, owner, working))
         done: dict[str, object] = {
             "library": list(_SETS),
             "deletions": [{**_RECYCLED, "recycled": 1, "restored": True}],
@@ -432,7 +442,7 @@ def test_failed_restore_drops_the_restoring_row_and_names_the_reason(monkeypatch
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "active": True, "restoring": True}],
         }
-        assert "Alpha · Przywracam" in _restore_frame(panel, owner, working)
+        assert _restoring_alpha(_restore_frame(panel, owner, working))
         failed: dict[str, object] = {
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "restore_problem": "restore_receipt_missing"}],
@@ -485,6 +495,7 @@ def test_processing_ctrl_z_shows_a_failed_set_restoring_at_once(monkeypatch: pyt
     owner: _DeletingOwner = _DeletingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     deletion: dict[str, object] = {**_RECYCLED, "name": "Alpha", "unrecorded": True, "recycled": 1}
     panel._snapshot = {"materials": [_failed_material("Beta")], "deletions": [deletion]}
     owner.answer.clear()
@@ -503,6 +514,17 @@ def test_deleted_sets_leave_a_set_gone_from_the_bin_to_the_owner_library() -> No
         {**_RECYCLED, "set_id": "Beta", "recycled": 1, "gone": True},
     ]
     assert state_texts.deleted_sets({"deletions": deletions}) == {"Alpha"}
+
+
+def test_a_downloaded_again_set_with_an_old_recycled_deletion_is_listed_again() -> None:
+    problem: dict[str, object] = {"set_id": "Alpha", "name": "Alpha", "available": False, "problem": "x"}
+    deletion: dict[str, object] = {**_RECYCLED, "recycled": 1, "returned": True}
+
+    listed: list[Mapping[str, object]] = state_library.library_rows(
+        {"library_problems": [problem], "deletions": [deletion]}
+    )
+
+    assert [state_library.library_row_id(item) for item in listed] == ["Alpha"]
 
 
 @pytest.mark.parametrize(
@@ -563,6 +585,7 @@ def test_p_on_a_failed_processing_row_retries_at_once_and_says_so(monkeypatch: p
     owner: _RetryingOwner = _RetryingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._snapshot = {"materials": [_failed_material("Alpha"), _failed_material("Beta")]}
     panel._selected = 1
     try:
@@ -580,6 +603,7 @@ def test_a_failed_row_shows_again_after_an_old_finished_deletion_of_its_set(monk
     panel: StateController = _deleting_panel(monkeypatch, owner)
     finished: dict[str, object] = {"operation_id": "old", "set_id": "Alpha", "total": 1, "recycled": 1}
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._snapshot = {"materials": [_failed_material("Alpha")], "deletions": [finished]}
     try:
         assert _processing_names(panel) == ["Alpha"]
@@ -593,6 +617,7 @@ def test_a_refused_processing_delete_returns_the_row_with_the_refusal(monkeypatc
     owner: _DeletingOwner = _DeletingOwner(refuse=True)
     panel: StateController = _deleting_panel(monkeypatch, owner)
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._snapshot = {"materials": [_failed_material("Alpha")]}
     try:
         panel.handle_key("delete")
@@ -609,6 +634,7 @@ def test_ctrl_z_in_history_restores_nothing(monkeypatch: pytest.MonkeyPatch) -> 
     owner: _DeletingOwner = _DeletingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._history_open = True
     monkeypatch.setattr(panel, "_work", lambda action, **kwargs: action(cast("ResidentSession", owner)))
     try:
@@ -628,5 +654,155 @@ def test_delete_in_a_panel_text_field_removes_a_character_not_a_set(monkeypatch:
         assert panel._history_input.text == "b"
         assert panel._hidden == {}
         assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_space_marks_and_a_marks_every_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("space")
+        panel.handle_key("down")
+        panel.handle_key("space")
+        two: set[str] = set(panel._library_marks)
+        frame: str = panel.render(80, 24).plain
+        panel.handle_key("space")
+        one: set[str] = set(panel._library_marks)
+        panel.handle_key("text:a")
+        every: set[str] = set(panel._library_marks)
+        panel.handle_key("text:a")
+
+        assert two == {"Alpha", "Beta"}
+        assert "Zaznaczone: 2" in frame
+        assert frame.count("[x]") == 2
+        assert one == {"Alpha"}
+        assert every == {"Alpha", "Beta", "Gamma"}
+        assert panel._library_marks == set()
+    finally:
+        _stop(owner, panel)
+
+
+def test_delete_acts_on_marks_else_on_the_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("down")
+        panel.handle_key("space")
+        panel.handle_key("down")
+        panel.handle_key("space")
+        panel.handle_key("delete")
+        marked: tuple[str, ...] | None = panel._library_confirm
+        panel.handle_key("escape")
+        panel._library_marks.clear()
+        panel.handle_key("delete")
+
+        assert marked == ("Beta", "Gamma")
+        assert panel._library_confirm is None
+        assert list(panel._hidden) == ["Gamma"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_title_delete_covers_every_set_of_the_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {"library": [*_SETS, {"set_id": "show", "name": "[Grp] Show - 01"}]}
+    panel._library_title = None
+    try:
+        panel.handle_key("down")
+        panel.handle_key("delete")
+
+        assert panel._library_confirm == ("Alpha", "Beta", "Gamma")
+        assert "Usunąć 3 odcinków? Enter tak · Esc nie" in " ".join(panel.render(80, 24).plain.split())
+    finally:
+        _stop(owner, panel)
+
+
+@pytest.mark.parametrize("key", ["escape", "down", "text:a", "delete"])
+def test_deleting_several_asks_first_and_any_other_key_cancels(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("text:a")
+        panel.handle_key("delete")
+        asked: tuple[str, ...] | None = panel._library_confirm
+        panel.handle_key(key)
+
+        assert asked == ("Alpha", "Beta", "Gamma")
+        assert panel._library_confirm is None
+        assert panel._hidden == {}
+        assert panel._library_marks == {"Alpha", "Beta", "Gamma"}
+        assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_deleting_one_asks_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("space")
+        panel.handle_key("delete")
+
+        assert panel._library_confirm is None
+        assert list(panel._hidden) == ["Alpha"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_several_deletes_run_in_one_worker_and_one_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("text:a")
+        panel.handle_key("delete")
+        panel.handle_key("enter")
+        hidden: list[str] = _shown(panel)
+        owner.release.set()
+        _until(lambda: len(owner.deleted) == 3)
+
+        assert hidden == []
+        assert owner.deleted == ["Alpha", "Beta", "Gamma"]
+        assert owner.sessions == 1
+        assert owner.workers == {"anishift-library-delete"}
+        assert panel._library_marks == set()
+    finally:
+        _stop(owner, panel)
+
+
+def test_refused_set_returns_while_the_rest_go_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    owner.refused = {"Beta"}
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("text:a")
+        panel.handle_key("delete")
+        panel.handle_key("enter")
+        owner.release.set()
+        _until(lambda: "Źródło czeka na zwolnienie przez torrent" in " ".join(panel.render(80, 24).plain.split()))
+
+        assert owner.deleted == ["Alpha", "Gamma"]
+        assert _shown(panel) == ["Beta"]
+        assert "Usunięto 2 · Ctrl+Z cofa po jednym" in " ".join(panel.render(80, 24).plain.split())
+    finally:
+        _stop(owner, panel)
+
+
+def test_several_deleted_notice_says_undo_goes_one_by_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {"library": [*_SETS, {"set_id": "show", "name": "[Grp] Show - 01"}]}
+    try:
+        panel.handle_key("text:a")
+        panel.handle_key("delete")
+        panel.handle_key("enter")
+        owner.release.set()
+        _until(lambda: "Usunięto 3 · Ctrl+Z cofa po jednym" in panel.render(80, 24).plain)
+        panel.handle_key("undo")
+        _until(lambda: owner.undone == ["latest"])
+
+        assert panel._library_title is None
+        assert owner.undone == ["latest"]
     finally:
         _stop(owner, panel)

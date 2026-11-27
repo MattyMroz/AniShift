@@ -101,6 +101,13 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 - Zależność: skutek tylko przy produkcie MP4 z `Napisy wypalone w MP4` innym niż `Brak`.
 - Przykład: MP4 na telefon z małą pamięcią — `compact`.
 
+### Okładki (`show_covers`)
+
+- Co robi: pokazuje okładkę AniList podświetlonego tytułu po lewej stronie list panelu
+  (Anime, Subskrypcje, Biblioteka). Wyłączone okładki zostawiają tabelę na środku jak bez
+  okładek. Działa tylko w terminalu z obrazami SIXEL.
+- Wartości · domyślnie: włączone, wyłączone · włączone.
+
 ## Napisy
 
 ### Plik czcionki dialogów (`dialogue_font_file`)

@@ -67,7 +67,7 @@ from anishift.cli.interactive.pointer import (
     mark_keys,
 )
 from anishift.cli.interactive.state import StateController, StateResult, _Tab
-from anishift.cli.interactive.state_library import detail_actions
+from anishift.cli.interactive.state_library import UNRECOGNIZED_KEY, detail_actions
 from anishift.cli.interactive.state_processing import download_progress, history_actions
 from anishift.cli.interactive.state_subscriptions import subscription_actions
 from anishift.cli.interactive.text_input import TextInput
@@ -85,7 +85,7 @@ _KEYS: Final[tuple[str, ...]] = (
     "text:?",
 )
 
-_EVERYWHERE: Final[frozenset[str]] = frozenset({"text:o", "text:?"})
+_EVERYWHERE: Final[frozenset[str]] = frozenset({"text:o", "text:k", "text:?"})
 
 _PANEL: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
 
@@ -499,8 +499,14 @@ def _library_relocation(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     )
 
 
-def _library_details(monkeypatch: pytest.MonkeyPatch) -> _Probe:
+def _library_episodes(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     probe: _Probe = _library(monkeypatch)
+    probe.panel._library_title = UNRECOGNIZED_KEY
+    return probe
+
+
+def _library_details(monkeypatch: pytest.MonkeyPatch) -> _Probe:
+    probe: _Probe = _library_episodes(monkeypatch)
     probe.panel._details = _details_view()
     probe.panel._detail_selection = 0
     probe.panel._selected = 2
@@ -539,6 +545,7 @@ _FIXTURES: Final[dict[str, Callable[[pytest.MonkeyPatch], _Probe]]] = {
     "history": _history,
     "library": _library,
     "library_relocation": _library_relocation,
+    "library_episodes": _library_episodes,
     "library_details": _library_details,
     "library_empty": _library_empty,
 }
@@ -598,10 +605,20 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
     "processing_failed": (("P", "ponów"), ("Del", "usuń"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "processing_empty": (("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "history": (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj"), ("H", "zamknij"), *_PANEL),
-    "library": (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
-    "library_relocation": (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "library": (("Enter", "odcinki"), ("Del", "usuń"), ("/", "szukaj"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "library_relocation": (("Enter", "odcinki"), ("Del", "usuń"), ("/", "szukaj"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "library_episodes": (
+        ("Enter", "obejrzyj"),
+        ("Space", "zaznacz"),
+        ("D", "szczegóły"),
+        ("F", "folder"),
+        ("Del", "usuń"),
+        ("A", "wszystkie"),
+        ("Ctrl+Z", "cofnij"),
+        *_PANEL,
+    ),
     "library_details": (("Enter", "otwórz plik"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
-    "library_empty": (("Ctrl+Z", "cofnij"), *_PANEL),
+    "library_empty": (("/", "szukaj"), ("Ctrl+Z", "cofnij"), *_PANEL),
 }
 
 _ALIASES: Final[dict[str, frozenset[str]]] = {
@@ -619,10 +636,6 @@ _ALIASES: Final[dict[str, frozenset[str]]] = {
     "subscriptions": frozenset({"text:f", "space", "text:x", "text:/"}),
     "subscriptions_empty": frozenset({"enter", "text:/"}),
     "history": frozenset({"text:s"}),
-    "library": frozenset({"text:d", "text:x"}),
-    "library_relocation": frozenset({"text:d", "text:x"}),
-    "library_details": frozenset({"text:x"}),
-    "library_empty": frozenset({"text:d", "text:x"}),
 }
 
 _APPLIES: Final[dict[tuple[str, str], str]] = {
@@ -657,7 +670,11 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "processing_run": ("Del usuń · H historia · ? klawisze · Esc wróć", ()),
     "processing_failed": ("P ponów · Del usuń · H historia · ? klawisze · Esc wróć", ()),
     "history": ("Enter otwórz · P ponów · / szukaj · ? klawisze · Esc wróć", ()),
-    "library": ("Enter otwórz · F folder · Del usuń · ? klawisze · Esc wróć", ()),
+    "library": ("Enter odcinki · Del usuń · / szukaj · ? klawisze · Esc wróć", ()),
+    "library_episodes": (
+        "Enter obejrzyj · Space zaznacz · D szczegóły · F folder · Del usuń · ? klawisze · Esc wróć",
+        (),
+    ),
     "library_details": ("Enter otwórz plik · F folder · Del usuń · Esc wróć", ()),
     "episodes_details": ("C kopiuj · Esc wróć", ("text:?",)),
     "u08_details": ("C kopiuj · Esc wróć", ("text:?",)),
@@ -748,6 +765,10 @@ def _state(probe: _Probe) -> tuple[object, ...]:
         panel._tab,
         panel._selected,
         panel._details is not None,
+        panel._library_title,
+        panel._library_input is not None,
+        frozenset(panel._library_marks),
+        panel._library_confirm,
         panel._help,
         panel._history_open,
         panel._history_input is not None,
@@ -827,7 +848,7 @@ def test_every_listed_action_changes_a_screen_where_it_applies(build: Callable[[
 
 @pytest.mark.parametrize(("name", "keys"), [(name, alias) for name, alias in sorted(_ALIASES.items())])
 def test_every_alias_still_changes_its_screen(build: Callable[[str], _Probe], name: str, keys: frozenset[str]) -> None:
-    applies: dict[str, str] = {"processing_empty": "processing_download", "library_empty": "library"}
+    applies: dict[str, str] = {"processing_empty": "processing_download"}
     inert: list[str] = [key for key in sorted(keys) if not _changes(build(applies.get(name, name)), key)]
     assert inert == []
 
@@ -842,6 +863,43 @@ def test_question_mark_opens_and_closes_the_help_block(build: Callable[[str], _P
     assert all(part in " ".join(frame.split()) for part in ("↑↓ wybierz", "←→ Tab zakładki", "O automat", "Esc wróć"))
     probe.panel.handle_key("text:?")
     assert not probe.panel._help
+
+
+@pytest.mark.parametrize("name", [*_HELP_SCREENS, *_DETAIL_SCREENS, "library_details", "history"])
+def test_k_asks_to_flip_the_covers_on_every_panel_screen(build: Callable[[str], _Probe], name: str) -> None:
+    assert [build(name).panel.handle_key(key) for key in ("text:k", "text:K")] == [StateResult.COVERS] * 2
+
+
+@pytest.mark.parametrize("name", ["subscriptions", "episodes"])
+def test_k_flips_the_covers_inside_the_help(build: Callable[[str], _Probe], name: str) -> None:
+    probe: _Probe = build(name)
+    probe.panel.handle_key("text:?")
+
+    assert probe.panel.handle_key("text:k") is StateResult.COVERS
+
+
+def test_k_typed_in_a_text_field_is_text_not_the_covers_key(build: Callable[[str], _Probe]) -> None:
+    query: _Probe = build("query")
+    library: _Probe = build("library")
+    history: _Probe = build("history")
+    library.panel.handle_key("text:/")
+    history.panel.handle_key("text:/")
+
+    results: list[StateResult] = [probe.panel.handle_key("text:k") for probe in (query, library, history)]
+
+    assert results == [StateResult.CONTINUE] * 3
+    assert query.anime._query.endswith("k")
+    assert library.panel._library_input is not None
+    assert library.panel._library_input.text.endswith("k")
+    assert history.panel._history_input is not None
+    assert history.panel._history_input.text.endswith("k")
+
+
+def test_help_lists_k_for_the_covers(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("library")
+    probe.panel.handle_key("text:?")
+
+    assert "K okładki" in " ".join(probe.panel.render(80, 40).plain.split())
 
 
 @pytest.mark.parametrize("name", _DETAIL_SCREENS)
@@ -880,7 +938,7 @@ def test_help_block_ignores_actions_and_clicks(build: Callable[[str], _Probe], n
     probe.panel._snapshot = {
         **probe.panel._snapshot,
         "materials": [_download(), _download("other", "two")],
-        "library": [{"set_id": "one", "name": "One"}, {"set_id": "two", "name": "Two"}],
+        "library": [{"set_id": "one", "name": "[Grp] One - 01"}, {"set_id": "two", "name": "[Grp] Two - 01"}],
     }
     probe.panel._history_items = (_event("one"), _event("two"))
     assert len(probe.panel._entries(120)) >= 2
@@ -941,6 +999,7 @@ def test_library_d_opens_details_whose_keys_reach_the_right_file(
     panel._connected = True
     panel._snapshot = {"library": [{"set_id": "set", "name": "Slime"}]}
     try:
+        panel.handle_key("enter")
         panel.handle_key("text:d")
         assert panel._details is not None
         frame: str = panel.render(80, 24).plain
@@ -982,7 +1041,7 @@ def test_arriving_library_details_close_the_help_block(build: Callable[[str], _P
 
 @pytest.mark.parametrize("busy", [False, True])
 def test_library_d_without_a_readable_row_does_nothing(build: Callable[[str], _Probe], *, busy: bool) -> None:
-    probe: _Probe = build("library")
+    probe: _Probe = build("library_episodes")
     probe.panel._busy = busy
     probe.panel._connected = busy
     probe.panel.handle_key("text:d")
@@ -1009,12 +1068,18 @@ def test_library_details_reach_mode_keys_and_the_automat(
     assert len(probe.work) == int(result is None)
 
 
-@pytest.mark.parametrize("key", ["text:x", "delete"])
-def test_library_details_delete_the_set_with_x_or_delete(build: Callable[[str], _Probe], key: str) -> None:
+def test_library_details_delete_the_set_with_delete(build: Callable[[str], _Probe]) -> None:
     probe: _Probe = build("library_details")
-    probe.panel.handle_key(key)
+    probe.panel.handle_key("delete")
     assert probe.panel._details is None
     assert probe.panel._hidden == {"set": ""}
+
+
+def test_library_details_ignore_x(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("library_details")
+    probe.panel.handle_key("text:x")
+    assert probe.panel._details is not None
+    assert probe.panel._hidden == {}
 
 
 @pytest.mark.parametrize("key", ["tab", "backtab", "left", "right"])
@@ -1412,6 +1477,7 @@ def test_the_help_is_a_table_of_keys_and_what_they_do() -> None:
         "  ↑↓      wybierz    Przesuwa kursor po liście",
         "  ←→ Tab  zakładki   Przełącza zakładki panelu",
         "  O       automat    Włącza albo wyłącza cały automat",
+        "  K       okładki    Pokazuje albo chowa okładki we wszystkich widokach",
         "  Esc     wróć       Wraca poziom wyżej",
     )
 
@@ -1866,7 +1932,8 @@ def test_a_click_on_the_narrow_tab_arrows_moves_to_the_neighbouring_tabs(
     ("name", "label", "escapes"),
     [
         ("history", "Przetwarzanie", 1),
-        ("library_details", "Biblioteka", 1),
+        ("library_details", "Biblioteka", 2),
+        ("library_episodes", "Biblioteka", 1),
         ("candidates", "Anime", 2),
         ("u08", "Subskrypcje", 1),
         ("draft", "Nowa subskrypcja", 1),
@@ -2197,6 +2264,7 @@ def test_a_double_click_in_a_narrow_library_opens_the_clicked_set_when_its_notic
         _Tab.FILES,
         {"library": [{"set_id": "first", "name": "Alpha"}, {"set_id": "second", "name": "Beta"}]},
     )
+    probe.panel._library_title = UNRECOGNIZED_KEY
     probe.panel._notify("Nie udało się otworzyć pliku wideo w odtwarzaczu")
     probe.panel._notice_persistent = True
     application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
@@ -2213,6 +2281,7 @@ def test_a_double_click_across_a_library_change_opens_the_first_clicked_set(monk
         {"set_id": f"e{number:02d}", "name": f"[Grp] Show - {number:02d} [1080p]"} for number in range(2, 42, 2)
     ]
     probe: _Probe = _list_probe(monkeypatch, _Tab.FILES, {"library": library})
+    probe.panel._library_title = "name:show"
     application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
     point: Point = Point(4, _row_of(application._render_frame(80, 24), 1))
 
@@ -2319,7 +2388,13 @@ _INTERFACE: Final[tuple[str, ...]] = ("PANEL", *state_module._TABS, "Esc wróć"
     ("name", "title", "content", "interface"),
     [
         ("subscriptions", "", "Alpha  1/4      0       Termin nieznany", ("Tytuł", "Odcinki", "W wstrzymaj", _POINTER)),
-        ("library", "", "Slime  —", ("Nazwa", "F folder", _POINTER)),
+        ("library", "", "Nie rozpoznano  ", ("Tytuł", "Odcinki", "/ szukaj", _POINTER)),
+        (
+            "library_episodes",
+            f"Biblioteka{CRUMB_SEPARATOR}Nie rozpoznano",
+            "—   Slime",
+            ("Nr", "Emisja", "[ ]", "F folder", _POINTER),
+        ),
         ("processing_download", "", "Pobieranie      one.mkv", ("H historia", _POINTER)),
         (
             "episodes",

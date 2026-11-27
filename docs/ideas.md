@@ -46,8 +46,6 @@ Odłożone 2026-10-17: glosariusz postaci (wymaga nowej struktury; jeśli wróci
 
 Oglądanie tylko lokalnie na PC. Cel: zobaczyć obrazek, poznać tytuł, wybrać, pobrać, obejrzeć, usunąć.
 
-- **Okładki w panelu** — `potem`. Przy około 30 tytułach w trzech językach trudno pamiętać, który jest który. Panel pokazuje dziś tylko tekst; okładki z AniList nie są pobierane.
-- **Biblioteka jako widok tytułów** — `potem`. Lista tytułów → Enter → `BIBLIOTEKA › <tytuł>` z odcinkami (numer, tytuł odcinka, Emisja, Stan); zaznaczanie i usuwanie wielu; Kosz i Ctrl+Z jak dziś. Pliki z Anime biorą tytuł z klucza AniList, pliki ręczne z nazwy, a przy braku pewności „nie rozpoznano” zamiast cichego przypisania. Dysk zostaje płaski (`workspace/ready/`). Otwarte: jeden widok tytułów czy obecny podział zakładek; przewijanie przy wielu tytułach. Pełny opis: [masterplan acquisition](work/08-acquisition/masterplan.md), sekcja E6.
 - **Kontrola zawartości po pobraniu** — `częściowo`. Polskie napisy → bez tłumaczenia; obce → tłumaczenie; brak napisów → jedna zamiana wydania; lektor zawsze. Reguła roli ścieżki i odrzucanie wydania bez napisów dialogowych w subskrypcji weszły w [PR #74](https://github.com/MattyMroz/AniShift/pull/74); zamiana przy pobraniu ręcznym zostaje. Sekcja E4 w [masterplanie](work/08-acquisition/masterplan.md), plan: [17-content-check](work/17-content-check/README.md).
 - **Próg pewności dla automatu** — `kiedyś`. Rozszerzenie reguły `zgodny` progiem pewności dopiero po teście na świeżym zbiorze: [algorithm-spec.md](work/08-acquisition/a1-algorithm/specification.md) §7.
 - **Filmy, dodatki i osobne audio PL w subskrypcji** — `kiedyś`. Warunki powrotu: [spec.md](work/08-acquisition/specification.md) §11.
@@ -111,6 +109,8 @@ Krótka lista, żeby te pomysły nie wracały.
 - Czuwanie nad folderem i rezydent w tle.
 - Auto-pobieranie anime: zakładka Anime, subskrypcje, prywatny qBittorrent.
 - Klasyfikator stylów ASS (`anishift/services/subtitles/classifier.py`); dalsza praca w 1.2.
+- Biblioteka jako widok tytułów i okładki w panelu: [18-library-titles-covers](work/18-library-titles-covers/README.md)
+  (czeka na odbiór właściciela, checkpointy H1–H5).
 
 **Odrzucone:**
 

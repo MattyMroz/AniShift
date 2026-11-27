@@ -31,8 +31,10 @@ from anishift.application.episode_search import (
 from anishift.application.episode_selection import (
     AniZipMapping,
     EpisodeKey,
+    EpisodeName,
     EpisodeOffer,
     ListedEpisode,
+    entry_title,
     episode_listing,
     fill_episode_titles,
     first_season_numbering,
@@ -47,7 +49,6 @@ from anishift.application.episode_selection import (
     suggestion,
     tvdb_show_id,
 )
-from anishift.application.library import EpisodeName
 from anishift.application.products import safe_name_part
 from anishift.application.subscription_choice import ABSENT_AFTER_H
 from anishift.application.subscription_targets import PolishState
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
         FranchiseEntry,
         FranchiseGraph,
         JsonObject,
+        LibraryGraph,
         RankedCandidate,
         StreamCandidate,
     )
@@ -212,6 +214,12 @@ class TitleCatalog(Protocol):
         """Return the candidates the catalog proposes for *text*, in its own order."""
         ...
 
+    def search_many(
+        self, texts: Collection[str], *, limit: int = TITLE_SEARCH_LIMIT
+    ) -> dict[str, tuple[TitleCandidate, ...]]:
+        """Return the candidates of each text, read in shared requests."""
+        ...
+
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         """Return every entry airing before *candidate*, direct prequel first."""
         ...
@@ -222,6 +230,18 @@ class TitleCatalog(Protocol):
 
     def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
         """Return the anime relation graph rooted at one entry, stopping before a request after *cancel*."""
+        ...
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        """Return the anime relation graphs of many entries read in shared requests."""
+        ...
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        """Return the cover image address of each entry the catalog knows."""
+        ...
+
+    def cover(self, url: str) -> bytes:
+        """Return the bytes of one cover image from the catalog's own file host."""
         ...
 
 
@@ -715,6 +735,12 @@ class AcquisitionService:
             return ()
         return self._title_catalog.search(text)
 
+    def find_many_titles(self, texts: Collection[str]) -> dict[str, tuple[TitleCandidate, ...]]:
+        """Return the title candidates of each text read in shared requests, or none without a catalog."""
+        if self._title_catalog is None:
+            return {}
+        return self._title_catalog.search_many(texts)
+
     def season_context(self, candidate: TitleCandidate) -> SeasonContext:
         """Return which season *candidate* is and how many episodes aired before it."""
         if self._title_catalog is None:
@@ -875,10 +901,6 @@ class AcquisitionService:
         """Return the franchise view rooted at one entry, remembering its graph while fresh."""
         return franchise_view(self._franchise_graph(anilist_id, cancel), anilist_id)
 
-    def catalogue_title(self, anilist_id: int) -> str:
-        """Return the English AniList title of one entry, else its romaji one, remembered when AniList fails."""
-        return _entry_title(self._catalogue_entry(anilist_id))
-
     def episode_name(self, anilist_id: int, number: int) -> EpisodeName:
         """Return the catalogue facts one downloaded episode is named after, without numbering when ani.zip fails."""
         entry: FranchiseEntry = self._catalogue_entry(anilist_id)
@@ -916,6 +938,27 @@ class AcquisitionService:
             msg = "The entry is absent from its own franchise"
             raise ValueError(msg)
         return entry
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        """Read the relation graphs of the Library entries in shared catalog requests."""
+        return self._titles().library_graph(anilist_ids)
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        """Read the cover image addresses of the Library and subscription entries."""
+        return self._titles().cover_urls(anilist_ids)
+
+    def save_cover(self, anilist_id: int, url: str, directory: Path) -> Path:
+        """Download one cover through the catalog and store it as the JPEG file of its entry."""
+        from anishift.services.catalog.covers import store_cover  # noqa: PLC0415
+
+        return store_cover(self._titles().cover(url), directory, anilist_id)
+
+    @staticmethod
+    def stored_covers(directory: Path) -> frozenset[int]:
+        """Return the entries whose covers are already cached in *directory*."""
+        from anishift.services.catalog.covers import stored_covers  # noqa: PLC0415
+
+        return stored_covers(directory)
 
     def _franchise_graph(self, anilist_id: int, cancel: CancellationToken | None = None) -> FranchiseGraph:
         now: float = self._clock()
@@ -1603,7 +1646,7 @@ def _episode_queries(
 
 def _episode_base(candidate: TitleCandidate) -> str:
     """Return the shortest spelling of *candidate* worth putting in front of an episode number."""
-    return base_title(candidate.english or candidate.romaji)
+    return base_title(entry_title(candidate.english, candidate.romaji))
 
 
 def _episode_numbers(episodes: EpisodeRange | None) -> tuple[int, ...]:

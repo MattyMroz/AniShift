@@ -170,7 +170,7 @@ def test_the_history_help_keeps_the_history_breadcrumb(build: Callable[[str], _P
     assert [line.strip() for line in lines if _ARROW in line] == [f"Przetwarzanie {_ARROW} Historia"]
 
 
-@pytest.mark.parametrize(("name", "row"), [("processing_download", "50%"), ("library", "Slime")])
+@pytest.mark.parametrize(("name", "row"), [("processing_download", "50%"), ("library", "Nie rozpoznano")])
 def test_processing_and_library_draw_their_list_and_status_at_40_by_12(
     build: Callable[[str], _Probe], name: str, row: str
 ) -> None:
@@ -304,7 +304,8 @@ def _cursor(lines: list[str]) -> int:
         ("u08", f"Subskrypcje {_ARROW} Alpha"),
         ("draft", f"Nowa subskrypcja {_ARROW} Slime"),
         ("history", f"Przetwarzanie {_ARROW} Historia"),
-        ("library_details", f"Biblioteka {_ARROW} Slime"),
+        ("library_episodes", f"Biblioteka {_ARROW} Nie rozpoznano"),
+        ("library_details", f"Biblioteka {_ARROW} Nie rozpoznano {_ARROW} Slime"),
     ],
 )
 def test_a_deeper_screen_names_its_tab_and_item_in_the_breadcrumb(
@@ -383,7 +384,7 @@ def test_the_library_says_loading_until_the_owner_inventories_it(build: Callable
     assert "Biblioteka jest pusta" not in loading
     assert "Biblioteka jest pusta" in empty
     assert "Wczytuję" not in empty
-    assert "Slime" in listed
+    assert "Nie rozpoznano" in listed
     assert not any(text in listed for text in ("Wczytuję", "Biblioteka jest pusta", "Brak pozycji"))
 
 
@@ -559,7 +560,7 @@ _TALL_SIZES: Final[tuple[tuple[int, int], ...]] = ((80, 24), (100, 30), (120, 40
 
 _LOW_SIZES: Final[tuple[tuple[int, int], ...]] = ((130, 9), (100, 8), (80, 7))
 
-_HEADERS: Final[Mapping[str, str]] = {"subscriptions": "Tytuł", "library": "Nazwa"}
+_HEADERS: Final[Mapping[str, str]] = {"subscriptions": "Tytuł", "library": "Tytuł"}
 
 
 def _lengthened(probe: _Probe, name: str, count: int) -> _Probe:
@@ -567,8 +568,7 @@ def _lengthened(probe: _Probe, name: str, count: int) -> _Probe:
         probe.panel._subscriptions = [drafts._row(f"s{index}", f"Show {index:02}") for index in range(count)]
     elif name == "library":
         rows: list[dict[str, object]] = [
-            {"set_id": f"s{index}", "name": f"Kikansha no Mahou wa Tokubetsu desu S02E{index:02}"}
-            for index in range(1, count + 1)
+            {"set_id": f"s{index}", "name": f"[Grp] Kikansha {index:02} - 01 [1080p]"} for index in range(1, count + 1)
         ]
         probe.panel._snapshot = {**probe.panel._snapshot, "library": rows}
     else:
@@ -629,7 +629,9 @@ def test_a_low_table_keeps_its_header_and_at_least_one_row(
     assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 
-@pytest.mark.parametrize(("name", "shown"), [("subscriptions", "Powiększ terminal do 50 x 12"), ("library", "S02E01")])
+@pytest.mark.parametrize(
+    ("name", "shown"), [("subscriptions", "Powiększ terminal do 50 x 12"), ("library", "Kikansha 01 · 1")]
+)
 def test_a_table_without_room_for_one_row_keeps_the_narrow_list_or_the_message(
     build: Callable[[str], _Probe], name: str, shown: str
 ) -> None:

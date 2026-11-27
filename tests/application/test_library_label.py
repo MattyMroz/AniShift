@@ -194,3 +194,23 @@ def test_library_label_exposes_season_and_episodes_for_sorting(name: str, expect
 )
 def test_library_label_text_joins_the_title_and_the_episode(label: LibraryLabel, text: str) -> None:
     assert label.text == text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Attack on Titan - S01E05 - First Battle.pl.mkv", LibraryLabel("Attack on Titan", 1, Decimal(5))),
+        (
+            "That Time I Got Reincarnated as a Slime - S04E03 - The Demon Lord.pl.mkv",
+            LibraryLabel("That Time I Got Reincarnated as a Slime", 4, Decimal(3)),
+        ),
+        ("Kaiju No. 8 - S02E01 - The Man Who Became a Kaiju.mkv", LibraryLabel("Kaiju No. 8", 2, Decimal(1))),
+        (
+            "Re ZERO -Starting Life in Another World- - S03E01 - Theater of Malice.pl.mkv",
+            LibraryLabel("Re ZERO -Starting Life in Another World", 3, Decimal(1)),
+        ),
+    ],
+)
+def test_label_reads_the_shared_ready_name_format(name: str, expected: LibraryLabel) -> None:
+    assert library_label(name) == expected

@@ -27,11 +27,13 @@ from anishift.application.events import sanitize_event_message
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
 from anishift.cli.interactive.anime import AnimeController
+from anishift.cli.interactive.covers import CoverImages
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, centered_block, working_directory_label
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
-from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
 from anishift.cli.interactive.pointer import (
     Click,
     ClickKind,
@@ -97,6 +99,9 @@ _QUEUE_MARKER_ROWS: Final[int] = 2
 
 _CRUMB_ESCAPES: Final[int] = 4
 """Most Esc presses one breadcrumb click sends; details over a problem over the Anime release list need four."""
+
+_COVERS_SETTING: Final[str] = "show_covers"
+"""User setting the K key flips, the same one Settings edits as Okładki."""
 
 _MINIMUM_BRANDED_ROWS: Final[int] = 8
 """Minimum terminal height for a brand, gap, queue markers and progress."""
@@ -225,15 +230,33 @@ class _InteractiveApplication:
             self._handle_scroll,
             mouse_handler=self._handle_mouse,
             hover_handler=self._handle_hover,
+            image_provider=self._native_image,
+        )
+        self._show_covers: bool | None = None
+        self._covers: CoverImages = CoverImages(
+            lambda: self._renderer.native_cell, shown=self._covers_shown, changed=self._renderer.invalidate
         )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
         self._frame_selection: FrameSelection = FrameSelection()
 
+    def _native_image(self) -> NativeImage | None:
+        """Return the cover of the panel's chosen row in the panel and the native mascot elsewhere."""
+        with self._lock:
+            mode: _ViewMode = self._mode
+        state: StateController | None = self._state
+        if mode is _ViewMode.STATE and state is not None:
+            return state.cover()
+        return self._renderer.native_mascot
+
+    def _new_state(self, resident: ResidentSession) -> StateController:
+        state: StateController = StateController(resident, self._renderer.invalidate, covers=self._covers)
+        state.attach_anime(AnimeController(self._service, self._renderer.invalidate, resident=resident))
+        return state
+
     def run(self) -> int:
         """Run the session until Home exits, or until one batch finishes and its window closes."""
         if self._resident is not None:
-            self._state = StateController(self._resident, self._renderer.invalidate)
-            self._state.attach_anime(AnimeController(self._service, self._renderer.invalidate, resident=self._resident))
+            self._state = self._new_state(self._resident)
         if self._batch is None:
             self._start_prewarm()
         else:
@@ -285,6 +308,26 @@ class _InteractiveApplication:
                 self._resident.command("reload_settings")
         with self._lock:
             self._settings = None
+            self._show_covers = None
+
+    def _covers_shown(self) -> bool:
+        shown: bool | None = self._show_covers
+        if shown is None:
+            shown = self._show_covers = self._service.settings_snapshot().show_covers
+        return shown
+
+    def _toggle_covers(self) -> None:
+        """Flip the saved covers setting so every panel view shows or hides its covers at once."""
+        try:
+            self._service.update_setting(_COVERS_SETTING, not self._covers_shown())
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Covers setting not saved", error_class=type(problem).__name__)
+            if self._state is not None:
+                self._state.set_notice("Nie udało się zapisać ustawienia okładek")
+            return
+        with self._lock:
+            self._show_covers = None
+        self._renderer.invalidate()
 
     def _start_prewarm(self) -> None:
         """Inspect the workspace while Home is idle so Auto and Manual start at once."""
@@ -387,7 +430,7 @@ class _InteractiveApplication:
             self._follow_click(taken)
         else:
             self._follow_click(self._frame_selection.mouse(event))
-        if event.event_type is MouseEventType.MOUSE_UP:
+        if event.event_type in {MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP}:
             self._frame_selection.hover(TextPoint(event.position.y, event.position.x))
         if taken is None:
             self._renderer.invalidate()
@@ -919,8 +962,7 @@ class _InteractiveApplication:
     def _show_state(self, *, processing: bool = False, notice: str | None = None) -> None:
         self._close_settings()
         if self._state is None and self._resident is not None:
-            self._state = StateController(self._resident, self._renderer.invalidate)
-            self._state.attach_anime(AnimeController(self._service, self._renderer.invalidate, resident=self._resident))
+            self._state = self._new_state(self._resident)
         if processing and self._state is not None:
             self._state.show_processing()
         if notice is not None and self._state is not None:
@@ -938,6 +980,7 @@ class _InteractiveApplication:
             StateResult.HOME: self._show_home,
             StateResult.SETTINGS: self._show_settings,
             StateResult.MANUAL: self._start_manual,
+            StateResult.COVERS: self._toggle_covers,
         }.get(result)
         if action is not None:
             action()
@@ -996,7 +1039,7 @@ class _InteractiveApplication:
             content = settings.render(columns, rows)
             screen = settings.view_key()
         elif mode is _ViewMode.STATE and self._state is not None:
-            content = self._state.render(columns, rows)
+            content = self._state.render(columns, rows, hovered=self._frame_selection.hovered_row())
             screen = self._state.view_key()
         else:
             content = _message_content(
@@ -1054,7 +1097,7 @@ def _home_content(  # noqa: PLR0913
         (
             index
             for index, line in enumerate(resting.split("\n"))
-            if line.plain.replace(NATIVE_MASCOT_ANCHOR, "").strip()
+            if line.plain.replace(NATIVE_IMAGE_ANCHOR, "").strip()
         ),
         brand_rows,
     )
@@ -1190,8 +1233,6 @@ def _fit_frame(content: Text, version: str, directory: str, columns: int, rows: 
     body_rows: int = max(rows - 1, 0)
     lines: list[Text] = list(content.split("\n"))[:body_rows]
     for line in lines:
-        # A line wider than the terminal would wrap, push every later row down and
-        # move the screen row the native mascot is anchored to.
         line.truncate(max(columns, 1), overflow="crop")
     lines.extend(Text() for _ in range(body_rows - len(lines)))
     lines.append(mark_keys(mark_inert(Text(status_line(version, directory, columns), style="gray"))))

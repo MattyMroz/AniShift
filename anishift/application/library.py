@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -14,22 +15,28 @@ from typing import TYPE_CHECKING, Final
 
 from natsort import os_sorted
 
+from anishift.application.acquisition import normalize_series
 from anishift.application.artifacts import SourceGroup
 from anishift.application.control import (
     AcquisitionConfirmation,
     LegacyScope,
-    ProcessingRequest,
     ProductConfirmation,
     ReadyGroup,
-    RequestState,
     WatchState,
     require_relative_paths,
 )
-from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet
+from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet, TitleSource
 from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.episode_identity import TECHNICAL, VIDEO_EXTENSIONS
-from anishift.application.episode_selection import ListedEpisode
-from anishift.application.intents import GroupIntent
+from anishift.application.episode_selection import (
+    SEASON_FORMATS,
+    EpisodeName,
+    JsonObject,
+    LibraryGraph,
+    ListedEpisode,
+    entry_title,
+    franchise_traversal,
+)
 from anishift.application.products import episode_stem, main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
 from anishift.paths import READY_DIRECTORY
@@ -43,6 +50,7 @@ from anishift.services.torrents.names import (
 
 if TYPE_CHECKING:
     from anishift.application.subscription_targets import SubscriptionRecord
+    from anishift.services.catalog.types import TitleCandidate
     from anishift.services.torrents.types import ReleaseName
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -83,6 +91,8 @@ _UNRECORDED: Final[str] = "unrecorded:"
 
 SERIES_YEAR: Final[re.Pattern[str]] = re.compile(r"\s*\((?:19|20)\d{2}\)")
 """Find a parenthesised year of a catalogue title, which tells remakes apart, not seasons."""
+_UNKNOWN_DATE_PART: Final[int] = 9999
+"""Sort value of a missing start year, month or day, placing an undated entry after every dated one."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,15 +148,6 @@ def series_title(title: str) -> str:
     """Return a catalogue title without its season, what follows it, its part or its year, shared by every season."""
     base: str = SERIES_PART.sub("", SERIES_YEAR.sub("", before_season(title))).removesuffix(" -").removesuffix(" :")
     return base or " ".join(title.split())
-
-
-@dataclass(frozen=True, slots=True)
-class EpisodeName:
-    """Catalogue facts one downloaded episode set is named after: entry title, listed episode and film format."""
-
-    title: str
-    episode: ListedEpisode
-    film: bool = False
 
 
 def episode_file_stem(name: EpisodeName) -> str:
@@ -238,18 +239,145 @@ def downloaded_episodes(state: WatchState) -> dict[str, DownloadedEpisode]:
     return result
 
 
-def untitled_series(state: WatchState, titles: Mapping[int, str]) -> frozenset[int]:
-    """Return the AniList entries of downloaded sets that neither a subscription nor *titles* names."""
-    followed: frozenset[int | None] = frozenset(item.anilist_id for item in state.subscriptions)
-    return frozenset(
-        item.anilist_id
-        for item in downloaded_episodes(state).values()
-        if item.anilist_id not in followed and item.anilist_id not in titles
+@dataclass(frozen=True, slots=True)
+class LibrarySeries:
+    """Catalogue series one AniList entry belongs to, with the entry's own title for its season."""
+
+    series_id: int
+    title: str
+    entry_title: str
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeEntry:
+    """AniList entry of one downloaded episode, with its series, entry title and numbering once the series is known."""
+
+    anilist_id: int
+    series: str | None = None
+    entry_title: str | None = None
+    season: int | None = None
+    episode: int | None = None
+
+
+def library_entries(state: WatchState) -> frozenset[int]:
+    """Return the AniList entries of subscriptions and of every ordered download."""
+    followed: frozenset[int] = frozenset(item.anilist_id for item in state.subscriptions if item.anilist_id is not None)
+    ordered: frozenset[int] = frozenset(
+        item.choice.anilist_id for acquisition in state.acquisitions for item in acquisition.assignments
+    ) | frozenset(item.legacy_scope.anilist_id for item in state.acquisitions if item.legacy_scope is not None)
+    return followed | ordered
+
+
+def episode_entry(
+    episode: DownloadedEpisode, series: Mapping[int, LibrarySeries], record: SubscriptionRecord | None
+) -> EpisodeEntry:
+    """Name one downloaded episode after its series and entry, keeping only the entry while the series is unknown."""
+    known: LibrarySeries | None = series.get(episode.anilist_id)
+    if known is None:
+        return EpisodeEntry(episode.anilist_id)
+    numbering: tuple[int, int] | None = (
+        None
+        if episode.number is None
+        else _numbering(known.entry_title, record, episode.number, first=known.series_id == episode.anilist_id)
+    )
+    return EpisodeEntry(
+        episode.anilist_id,
+        known.title,
+        known.entry_title,
+        None if numbering is None else numbering[0],
+        None if numbering is None else numbering[1],
     )
 
 
-def name_series(sets: Sequence[LibrarySet], state: WatchState, titles: Mapping[int, str]) -> tuple[LibrarySet, ...]:
-    """Name each set AniShift downloaded after its catalogue series, leaving every other set to its file name."""
+def library_series(graph: LibraryGraph, entries: Iterable[int]) -> dict[int, LibrarySeries]:
+    """Join the PREQUEL/SEQUEL chains of *entries* sharing a node into series named after their first season."""
+    known: tuple[int, ...] = tuple(entry for entry in dict.fromkeys(entries) if entry in graph.nodes)
+    chains: list[frozenset[int]] = []
+    for entry in known:
+        chain: frozenset[int] = franchise_traversal(entry, graph.nodes, graph.queried)[0] | {entry}
+        joined: list[frozenset[int]] = [item for item in chains if item & chain]
+        chains = [item for item in chains if not item & chain]
+        chains.append(chain.union(*joined))
+    result: dict[int, LibrarySeries] = {}
+    for chain in chains:
+        first: JsonObject = min((graph.nodes[item] for item in chain if item in graph.nodes), key=_series_order)
+        title: str = series_title(_node_title(first))
+        if title:
+            result.update(
+                (entry, LibrarySeries(first["id"], title, _node_title(graph.nodes[entry])))
+                for entry in known
+                if entry in chain
+            )
+    return result
+
+
+def _series_order(node: JsonObject) -> tuple[bool, int, int, int, int]:
+    start: JsonObject = node.get("startDate") or {}
+    return (
+        node.get("format") not in SEASON_FORMATS,
+        start.get("year") or _UNKNOWN_DATE_PART,
+        start.get("month") or _UNKNOWN_DATE_PART,
+        start.get("day") or _UNKNOWN_DATE_PART,
+        node["id"],
+    )
+
+
+def _node_title(node: JsonObject) -> str:
+    title: JsonObject = node.get("title") or {}
+    return entry_title(title.get("english"), str(title.get("romaji") or ""))
+
+
+def hand_key(item: LibrarySet) -> tuple[str, int] | None:
+    """Return the normalized title and season a hand-added set is searched by, or None for an unreadable name."""
+    label: LibraryLabel = library_label(item.name)
+    title: str = normalize_series(label.title)
+    if not title or (label.season is None and label.episode is None and label.title == item.name):
+        return None
+    return title, label.season or 1
+
+
+def hand_titles(sets: Sequence[LibrarySet], state: WatchState) -> dict[tuple[str, int], tuple[str, int | None]]:
+    """Map the search key of each hand-added set to the title from its file name and the highest episode."""
+    keyed: dict[str, DownloadedEpisode] = downloaded_episodes(state)
+    titles: dict[tuple[str, int], tuple[str, int | None]] = {}
+    for item in sets:
+        key: tuple[str, int] | None = None if item.set_id in keyed else hand_key(item)
+        if key is None:
+            continue
+        label: LibraryLabel = library_label(item.name)
+        episode: int | None = None if label.episode is None else int(label.last or label.episode)
+        title, highest = titles.get(key, (label.title, None))
+        titles[key] = title, max((value for value in (highest, episode) if value is not None), default=None)
+    return titles
+
+
+def recognize(candidates: Sequence[TitleCandidate], title: str, season: int, episode: int | None) -> int | None:
+    """Return the only candidate named *title* in *season* holding *episode*, or None when another or a remake fits."""
+    wanted: str = normalize_series(title)
+    exact: set[int] = set()
+    rivals: set[int] = set()
+    for candidate in candidates:
+        if episode is not None and candidate.episodes is not None and candidate.episodes < episode:
+            continue
+        for alias in candidate.aliases():
+            if (season_hint(alias) or 1) != season:
+                continue
+            base: str = strip_season(alias)
+            if normalize_series(base) == wanted:
+                exact.add(candidate.anilist_id)
+                rivals.add(candidate.anilist_id)
+            if normalize_series(SERIES_YEAR.sub("", base)) == wanted:
+                rivals.add(candidate.anilist_id)
+    return next(iter(exact)) if len(exact) == 1 and rivals == exact else None
+
+
+def name_series(
+    sets: Sequence[LibrarySet],
+    state: WatchState,
+    series: Mapping[int, LibrarySeries],
+    recognized: Mapping[tuple[str, int], int | None],
+) -> tuple[LibrarySet, ...]:
+    """Give each downloaded or recognized set its entry, series and title source, leaving others to their names."""
     episodes: dict[str, DownloadedEpisode] = downloaded_episodes(state)
     followed: dict[int, SubscriptionRecord] = {
         item.anilist_id: item for item in state.subscriptions if item.anilist_id is not None
@@ -257,33 +385,52 @@ def name_series(sets: Sequence[LibrarySet], state: WatchState, titles: Mapping[i
     named: list[LibrarySet] = []
     for item in sets:
         episode: DownloadedEpisode | None = episodes.get(item.set_id)
-        record: SubscriptionRecord | None = None if episode is None else followed.get(episode.anilist_id)
-        title: str | None = record.title if record is not None else None
-        if title is None and episode is not None:
-            title = titles.get(episode.anilist_id)
-        if episode is None or title is None:
-            named.append(item)
+        if episode is None:
+            named.append(_recognized_set(item, series, recognized))
             continue
-        numbering: tuple[int, int] | None = (
-            None if episode.number is None else _numbering(title, record, episode.number)
-        )
+        entry: EpisodeEntry = episode_entry(episode, series, followed.get(episode.anilist_id))
         named.append(
             replace(
                 item,
-                series=series_title(title),
-                season=None if numbering is None else numbering[0],
-                episode=None if numbering is None else numbering[1],
+                anilist_id=entry.anilist_id,
+                title_source=TitleSource.KEY,
+                series=entry.series,
+                entry_title=entry.entry_title,
+                season=entry.season,
+                episode=entry.episode,
             )
         )
     return tuple(named)
 
 
-def _numbering(title: str, record: SubscriptionRecord | None, number: int) -> tuple[int, int] | None:
+def _numbering(title: str, record: SubscriptionRecord | None, number: int, *, first: bool) -> tuple[int, int] | None:
     mapped: tuple[ListedEpisode, ...] = () if record is None or record.mapping is None else record.mapping.episodes
     listed: ListedEpisode = next((item for item in mapped if item.number == number), ListedEpisode(number))
-    if listed.season is None and season_hint(title) is None:
+    if listed.season is None and season_hint(title) is None and not first:
         return None
     return episode_numbering(listed, title, film=False)
+
+
+def _recognized_set(
+    item: LibrarySet, series: Mapping[int, LibrarySeries], recognized: Mapping[tuple[str, int], int | None]
+) -> LibrarySet:
+    key: tuple[str, int] | None = hand_key(item)
+    anilist_id: int | None = None if key is None else recognized.get(key)
+    if anilist_id is None:
+        return item
+    found: LibrarySet = replace(item, anilist_id=anilist_id, title_source=TitleSource.RECOGNIZED)
+    known: LibrarySeries | None = series.get(anilist_id)
+    if known is None:
+        return found
+    label: LibraryLabel = library_label(item.name)
+    whole: bool = label.episode is not None and label.last is None and label.episode == int(label.episode)
+    return replace(
+        found,
+        series=known.title,
+        entry_title=known.entry_title,
+        season=(label.season or 1) if whole else None,
+        episode=int(label.episode) if whole and label.episode is not None else None,
+    )
 
 
 def file_identity(root: Path, name: str) -> LibraryFileIdentity | None:
@@ -305,19 +452,27 @@ def file_identity(root: Path, name: str) -> LibraryFileIdentity | None:
 
 
 def project_library(state: WatchState, root: Path, groups: Sequence[SourceGroup]) -> tuple[LibrarySet, ...]:
-    """Reconcile completed sets from provenance, confirmations and the shared discovery inventory."""
+    """Project every recorded set and every ready set on disk, following a recorded set moved inside ``ready``."""
     discovered: dict[str, SourceGroup] = {group.group_id: group for group in groups}
     result: list[LibrarySet] = [
         _recorded_set(item, state, root, discovered.get(item.group_id)) for item in state.ready_groups
     ]
     recorded: frozenset[str] = frozenset(item.group_id for item in state.ready_groups)
-    result.extend(
+    claimed: frozenset[str] = frozenset(
+        name for item in state.ready_groups for name in (*item.sources, *item.products, *item.pending_sources)
+    )
+    loose: list[LibrarySet] = [
         item
         for group in groups
         if group.group_id not in recorded
         and group.directory.is_relative_to(root / READY_DIRECTORY)
-        and (item := _legacy_set(group, state, root)) is not None
-    )
+        and (item := _loose_set(group, root)) is not None
+        and not any(file.path in claimed for file in item.files)
+    ]
+    moved: dict[str, LibrarySet] = _moved_sets(state, result, loose)
+    taken: frozenset[str] = frozenset(item.group_id for item in moved.values())
+    result = [moved.get(item.set_id, item) for item in result]
+    result.extend(item for item in loose if item.group_id not in taken)
     return tuple(os_sorted(result, key=lambda item: (item.name, item.set_id)))
 
 
@@ -363,10 +518,16 @@ def _recorded_set(record: ReadyGroup, state: WatchState, root: Path, group: Sour
         files,
         available,
         problem,
+        _provisional(record, record.main_result),
+    )
+
+
+def _provisional(record: ReadyGroup, main_result: str | None) -> bool:
+    return (
         record.target is WorkflowTarget.TRANSLATE
         and any(Path(name).suffix.casefold() == ".txt" for name in record.sources)
-        and record.main_result is not None
-        and Path(record.main_result).suffix.casefold() == ".srt",
+        and main_result is not None
+        and Path(main_result).suffix.casefold() == ".srt"
     )
 
 
@@ -400,35 +561,63 @@ def _confirmed_main(
     )
 
 
-def _legacy_set(group: SourceGroup, state: WatchState, root: Path) -> LibrarySet | None:
-    latest: ProcessingRequest | None = max(
-        (item for item in state.requests if item.state is RequestState.SUCCEEDED and group.group_id in item.group_ids),
-        key=lambda item: (item.generation, item.accepted_at),
-        default=None,
-    )
-    if latest is None:
-        return None
-    intent: GroupIntent | None = next((item for item in latest.intents if item.group_id == group.group_id), None)
-    products: tuple[str, ...] = tuple(
-        item.path
-        for item in state.products
-        if item.group_id == group.group_id
-        and (
-            item.artifact_kind.removeprefix("final_") in intent.products.requested_products
-            if intent is not None
-            else item.request_id == latest.request_id
-        )
-    )
-    headline: str | None = main_product([Path(name).name for name in products])
-    primary: str | None = next((name for name in products if Path(name).name == headline), None)
-    if primary is None:
-        return None
+def _loose_set(group: SourceGroup, root: Path) -> LibrarySet | None:
     files: tuple[LibraryFile, ...] = tuple(
-        _library_file(root, name, role) for name, role in _discovered_members(group, root, None).items()
+        _library_file(root, name, role) for name, role in sorted(_discovered_members(group, root, None).items())
     )
-    if not _confirmed_main(group.group_id, primary, files, state.products):
+    present: dict[str, str] = {
+        Path(item.path).name: item.path for item in files if item.role == "product" and item.identity is not None
+    }
+    headline: str | None = main_product(tuple(present))
+    if headline is None:
         return None
-    target: WorkflowTarget | None = intent.target if intent is not None else None
-    return LibrarySet(
-        group.group_id, group.group_id, group.stem, target, primary, files, True, "library_ownership_unknown"
+    main: str = present[headline]
+    ordered: tuple[LibraryFile, ...] = tuple(sorted(files, key=lambda item: item.path == main))
+    return LibrarySet(group.group_id, group.group_id, group.stem, None, main, ordered, True)
+
+
+def _moved_sets(state: WatchState, sets: Sequence[LibrarySet], loose: Sequence[LibrarySet]) -> dict[str, LibrarySet]:
+    lost: dict[tuple[int, int], list[ReadyGroup]] = {}
+    for record, item in zip(state.ready_groups, sets, strict=True):
+        if item.problem != "library_result_missing":
+            continue
+        confirmed: ProductConfirmation | None = _main_confirmation(record, state.products)
+        if confirmed is not None:
+            lost.setdefault((confirmed.size, confirmed.modified_ns), []).append(record)
+    found: dict[str, list[tuple[LibrarySet, str]]] = {}
+    for candidate in loose:
+        for file in candidate.files:
+            records: list[ReadyGroup] = (
+                [] if file.identity is None else lost.get((file.identity.size, file.identity.modified_ns), [])
+            )
+            if len(records) == 1:
+                found.setdefault(records[0].set_id, []).append((candidate, file.path))
+    claims: Counter[str] = Counter(candidate.group_id for matches in found.values() for candidate, _path in matches)
+    records_by_id: dict[str, ReadyGroup] = {record.set_id: record for record in state.ready_groups}
+    return {
+        set_id: _moved_set(records_by_id[set_id], matches[0][0], matches[0][1])
+        for set_id, matches in found.items()
+        if len(matches) == 1 and claims[matches[0][0].group_id] == 1
+    }
+
+
+def _main_confirmation(record: ReadyGroup, products: Sequence[ProductConfirmation]) -> ProductConfirmation | None:
+    return next(
+        (
+            item
+            for item in products
+            if item.group_id == record.group_id and item.path == record.main_result and item.size >= 0
+        ),
+        None,
+    )
+
+
+def _moved_set(record: ReadyGroup, found: LibrarySet, main_result: str) -> LibrarySet:
+    return replace(
+        found,
+        set_id=record.set_id,
+        target=record.target,
+        main_result=main_result,
+        files=tuple(sorted(found.files, key=lambda item: item.path == main_result)),
+        provisional_timing=_provisional(record, main_result),
     )
