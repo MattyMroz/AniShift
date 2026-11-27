@@ -11,6 +11,7 @@ from typing import Final
 from anishift.application import (
     AIRING_STATUSES,
     EpisodeListing,
+    EpisodeReason,
     ListedEpisode,
     TargetNotice,
     anilist_date,
@@ -19,6 +20,8 @@ from anishift.application import (
     notice_text,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.anime_texts import episode_state
+from anishift.cli.interactive.state_texts import state_word
 
 __all__ = [
     "CHECK_SHOWN_S",
@@ -48,9 +51,9 @@ _DAILY_AFTER_S: Final[int] = 72 * _HOUR_S
 
 _PAUSES: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "user": "Wstrzymana",
-        "migrated_due": "Wstrzymana — przeniesiona; zaległe odcinki",
-        "migrated_missing": "Wstrzymana — zakończona przez starą wersję",
+        "user": state_word("paused"),
+        "migrated_due": f"{state_word('paused')} — przeniesiona; zaległe odcinki",
+        "migrated_missing": f"{state_word('paused')} — zakończona przez starą wersję",
     }
 )
 """Polish explanation of each reason a subscription waits for the user."""
@@ -65,21 +68,6 @@ _ISSUES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
     }
 )
 """Short state and full explanation of each problem that stops a whole subscription."""
-
-_DUE_STATES: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "searching": "szukam",
-        "pending": "szukam",
-        "polish": "czekam na PL",
-        "downloading": "pobieram",
-        "no_release": "brak wydania",
-        "exhausted": "nie udało się",
-    }
-)
-"""Short Polish words of what the earliest unfinished episode of a subscription is waiting for."""
-
-_SEARCHING: Final[frozenset[str]] = frozenset({"searching", "pending"})
-"""Due states in which the automation is looking for a release."""
 
 _FAILED_CHECKS: Final[frozenset[str]] = frozenset({"source_failed", "rate_limited"})
 """Check outcomes in which a source did not answer."""
@@ -121,7 +109,7 @@ def subscription_draft(listing: EpisodeListing, now: datetime, *, paused: bool) 
     targets: list[ListedEpisode] = [item for item in listing.episodes if is_target(item, now, cut)]
     lines: list[str] = [f"Kolejne odcinki pobiorę po emisji · {_next_airing(targets, now)}"]
     if paused:
-        lines.append("Automat jest wstrzymany · zacznę po wznowieniu")
+        lines.append(f"{state_word('automation_off')} · zacznę po włączeniu")
     aired: tuple[ListedEpisode, ...] = tuple(
         item for item in listing.episodes if item.aired and not is_target(item, now, cut)
     )
@@ -151,25 +139,24 @@ def row_summary(row: Mapping[str, object]) -> str:
     return f"odcinki {episodes} · gotowe {ready}"
 
 
-def row_state(row: Mapping[str, object], now: datetime, *, idle: bool) -> SubscriptionState:
-    """Return the one state a subscription row shows at *now*; an *idle* automation searches for nothing."""
+def row_state(row: Mapping[str, object], now: datetime) -> SubscriptionState:
+    """Return the one state a subscription row shows at *now*, its due episode in the words of its episode view."""
     issue: SubscriptionState | None = _issue(row)
     if issue is not None:
         return issue
     if row.get("paused"):
-        return SubscriptionState("Wstrzymana", f"{_PAUSES.get(str(row.get('pause_reason')), 'Wstrzymana')} · W wznów")
+        paused: str = state_word("paused")
+        return SubscriptionState(paused, f"{_PAUSES.get(str(row.get('pause_reason')), paused)} · W wznów")
     if row.get("review_pending"):
-        return SubscriptionState("Weryfikuję", "Sprawdzam przeniesioną subskrypcję")
+        return SubscriptionState(state_word("review"), "Sprawdzam przeniesioną subskrypcję")
     checking: object = row.get("checking_number")
     if isinstance(checking, int):
-        return _plain(f"E{checking} · sprawdzam plik")
+        return _plain(f"E{checking} · {state_word(EpisodeReason.SUBSCRIPTION_CHECKING)}")
     due: object = row.get("due_at")
     if not isinstance(due, str):
         return _plain("Przerwa w emisji" if row.get("catalog_status") == "HIATUS" else "Termin nieznany")
     number: object = row.get("due_number")
-    return _due_state(
-        f"E{number}" if isinstance(number, int) else "Odcinek", datetime.fromisoformat(due), row, now, idle=idle
-    )
+    return _due_state(f"E{number}" if isinstance(number, int) else "Odcinek", datetime.fromisoformat(due), row, now)
 
 
 def _plain(text: str) -> SubscriptionState:
@@ -179,23 +166,27 @@ def _plain(text: str) -> SubscriptionState:
 def _issue(row: Mapping[str, object]) -> SubscriptionState | None:
     problem: object = row.get("problem")
     if problem is not None:
-        text, detail = _ISSUES.get(str(problem), ("Wymaga uwagi", "Wymaga uwagi"))
+        attention: str = state_word("attention")
+        text, detail = _ISSUES.get(str(problem), (attention, attention))
         return SubscriptionState(text, detail)
     return None
 
 
-def _due_state(label: str, due: datetime, row: Mapping[str, object], now: datetime, *, idle: bool) -> SubscriptionState:
-    state: str = str(row.get("due_state"))
-    if state not in _DUE_STATES:
-        if due > now:
-            return _plain(f"{label} · {_when(due, now)}")
-        state = "searching"
-    if idle and state in _SEARCHING:
-        return _plain(label)
-    text: str = f"{label} · {_DUE_STATES[state]}"
-    if state == "exhausted":
-        return SubscriptionState(text, f"{label} · nie udało się pobrać · pobierz ręcznie w szczegółach")
-    if state == "searching" and (now - due).total_seconds() >= _DAILY_AFTER_S:
+def _due_state(label: str, due: datetime, row: Mapping[str, object], now: datetime) -> SubscriptionState:
+    state: object = row.get("due_state")
+    reason: object = row.get("due_reason")
+    word: str = episode_state(state, None if reason is None else str(reason)) if isinstance(state, str) else ""
+    unordered: str = state_word(EpisodeReason.RESULT_MISSING if due <= now else EpisodeReason.EPISODE_NOT_AIRED)
+    text: str = f"{label} · {word or unordered}"
+    if reason == EpisodeReason.SUBSCRIPTION_AWAITING_AIRING and due > now:
+        return _plain(f"{text} · {_when(due, now)}")
+    if reason == EpisodeReason.SUBSCRIPTION_EXHAUSTED:
+        return SubscriptionState(text, f"{text} · pobierz ręcznie w szczegółach")
+    if (
+        reason == EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE
+        and not row.get("due_pending")
+        and (now - due).total_seconds() >= _DAILY_AFTER_S
+    ):
         return SubscriptionState(text, f"{text} · sprawdzam raz dziennie")
     return _plain(text)
 
@@ -243,7 +234,7 @@ def polish_line(history: str | None, wait_until: str | None, *, skipped: bool) -
     """Say what the previous episode tells about Polish subtitles and whether the target waits for them."""
     seen: str = _POLISH_HISTORY.get(str(history), _POLISH_HISTORY["unknown"])
     if skipped:
-        return f"PL: {seen} · pobieram bez czekania"
+        return f"PL: {seen} · bez czekania na PL"
     if wait_until is not None:
         return f"PL: {seen} · czekam do {clock_time(wait_until)}"
     return f"PL: {seen} · pobieram od razu"

@@ -502,7 +502,7 @@ def test_processing_ctrl_z_shows_a_failed_set_restoring_at_once(monkeypatch: pyt
     try:
         panel.handle_key("undo")
         assert [item.get("set_id") for item in panel._processing_rows()] == ["Beta", "Alpha"]
-        assert "Przywracam" in panel.render(80, 24).plain
+        assert "Przywracanie" in panel.render(80, 24).plain
         assert "Alpha" not in _shown(panel)
     finally:
         _stop(owner, panel)

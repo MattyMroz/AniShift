@@ -10,7 +10,9 @@ from typing import Final
 
 from rich.text import Text
 
+from anishift.application import EpisodeReason
 from anishift.cli.interactive.pointer import TextPoint
+from anishift.cli.interactive.state_texts import state_word
 from anishift.cli.interactive.text_input import TextInput
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -109,10 +111,11 @@ class AnimeRow:
     @property
     def refusal(self) -> str:
         """Explain why an ineligible row cannot be selected or downloaded."""
+        not_aired: str = state_word(EpisodeReason.EPISODE_NOT_AIRED)
         return (
             self.refusal_text
             or self.detail
-            or ("Nie wyemitowano" if self.status == "Nie wyemitowano" else "Zlecono | P pobierz ponownie")
+            or (not_aired if self.status == not_aired else f"{state_word('ordered')} | P pobierz ponownie")
         )
 
 

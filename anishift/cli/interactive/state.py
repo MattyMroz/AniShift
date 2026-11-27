@@ -130,6 +130,7 @@ from anishift.cli.interactive.state_texts import (
     rows,
     safe_text,
     settled_restores,
+    state_word,
     undo_target,
 )
 from anishift.cli.interactive.text_input import TextInput
@@ -154,8 +155,8 @@ _MINIMUM_TITLE_ROWS: Final[int] = 12
 _RECONNECT_S: Final[float] = 2.0
 """Delay before reconnecting a lost panel event stream."""
 
-_PAUSED: Final[str] = "Automat wstrzymany"
-"""Status line of paused automation, which alone drops the material counters."""
+_PAUSED: Final[str] = state_word("automation_off")
+"""Status line of disabled automation, which alone drops the material counters."""
 
 _ENABLE_HINT: Final[str] = "O włącz"
 """Key the status line names beside a paused automation."""
@@ -1788,9 +1789,7 @@ class StateController:
             columns,
             rows,
             AnimeScreen.SUBSCRIPTIONS,
-            subscription_rows(
-                self._subscriptions, self._subscription_checks, self._clock(), idle=self._automation_paused()
-            ),
+            subscription_rows(self._subscriptions, self._subscription_checks, self._clock()),
             self._notice.rstrip("."),
             subscription_warning(problem=bool(self._subscriptions_problem), shadow=self._subscriptions_shadow),
             covers=tuple(item.get("anilist_id") for item in self._subscriptions),
@@ -1986,7 +1985,9 @@ class StateController:
         for item, name in zip(items, names, strict=True):
             if item.get("stage") == "processing":
                 status: str | None = (
-                    "Brak połączenia" if not self._connected else ("Wstrzymane" if held(self._snapshot, item) else None)
+                    "Brak połączenia"
+                    if not self._connected
+                    else (state_word("paused") if held(self._snapshot, item) else None)
                 )
                 line: Text = self._runs[str(item["run_id"])][1].render_group(
                     str(item["group_id"]), columns, status=status, label=name, names=names

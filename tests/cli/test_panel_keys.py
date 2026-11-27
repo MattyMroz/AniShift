@@ -1411,7 +1411,7 @@ def test_a_material_waiting_for_the_user_names_its_cause(reason: str, label: str
     ("problem", "label"),
     [
         ("This download no longer matches its saved file selection or folder", "Pliki się zmieniły"),
-        ("Something new and unknown", "Wymaga uwagi"),
+        ("Something new and unknown", "Do sprawdzenia"),
     ],
 )
 def test_a_download_problem_names_its_cause_in_short(problem: str, label: str) -> None:

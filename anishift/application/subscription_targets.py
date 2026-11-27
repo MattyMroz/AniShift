@@ -378,6 +378,8 @@ class SubscriptionRow:
     checking_number: int | None = None
     aired: int = 0
     due_state: str | None = None
+    due_reason: str | None = None
+    due_pending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,7 +464,7 @@ def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
         if record.episode_count is None
         else max(record.episode_count, max((item.number for item in record.targets), default=0)),
         aired=(record.cut or 0) + sum(item.state is not TargetState.AWAITING_AIRING for item in record.targets),
-        due_state=None if nearest is None else _due_state(nearest),
+        due_pending=nearest is not None and nearest.blocker is Blocker.PENDING,
     )
 
 
@@ -724,15 +726,6 @@ def _display_key(record: SubscriptionRecord) -> tuple[int, float, str, str]:
 def _lagging(record: SubscriptionRecord) -> SubscriptionTarget | None:
     lagging: list[SubscriptionTarget] = [item for item in record.targets if item.state in _LAGGING_STATES]
     return min(lagging, key=lambda item: item.number) if lagging else None
-
-
-def _due_state(target: SubscriptionTarget) -> str:
-    if target.state is TargetState.DUE:
-        blocker: Blocker | None = target.blocker
-        if blocker is Blocker.PENDING:
-            return "pending"
-        return "no_release" if blocker in {Blocker.NO_ADMISSIBLE, Blocker.THRESHOLD} else "searching"
-    return {TargetState.ATTEMPTING: "downloading", TargetState.EXHAUSTED: "exhausted"}.get(target.state, "airing")
 
 
 def _nearest(record: SubscriptionRecord) -> SubscriptionTarget | None:

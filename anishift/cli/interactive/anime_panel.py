@@ -211,12 +211,12 @@ class AnimePanel:
         self.state.notice = "Szukam wydań…"
         self.state.notice_kind = NoticeKind.INFO
 
-    def result(self, key: str, *, admitted: bool, status: str = "Brak wydania", cause: str = "") -> None:
-        """Apply one confirmed result and expire its acknowledgement independently."""
+    def result(self, key: str, *, admitted: bool, status: str, cause: str = "") -> None:
+        """Apply one confirmed result and its Stan word, and expire its acknowledgement independently."""
         self.state.batch_results[key] = None if admitted else cause
         self.state.searching.discard(key)
         self.state.items = tuple(
-            replace(item, status="Zlecono" if admitted else status, eligible=not admitted) if item.key == key else item
+            replace(item, status=status, eligible=not admitted) if item.key == key else item
             for item in self.state.items
         )
         if admitted:

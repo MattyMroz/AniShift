@@ -264,7 +264,7 @@ def test_terminal_failure_stays_stopped_on_reconcile_and_owner_restart(  # noqa:
         assert owner.handle(_request("status")).ok
         assert owner.state.requests[0].problem is None
         assert len(frames) == 1
-        assert frames[0]["title"] == "Materiał wymaga uwagi"
+        assert frames[0]["title"] == "Materiał do sprawdzenia"
         calls: int = translate.call_count
         _reconcile_automatic(owner)
         assert [item.request_id for item in owner.state.requests] == [run_id]
@@ -474,7 +474,7 @@ def test_partial_manual_notifies_the_success_and_reports_the_failed_attempt(
         )
         assert navigation["set_id"] == owner.state.ready_groups[0].set_id
         assert not opened
-        assert any(frame["title"] == "Materiał wymaga uwagi" for frame in frames)
+        assert any(frame["title"] == "Materiał do sprawdzenia" for frame in frames)
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -499,7 +499,7 @@ def test_inline_regeneration_notifies_only_its_successful_attempt(
     with _notifications(service, store) as (owner, frames, _opened):
         _start(owner, service, rebuild=True)
         assert _await(lambda: len(frames) == 1)
-        assert frames[0]["title"] == ("Materiał wymaga uwagi" if fail else "Gotowy materiał")
+        assert frames[0]["title"] == ("Materiał do sprawdzenia" if fail else "Gotowy materiał")
         assert len(owner.state.ready_groups) == 1
         assert len(owner.state.notified) == 2
         if fail:

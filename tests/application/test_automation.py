@@ -608,7 +608,7 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             assert "private-provider-payload" not in frame
             if scenario == "titles":
                 assert "Nr" in frame
-                assert "Nie wyemitowano" in frame
+                assert "Przed emisją" in frame
                 assert "Brak terminów emisji (AniList)" in frame
                 assert sent == ["graphql.anilist.co", "graphql.anilist.co", "api.ani.zip", "graphql.anilist.co"]
             elif scenario == "catalog_failed":

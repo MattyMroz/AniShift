@@ -16,8 +16,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   w czystych `state_subscriptions.py`, `state_processing.py` (z Historią), `state_library.py` i liściu
   `state_texts.py`; importy tylko `state` → `state_*` → `state_texts`. `PANEL_ACTIONS` leży w `actions.py`.
 - `interactive/anime.py` — `AnimeController` (stan, klawisze, mysz, workery); importy `anime` → `anime_rows`/`anime_releases`
-  → liść `anime_texts` (`stated` importuje `state.refusal_text` leniwie); reeksportuje `EPISODE_REASON_LABELS` dla
-  `state_processing.py`. Render w `interactive/anime_view.py`; `AnimePanel` posiada zaznaczenie, kopiowanie i wiersze.
+  → `anime_texts`, który importuje tylko liść `state_texts` (słownik stanów, `refusal_text`). Render w `interactive/anime_view.py`;
+  `AnimePanel` posiada zaznaczenie, kopiowanie i wiersze.
+- Słowo i styl każdego stanu (odcinek, pobranie, wiersz Przetwarzania, automat) daje jeden słownik
+  `state_texts.STATES` przez `state_word`/`state_style`; nie wpisuj słowa stanu literałem. Stan odcinka z owner
+  (`state`, `reason`) tłumaczy jedno `anime_texts.episode_state`, wspólne dla widoku odcinków i listy Subskrypcji.
+  Kolumna Stan Biblioteki ma własne słowa (`state_library`).
 
 ## Proces, rezydent i IPC
 
@@ -156,7 +160,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   ze snapshotów ownera. Nieznane fakty zostają nieznane; brak odczytu zachowuje ostatnie zweryfikowane wartości.
   Nieudane albo anulowane zlecenie (`failed`/`partial`/`cancelled`), którego wideo źródłowe owner widzi na dysku
   (`_local_primary`), przychodzi jako wiersz `waiting`
-  z `attention` i `reason=processing_failed` (`Błąd`, licznik „do sprawdzenia”); zostaje do ponowienia.
+  z `attention` i `reason=processing_failed` (`Błąd przetwarzania`, licznik „do sprawdzenia”); zostaje do ponowienia.
   P na nim (`failed_group`, `_retry_now`) ponawia od razu, bez ekranu propozycji i bez Enter: `retry_proposal`
   ownera, potem `_execute_retry` (`resume` → `plan_resume`, `manual` z zapisanymi intencjami → `plan_manual`, obie
   przez `reserve` i `start`; `reacquire` → `reacquire`; `manual` bez intencji kończy się odmową z drogą do
@@ -168,13 +172,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `pending_deletions`; Ctrl+Z (poza Historią) woła `deletion_undo` jak Biblioteka.
 - P w Historii (H → P) nadal tylko przygotowuje propozycję ponowienia ownera, bo pozycja Historii bywa też
   ukończonym materiałem, dla którego `manual` oznacza wybór zakresu przebudowy: lokalna praca idzie Enterem do
-  Ręcznego z rewalidacją, zdalna dostaje jawne powtórzenie przez `_execute_retry`. Pauza nie blokuje P; `Wstrzymano` i zamrożone liczniki tylko dla wierszy z `automatic` (brak pola =
+  Ręcznego z rewalidacją, zdalna dostaje jawne powtórzenie przez `_execute_retry`. Pauza nie blokuje P; `Wstrzymane` i zamrożone liczniki tylko dla wierszy z `automatic` (brak pola =
   automatyczny).
 - Historia (50 ostatnich materiałów): Enter waliduje przez `library_result`, F daje `playback=False`; błędy zostają.
 - Biblioteka wysyła dokładne `LibraryFileIdentity` do walidacji ownera. Del ukrywa wiersz w tej klatce i usuwa na
   własnym wątku; wiersz wraca z odmową, jeśli snapshot nie potwierdzi operacji. Ctrl+Z deleguje Undo do ownera,
   a symetrycznie do Del od razu pokazuje wiersz „Przywracam…” (`_restoring`, `undo_target`, `settled_restores` w
-  `state_texts.py`; zestaw `unrecorded` w Przetwarzaniu); odmowa lub błąd przywracania usuwa go z komunikatem.
+  `state_texts.py`; zestaw `unrecorded` w Przetwarzaniu jako „Przywracanie”); odmowa lub błąd przywracania usuwa go z komunikatem.
   Etykiety z `library_label` fasady i pól `series/season/episode` (`state_library._series_label`), inaczej z pliku.
   Brak akcji P i wiersza relokacji — owner sam ponawia relokacje. Odmowy przeżywają obce snapshoty, nie zmianę
   wyboru; spóźniony wynik nie nadpisze nowszego kontekstu. Testy: `test_library_actions.py`, `test_library_columns.py`.

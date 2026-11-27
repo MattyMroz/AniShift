@@ -79,7 +79,7 @@ from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive import anime_texts
-from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, _Screen
+from anishift.cli.interactive.anime import AnimeController, _Screen
 from anishift.cli.interactive.anime_releases import (
     _REASON_TEXTS,
     UNKNOWN_PREVIOUS_WARNING,
@@ -89,6 +89,7 @@ from anishift.cli.interactive.anime_releases import (
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR
 from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.state_texts import STATES
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
@@ -592,7 +593,7 @@ def test_overgeared_without_mapping_uses_anilist_rows_and_explicit_nyaa_preview(
     frame: str = controller.render(width, 40).plain
     assert "Overgeared" in frame
     assert "Nie zamówiono" not in frame
-    assert "Nie wyemitowano" in frame
+    assert "Przed emisją" in frame
     assert "Odcinek 1" in frame
     assert "Odcinek 12" in frame
     assert all(episode.title is None for episode in catalog.listing.episodes)
@@ -1324,7 +1325,7 @@ def test_past_mapping_dates_do_not_make_unconfirmed_episodes_selectable(
     )
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    assert "Nie wyemitowano" in _frame(controller)
+    assert "Przed emisją" in _frame(controller)
     for key in ("space", "enter", "text:a", "text:z", "text:1", "enter", "text:d"):
         _key(controller, key)
     assert controller._episode_marks == set()
@@ -1663,10 +1664,10 @@ class _Owner(_Catalog):
     ("state", "label"),
     [
         ("ordered", "Zlecono"),
-        ("downloading", "Pobieram"),
-        ("downloaded", "Pobrano"),
-        ("processing", "Przetwarzam"),
-        ("processing_failed", "Błąd"),
+        ("downloading", "Pobieranie"),
+        ("downloaded", "Pobrane"),
+        ("processing", "Przetwarzanie"),
+        ("processing_failed", "Błąd przetwarzania"),
         ("ready", "Gotowe"),
         ("possibly_admitted", "Już zlecone?"),
         ("future_state", "Zlecono"),
@@ -1696,8 +1697,8 @@ def test_owner_episode_states_have_explicit_labels(monkeypatch: pytest.MonkeyPat
 @pytest.mark.parametrize(
     ("reason", "status", "cause"),
     [
-        ("no_suggestion", "Brak wydania", "Brak wydania"),
-        ("TORRENT_SOURCE_FAILED", "Błąd źródła", "Źródło wydań nie odpowiada"),
+        ("no_suggestion", "Brak pewnego wydania", "Brak pewnego wydania"),
+        ("TORRENT_SOURCE_FAILED", "Błąd pobierania", "Źródło wydań nie odpowiada"),
         ("shutting_down", "Nie zlecono", "AniShift się kończy"),
         ("acquisition_unavailable", "Niedostępne", "Pobieranie jest niedostępne w tej sesji"),
     ],
@@ -2447,17 +2448,21 @@ def test_choose_during_search_before_slow_source(tmp_path: Path) -> None:
     ("reason", "label"),
     [
         ("transfer_failed", "Błąd pobierania"),
-        ("publication_failed", "Błąd eksportu"),
-        ("waiting_previous_transfer", "Czeka w kolejce"),
+        ("publication_failed", "Błąd zapisu"),
+        ("finalization_failed", "Błąd zapisu"),
+        ("waiting_previous_transfer", "W kolejce"),
         ("publication_missing", "Brak pliku"),
         ("transfer_recorded", "Już pobierane"),
-        ("source_failed", "Błąd źródła"),
-        ("legacy_unreadable", "Błąd zleceń"),
-        ("subscription_checking", "Sprawdzam plik"),
+        ("source_failed", "Błąd pobierania"),
+        ("legacy_unreadable", "Błąd zapisu"),
+        ("subscription_checking", "Sprawdzanie pliku"),
         ("subscription_check_skipped", "Niesprawdzony"),
         ("subscription_awaiting_airing", "Czeka na emisję"),
         ("subscription_awaiting_release", "Czeka na wydanie"),
-        ("subscription_exhausted", "Wyczerpano próby"),
+        ("subscription_awaiting_polish", "Czeka na PL"),
+        ("subscription_no_certain_release", "Brak pewnego wydania"),
+        ("subscription_paused", "Wstrzymane"),
+        ("subscription_exhausted", "Próby wyczerpane"),
     ],
 )
 def test_episode_problem_reason_overrides_ordinary_state_label(reason: str, label: str) -> None:
@@ -2471,7 +2476,6 @@ _UNLABELLED_REASONS: Final[frozenset[EpisodeReason]] = frozenset(
     {
         EpisodeReason.ACQUISITION_UNAVAILABLE,
         EpisodeReason.ADMISSION_FAILED,
-        EpisodeReason.FINALIZATION_FAILED,
         EpisodeReason.EPISODE_CHANGED,
         EpisodeReason.COMMAND_REUSED,
     }
@@ -2480,7 +2484,7 @@ _UNLABELLED_REASONS: Final[frozenset[EpisodeReason]] = frozenset(
 
 @pytest.mark.unit
 def test_every_owner_reason_has_a_stan_label_or_an_explicit_fallback() -> None:
-    assert {reason for reason in EpisodeReason if reason not in EPISODE_REASON_LABELS} == _UNLABELLED_REASONS
+    assert {reason for reason in EpisodeReason if reason not in STATES} == _UNLABELLED_REASONS
 
 
 @pytest.mark.unit
@@ -3601,7 +3605,7 @@ def test_partial_schedule_429_keeps_episode_list_until_explicit_reentry_after_de
         _key(controller, "text:d")
         assert not controller._episode_marks
         assert controller._offer is None
-        assert "Nie wyemitowano" in _frame(controller)
+        assert "Przed emisją" in _frame(controller)
         reads: int = len(sent)
         now[0] += 90
         _key(controller, "down")

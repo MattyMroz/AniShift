@@ -69,7 +69,6 @@ from anishift.cli.interactive.anime_rows import (
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState, NoticeKind
 from anishift.cli.interactive.anime_texts import (
     COMMAND_FAILED,
-    EPISODE_REASON_LABELS,
     IN_PROGRESS_HINT,
     REPEATABLE_REASONS,
     UNAVAILABLE,
@@ -80,6 +79,7 @@ from anishift.cli.interactive.anime_texts import (
 )
 from anishift.cli.interactive.anime_view import WIDE_COLUMNS, highlighted_row, overflows, shown_rows
 from anishift.cli.interactive.pointer import Click, ClickKind
+from anishift.cli.interactive.state_texts import state_word
 from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
     SubscriptionState,
@@ -97,7 +97,7 @@ from anishift.errors import AniShiftError, ErrorCode
 from anishift.platform.local_control import ControlError, ControlErrorCode
 from anishift.utils.logger import get_logger
 
-__all__ = ["EPISODE_REASON_LABELS", "AnimeController", "AnimeResult"]
+__all__ = ["AnimeController", "AnimeResult"]
 
 logger = get_logger(__name__)
 
@@ -752,7 +752,7 @@ class AnimeController:
     def _subscription_facts(self) -> tuple[str, ...]:
         if self._screen is not _Screen.EPISODES or self._subscription is None:
             return ()
-        state: SubscriptionState = row_state(self._subscription, self._moment(), idle=self._paused)
+        state: SubscriptionState = row_state(self._subscription, self._moment())
         return (
             safe(str(self._subscription.get("title", ""))),
             f"{state.text} · {row_summary(self._subscription)}",
@@ -1602,7 +1602,7 @@ class AnimeController:
             return
         self._sync_view()
         if result.reason == EpisodeReason.ADMITTED:
-            self._panel.result(str(result.key.number), admitted=True)
+            self._panel.result(str(result.key.number), admitted=True, status=state_word(EpisodeReason.ADMITTED))
         else:
             status, cause = refused_result(result.reason)
             self._panel.result(str(result.key.number), admitted=False, status=status, cause=cause)

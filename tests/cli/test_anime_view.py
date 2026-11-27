@@ -35,7 +35,7 @@ def rows() -> tuple[AnimeRow, ...]:
         AnimeRow("one", "Zażółć 日本語", number="1", date="01.09.2026"),
         AnimeRow("three", "A Promise", number="3", date="15.09.2026"),
         AnimeRow("special", "Special", number="7.5", date="16.09.2026"),
-        AnimeRow("future", "Next", number="8", eligible=False, status="Nie wyemitowano"),
+        AnimeRow("future", "Next", number="8", eligible=False, status="Przed emisją"),
     )
 
 
@@ -69,7 +69,7 @@ def test_selection_and_results_preserve_row_positions_and_footer(width: int) -> 
     busy: str = view.frame(width, 24).plain
     assert "⠋ Szukam" in busy
     assert "Zlecam" not in busy
-    view.result("one", admitted=True)
+    view.result("one", admitted=True, status="Zlecono")
     assert view.state.selected == {"three"}
     assert view.state.searching == {"three"}
     assert "Zlecono" in view.frame(width, 24).plain.splitlines()[top]
@@ -231,7 +231,7 @@ def test_cjk_hit_testing_preserves_whole_graphemes_and_columns() -> None:
 def test_confirmed_status_has_no_temporary_background_style() -> None:
     view: AnimePanel
     view, _, _ = panel()
-    view.result("one", admitted=True)
+    view.result("one", admitted=True, status="Zlecono")
     snapshot: AnimeSnapshot = view.state.snapshot()
     first: AnimeFrame = render_anime(snapshot, 80, 24, 10.0)
     expired: AnimeFrame = render_anime(snapshot, 80, 24, 10.41)
@@ -426,7 +426,7 @@ def test_narrow_episode_table_keeps_the_full_state_label(rows_count: int) -> Non
     header: str = lines[frame.first_row - 1]
     assert "Tytuł" in header
     assert "Stan" in header
-    assert any("Nie wyemitowano" in line for line in lines[frame.first_row :])
+    assert any("Przed emisją" in line for line in lines[frame.first_row :])
     assert all(Text(line).cell_len == 50 for line in lines)
 
 
@@ -560,11 +560,11 @@ def test_failed_result_keeps_selection_and_has_no_success_flash() -> None:
     view, _, _ = panel()
     view.state.selected.add("three")
     view.searching(("three",))
-    view.result("three", admitted=False)
+    view.result("three", admitted=False, status="Brak pewnego wydania")
     assert view.state.selected == {"three"}
     assert not view.state.flashes
     assert not view.state.searching
-    assert view.state.items[1].status == "Brak wydania"
+    assert view.state.items[1].status == "Brak pewnego wydania"
 
 
 def test_pending_download_blocks_repeated_download_and_selection_mutations() -> None:
@@ -653,22 +653,22 @@ def test_batch_results_are_aggregated_once_and_reset_for_next_batch() -> None:
     view: AnimePanel
     view, _, _ = panel()
     view.searching(("one", "three"))
-    view.result("one", admitted=True)
+    view.result("one", admitted=True, status="Zlecono")
     assert view.state.notice == "Zlecono 1"
     assert view.state.snapshot().notice_kind is NoticeKind.SUCCESS
-    view.result("three", admitted=False)
-    view.result("one", admitted=True)
+    view.result("three", admitted=False, status="Brak pewnego wydania")
+    view.result("one", admitted=True, status="Zlecono")
     assert view.state.notice == "Zlecono 1 · nie zlecono 3 · I wydania"
     assert view.state.snapshot().notice_kind is NoticeKind.WARNING
     view.searching(("special",))
-    view.result("special", admitted=True)
+    view.result("special", admitted=True, status="Zlecono")
     assert view.state.notice == "Zlecono 7.5"
 
 
 def test_frame_removes_expired_flash_deadlines() -> None:
     clock: Mock = Mock(return_value=10.0)
     view: AnimePanel = AnimePanel(AnimeViewState(items=rows()), Mock(), clock)
-    view.result("one", admitted=True)
+    view.result("one", admitted=True, status="Zlecono")
     clock.return_value = 10.41
     view.frame(80, 24)
     assert not view.state.flashes
@@ -703,7 +703,7 @@ def test_unhandled_mouse_events_do_not_read_frame_or_request_redraw(button: Mous
     text.assert_not_called()
 
 
-@pytest.mark.parametrize("status", ["", "w emisji", "Zlecono", "Nie wyemitowano"])
+@pytest.mark.parametrize("status", ["", "w emisji", "Zlecono", "Przed emisją"])
 def test_footer_is_empty_until_content_needs_explanation(status: str) -> None:
     snapshot: AnimeSnapshot = AnimeSnapshot(
         AnimeScreen.EPISODES, "Slime", (replace(rows()[0], status=status), *rows()[1:])
@@ -814,7 +814,7 @@ def test_cursor_highlights_a_ready_row_and_keeps_its_green_state() -> None:
 
 @pytest.mark.parametrize("width", [50, 80, 120])
 def test_an_episode_in_progress_keeps_its_checkbox_in_line_with_the_others(width: int) -> None:
-    items: tuple[AnimeRow, ...] = (replace(rows()[0], status="Pobieram", eligible=False), rows()[1], rows()[3])
+    items: tuple[AnimeRow, ...] = (replace(rows()[0], status="Pobieranie", eligible=False), rows()[1], rows()[3])
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items), width, 24, 0)
     lines: list[str] = frame.text.plain.splitlines()[frame.first_row : frame.first_row + len(items)]
     assert len({line.index("[ ]") for line in lines}) == 1
@@ -839,12 +839,12 @@ def test_episode_states_shift_the_table_only_when_the_longest_state_changes(widt
 
     shorter: set[int] = {
         start(status, searching)
-        for status in ("", "Zlecono", "Przetwarzam", "Nie wyemitowano")
+        for status in ("", "Zlecono", "Przetwarzanie", "Przed emisją")
         for searching in (frozenset(), frozenset({"three"}))
     }
 
     assert len(shorter) == 1
-    assert (start("Nie wyemitowano · jeszcze") < shorter.pop()) == (width > 50)
+    assert (start("Przed emisją · jeszcze") < shorter.pop()) == (width > 50)
 
 
 def test_selection_summary_joins_consecutive_numbers_into_ranges() -> None:

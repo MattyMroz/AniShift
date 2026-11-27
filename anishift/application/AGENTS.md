@@ -226,8 +226,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   wydanie zgodne (`EpisodeOffer.derived_numbering`).
 - Subskrypcje żyją w `WatchState.subscriptions`; wiersze, limit `MAX_SUBSCRIPTIONS`, kolejność, cele i terminy mają
   jedno źródło `subscription_targets.py`. Nieobsługiwany rodzaj `subscription*` to `UNKNOWN_COMMAND`; mutacja zapisuje
-  receipt ze stanem. Sprawdzenie biegnie w puli I/O, jedno na subskrypcję, z izolacją wyjątków; pamięci źródeł są w
-  procesie (restart je czyści). Wybór robi czysty `subscription_choice.choose`.
+  receipt ze stanem. Fazę celu (emisja, wydanie, PL, brak pewnego wydania, wstrzymanie, wyczerpanie) liczy tylko
+  `_target_phase` ownera; wiersz listy niesie `due_state`/`due_reason` z `_episode_status` swojego odcinka, więc
+  stan tego odcinka na liście i w widoku odcinka jest ten sam. Stany całej subskrypcji (problem, wstrzymanie,
+  `review_pending`, brak terminu) mają na liście pierwszeństwo przed stanem odcinka. Sprawdzenie biegnie w puli I/O, jedno na subskrypcję, z izolacją
+  wyjątków; pamięci źródeł są w procesie (restart je czyści). Wybór robi czysty `subscription_choice.choose`.
 - `checked_at` zmienia tylko udane sprawdzenie; niedostępność źródeł lub wyjątek jednego celu nie przerywa rundy.
   „Pobierz teraz” (`PolishSkip`) rozlicza tylko snapshot rundy — zegar ani `checked_at` nie dowodzą obsługi prośby.
   Tryb cienia (`subscription_shadow`) tylko proponuje. Każdy `_save` rozlicza cele (`settle_target`); cel spełnia

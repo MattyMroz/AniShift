@@ -114,24 +114,23 @@ def test_a_row_names_the_earliest_unfinished_target_and_counts_the_aired_episode
         review_pending=False,
         due_number=4,
         aired=5,
-        due_state="searching",
     )
 
 
 @pytest.mark.parametrize(
-    ("state", "blocker", "shown"),
+    ("state", "blocker", "pending"),
     [
-        (TargetState.AWAITING_AIRING, None, "airing"),
-        (TargetState.DUE, None, "searching"),
-        (TargetState.DUE, Blocker.PENDING, "pending"),
-        (TargetState.DUE, Blocker.NO_ADMISSIBLE, "no_release"),
-        (TargetState.DUE, Blocker.THRESHOLD, "no_release"),
-        (TargetState.ATTEMPTING, None, "downloading"),
-        (TargetState.EXHAUSTED, None, "exhausted"),
+        (TargetState.AWAITING_AIRING, None, False),
+        (TargetState.DUE, None, False),
+        (TargetState.DUE, Blocker.PENDING, True),
+        (TargetState.DUE, Blocker.NO_ADMISSIBLE, False),
+        (TargetState.DUE, Blocker.THRESHOLD, False),
+        (TargetState.ATTEMPTING, None, False),
+        (TargetState.EXHAUSTED, None, False),
     ],
 )
-def test_a_row_names_what_its_earliest_unfinished_target_waits_for(
-    state: TargetState, blocker: Blocker | None, shown: str
+def test_a_row_names_its_earliest_unfinished_target_and_whether_its_reads_pend(
+    state: TargetState, blocker: Blocker | None, *, pending: bool
 ) -> None:
     spent: int = MAX_ATTEMPTS if state is TargetState.EXHAUSTED else 0
     target: SubscriptionTarget = SubscriptionTarget(
@@ -147,7 +146,7 @@ def test_a_row_names_what_its_earliest_unfinished_target_waits_for(
 
     row: SubscriptionRow = subscription_row(record)
 
-    assert (row.due_number, row.due_state) == (3, shown)
+    assert (row.due_number, row.due_state, row.due_pending) == (3, None, pending)
 
 
 @pytest.mark.parametrize(("cut", "aired"), [(3, 3), (0, 0), (None, 0)])

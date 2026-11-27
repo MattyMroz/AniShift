@@ -4,19 +4,19 @@ from __future__ import annotations
 
 from typing import Final
 
-from anishift.application import AdmissionConflict, EpisodeReason, EpisodeStatus
+from anishift.application import AdmissionConflict, EpisodeReason
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.state_texts import STATES, refusal_text, state_word
 from anishift.errors import AniShiftError, ErrorCode
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
 __all__ = [
     "COMMAND_FAILED",
-    "EPISODE_REASON_LABELS",
     "IN_PROGRESS_HINT",
     "REPEATABLE_REASONS",
     "RETRY_HINT",
     "UNAVAILABLE",
-    "episode_status_label",
+    "episode_state",
     "error_code",
     "refused_result",
     "safe",
@@ -24,32 +24,6 @@ __all__ = [
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-EPISODE_REASON_LABELS: Final[dict[str, str]] = {
-    EpisodeReason.ADMITTED: "Zlecono",
-    EpisodeReason.NO_SUGGESTION: "Brak wydania",
-    EpisodeReason.EPISODE_NOT_AIRED: "Nie wyemitowano",
-    AdmissionConflict.ADMITTED: "Zlecono",
-    EpisodeReason.EPISODE_IN_PROGRESS: "W toku",
-    AdmissionConflict.POSSIBLY_ADMITTED: "Już zlecone?",
-    AdmissionConflict.TRANSFER_RECORDED: "Już pobierane",
-    EpisodeReason.SOURCE_FAILED: "Błąd źródła",
-    EpisodeReason.LEGACY_UNREADABLE: "Błąd zleceń",
-    EpisodeReason.EPISODE_FILE_UNRESOLVED: "Wskaż plik",
-    EpisodeReason.TRANSFER_FAILED: "Błąd pobierania",
-    EpisodeReason.PUBLICATION_FAILED: "Błąd eksportu",
-    EpisodeReason.EPISODE_NAME_WAITING: "Czeka na AniList",
-    EpisodeReason.WAITING_PREVIOUS_TRANSFER: "Czeka w kolejce",
-    EpisodeReason.PUBLICATION_MISSING: "Brak pliku",
-    EpisodeReason.RESULT_MISSING: "Do pobrania",
-    EpisodeReason.PACK_IN_PROGRESS: "Czeka na paczkę",
-    EpisodeReason.SUBSCRIPTION_AWAITING_AIRING: "Czeka na emisję",
-    EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE: "Czeka na wydanie",
-    EpisodeReason.SUBSCRIPTION_CHECKING: "Sprawdzam plik",
-    EpisodeReason.SUBSCRIPTION_CHECK_SKIPPED: "Niesprawdzony",
-    EpisodeReason.SUBSCRIPTION_EXHAUSTED: "Wyczerpano próby",
-}
-"""Shared column labels for owner batch and episode status reasons."""
 
 IN_PROGRESS_HINT: Final[str] = "W toku · Del usuń w Przetwarzaniu"
 """Notice naming where an active episode can be cancelled instead of ordered again."""
@@ -65,24 +39,13 @@ _REPEAT_HINT: Final[str] = "P pobierz ponownie"
 
 _REPEATABLE_REFUSALS: Final[dict[str, str]] = {
     AdmissionConflict.ADMITTED: _EPISODE_ADMITTED,
-    AdmissionConflict.POSSIBLY_ADMITTED: EPISODE_REASON_LABELS[AdmissionConflict.POSSIBLY_ADMITTED],
-    EpisodeReason.PACK_IN_PROGRESS: EPISODE_REASON_LABELS[EpisodeReason.PACK_IN_PROGRESS],
+    AdmissionConflict.POSSIBLY_ADMITTED: state_word(AdmissionConflict.POSSIBLY_ADMITTED),
+    EpisodeReason.PACK_IN_PROGRESS: state_word(EpisodeReason.PACK_IN_PROGRESS),
 }
 """Notice of each owner refusal that P can override with an explicit repeat."""
 
 REPEATABLE_REASONS: Final[frozenset[str]] = frozenset(_REPEATABLE_REFUSALS)
 """Owner refusal reasons an explicit repeat (P) overrides."""
-
-_EPISODE_STATE_LABELS: Final[dict[str, str]] = {
-    "ordered": "Zlecono",
-    "downloading": "Pobieram",
-    "downloaded": "Pobrano",
-    "processing": "Przetwarzam",
-    "processing_failed": "Błąd",
-    "ready": "Gotowe",
-    "possibly_admitted": "Już zlecone?",
-}
-"""Stan column label of each owner episode state other than not ordered."""
 
 UNAVAILABLE: Final[str] = "Pobieranie jest niedostępne w tej sesji"
 """Sentence shown when the session was built without an acquisition boundary."""
@@ -106,8 +69,6 @@ COMMAND_FAILED: Final[str] = "AniShift w tle nie wykonał polecenia · uruchom A
 
 def stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  # noqa: PLR0911
     """Translate domain codes preserved locally or carried by a resident refusal."""
-    from anishift.cli.interactive.state import refusal_text  # noqa: PLC0415
-
     if not isinstance(problem, AniShiftError):
         return refusal_text(problem), ""
     if isinstance(problem, ControlError) and problem.reason == "response_too_large":
@@ -142,35 +103,28 @@ def stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  #
 
 def refused_result(reason: str) -> tuple[str, str]:
     """Return the Stan label and notice cause of one episode the owner did not admit."""
-    known: str | None = EPISODE_REASON_LABELS.get(reason)
     if reason == EpisodeReason.EPISODE_IN_PROGRESS:
-        return EPISODE_REASON_LABELS[reason], IN_PROGRESS_HINT
+        return state_word(reason), IN_PROGRESS_HINT
     if reason in _REPEATABLE_REFUSALS:
-        return EPISODE_REASON_LABELS[reason], f"{_REPEATABLE_REFUSALS[reason]} · {_REPEAT_HINT}"
-    if known is not None:
-        return known, known
+        return state_word(reason), f"{_REPEATABLE_REFUSALS[reason]} · {_REPEAT_HINT}"
+    if reason in STATES:
+        return state_word(reason), state_word(reason)
     if reason == EpisodeReason.ACQUISITION_UNAVAILABLE:
         return "Niedostępne", UNAVAILABLE
     refusal: ControlError = ControlError(reason, code=ControlErrorCode.REFUSED, reason=reason, answered=True)
     status: str = (
-        EPISODE_REASON_LABELS[EpisodeReason.SOURCE_FAILED]
-        if reason == ErrorCode.TORRENT_SOURCE_FAILED.value
-        else "Nie zlecono"
+        state_word(EpisodeReason.SOURCE_FAILED) if reason == ErrorCode.TORRENT_SOURCE_FAILED.value else "Nie zlecono"
     )
     return status, stated(refusal)[0]
 
 
-def episode_status_label(status: EpisodeStatus) -> str:
-    """Return the Stan column label of one owner episode state, empty for a plain not ordered one."""
-    if status.polish_skipped:
-        return "Bez czekania PL"
-    if status.polish_wait_until is not None:
-        return "Czeka na PL"
-    if status.reason in EPISODE_REASON_LABELS:
-        return EPISODE_REASON_LABELS[status.reason]
-    if status.state == "not_ordered":
-        return "" if status.reason is None else refused_result(status.reason)[0]
-    return _EPISODE_STATE_LABELS.get(status.state, "Zlecono")
+def episode_state(state: str, reason: str | None) -> str:
+    """Return the Stan word of one owner episode state and reason, empty for a plain not ordered one."""
+    if reason is not None and reason in STATES:
+        return state_word(reason)
+    if state == "not_ordered":
+        return "" if reason is None else refused_result(reason)[0]
+    return state_word(state if state in STATES else "ordered")
 
 
 def _download_counts(problem: ControlError) -> dict[str, int] | None:

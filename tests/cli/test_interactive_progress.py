@@ -474,9 +474,9 @@ def test_terminal_states_label_and_freeze_every_row() -> None:
         )
 
     assert _rows(progress) == [
-        ("Błąd Odcinek 01.mkv", 0),
-        ("Anulowano Odcinek 02.mkv", 0),
-        ("Anulowano Odcinek 03.mkv", 0),
+        ("Błąd przetwarzania Odcinek 01.mkv", 0),
+        ("Anulowane Odcinek 02.mkv", 0),
+        ("Anulowane Odcinek 03.mkv", 0),
     ]
     assert {"error", "warning"} <= _styles(progress)
 

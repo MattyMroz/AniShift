@@ -661,7 +661,7 @@ def test_three_releases_without_subtitles_exhaust_the_target_with_the_subtitle_r
     assert _escalations(world) == ["rejected", "rejected", "exhausted"]
     assert (
         messages[-1]
-        == "Neko to Ryuu E3: wyczerpano próby (3 z 3), ostatnio wydanie odrzucone (brak napisów dialogowych)"
+        == "Neko to Ryuu E3: Próby wyczerpane (3 z 3), ostatnio wydanie odrzucone (brak napisów dialogowych)"
     )
 
 
