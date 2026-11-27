@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import re
-from bisect import bisect_right
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Final
 
 from .constants import LINE_SEPARATOR
 from .host import (
+    ENVELOPE_RATE,
+    FRAME_MS,
+    NOISE_DBFS,
+    LineSpan,
     PartTiming,
+    best_pause,
     cut_before_ms,
+    frame_levels,
     frames_duration_ms,
     get_logger,
     iter_frames,
     mono_pcm,
+    server_frame_times,
+    silent_cut,
     splice_times,
 )
-from .pauses import FRAME_MS, NOISE_DBFS, Span, best_pause, frame_levels
 from .types import AlignmentChunk, Redo
 
 if TYPE_CHECKING:
@@ -120,9 +126,9 @@ class _Stream:
         breaks: list[tuple[int, int]] = [(match.start(), match.end()) for match in _BREAK_RUN.finditer(text)]
         return cls(text, starts, ends, _stream_words(text, breaks), breaks)
 
-    def span(self, first: int, last: int) -> Span:
-        """Return the server span of characters *first* to *last*."""
-        return Span(self.starts[first], self.ends[last])
+    def span(self, first: int, last: int) -> LineSpan:
+        """Return the server span of characters *first* to *last*, a closed part since a pause paragraph follows."""
+        return LineSpan(self.starts[first], self.ends[last], open_end=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,31 +334,31 @@ def _cut(block: Redone, audio: _Audio, stream: _Stream, reading: Reading, count:
     )
 
 
-def _pause(audio: _Audio, line: Span, following: Span) -> tuple[float, float, float] | None:
-    """Return the start, middle and end of the best pause between two lines of speech, or None."""
+def _pause(audio: _Audio, line: LineSpan, following: LineSpan) -> tuple[float, float, float] | None:
+    """Return the start, cut and end of the best pause between two lines of speech, or None."""
     pause: tuple[float, float] | None = best_pause(audio.levels, audio.times, line, following)
     if pause is None:
         return None
     start, end = pause
-    return start, (start + end) / 2, end
+    return start, silent_cut(audio.levels, audio.times, start, end), end
 
 
-def _paragraph_after(stream: _Stream, after: int, end_ms: float) -> Span:
+def _paragraph_after(stream: _Stream, after: int, end_ms: float) -> LineSpan:
     """Return the span from the first streamed word after character *after* to the end of its paragraph."""
     following: int = next((index for index, word in enumerate(stream.words) if word[1] > after), len(stream.words))
     if following == len(stream.words):
-        return Span(end_ms, end_ms)
+        return LineSpan(end_ms, end_ms, open_end=False)
     first: int = stream.words[following][1]
     stop: int = next((start for start, _ in stream.breaks if start >= first), len(stream.text))
     last: int = max(end - 1 for _, start, end in stream.words[following:] if start < stop)
     return stream.span(first, last)
 
 
-def _paragraph_before(stream: _Stream, before: int) -> Span:
+def _paragraph_before(stream: _Stream, before: int) -> LineSpan:
     """Return the span from the start of the paragraph of the last streamed word before character *before* to it."""
     previous: list[tuple[str, int, int]] = [word for word in stream.words if word[2] <= before]
     if not previous:
-        return Span(0.0, 0.0)
+        return LineSpan(0.0, 0.0, open_end=False)
     last: int = previous[-1][2] - 1
     opened: int = max((end for _, end in stream.breaks if end <= last), default=0)
     first: int = min(start for _, start, _ in previous if start >= opened)
@@ -362,13 +368,10 @@ def _paragraph_before(stream: _Stream, before: int) -> Span:
 def _audio(recording: Path) -> _Audio:
     """Return *recording* with its frame levels placed on the server timeline, one frame later per splice."""
     data: bytes = recording.read_bytes()
-    levels: list[float] = frame_levels(mono_pcm(recording))
+    levels: list[float] = frame_levels(mono_pcm(recording), ENVELOPE_RATE)
     first: FrameHeader | None = next(iter_frames(data), None)
     frame_ms: float = 0.0 if first is None else first.duration_ms
-    splices: tuple[float, ...] = splice_times(data)
-    times: list[float] = [
-        index * FRAME_MS + frame_ms * bisect_right(splices, index * FRAME_MS) for index in range(len(levels))
-    ]
+    times: list[float] = server_frame_times(len(levels), splice_times(data), frame_ms)
     return _Audio(data=data, levels=levels, times=times, duration_ms=frames_duration_ms(data))
 
 

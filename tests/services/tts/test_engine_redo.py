@@ -13,7 +13,13 @@ import pytest
 from engine_host import make_engine, make_request
 
 from anishift.services.tts.engines.elevenreader import Redo, redo, service
-from anishift.services.tts.engines.elevenreader.host import Cancellation, frames_duration_ms, iter_frames
+from anishift.services.tts.engines.elevenreader.host import (
+    Cancellation,
+    TtsCancelledError,
+    TtsProviderUnavailableError,
+    frames_duration_ms,
+    iter_frames,
+)
 from anishift.services.tts.engines.elevenreader.types import LibraryState, PlayerState, UploadedRead
 
 if TYPE_CHECKING:
@@ -45,6 +51,7 @@ LEAD_FRAMES = 10
 PAUSE_FRAMES = 20
 MS_PER_CHAR = 20.0
 LOUD_SAMPLE = 3000
+PAUSE_NOISE = 200
 SAMPLES_PER_FRAME = 160
 VOICE_ID = "T5l58N8RNz5DKoClpKIJ"
 TOKEN = "token-redo"  # noqa: S105
@@ -65,7 +72,7 @@ def frame_json(
     return json.dumps(payload)
 
 
-def stream_of(take: int, paragraphs: list[str]) -> list[str]:
+def stream_of(take: int, paragraphs: list[str], *, pause_fill: int = 0) -> list[str]:
     sent: list[str] = [frame_json(frames(LEAD_FRAMES, 0))]
     for index, text in enumerate(paragraphs):
         gap: str = f" {FINAL_BREAK}" if index == len(paragraphs) - 1 else f" {BREAK} … {BREAK} "
@@ -75,7 +82,7 @@ def stream_of(take: int, paragraphs: list[str]) -> list[str]:
         starts: list[float] = [position * speech_ms / len(text) for position in range(len(text))]
         starts += [speech_ms + position * pause_ms / len(gap) for position in range(len(gap))]
         lengths: list[float] = [speech_ms / len(text)] * len(text) + [pause_ms / len(gap)] * len(gap)
-        audio: bytes = frames(speech_frames, fill_of(take, index)) + frames(PAUSE_FRAMES, 0)
+        audio: bytes = frames(speech_frames, fill_of(take, index)) + frames(PAUSE_FRAMES, pause_fill)
         sent.append(frame_json(audio, text + gap, starts, lengths))
     return sent
 
@@ -116,6 +123,10 @@ def as_written(_: int, parts: list[str]) -> list[str]:
 class Site:
     script: Script = as_written
     stalls: set[int] = field(default_factory=set)
+    failing: set[int] = field(default_factory=set)
+    broken: set[int] = field(default_factory=set)
+    loud_pauses: set[int] = field(default_factory=set)
+    on_upload: Callable[[int], None] | None = None
     uploads: list[list[str]] = field(default_factory=list)
     account: dict[str, object] = field(default_factory=lambda: {"default_voice_id": "other", "playback_speed_rate": 1})
 
@@ -140,7 +151,13 @@ class Page:
         parts: list[str] = document.read_text(encoding="utf-8").removesuffix("\n").split(GLUE)
         self.take = len(self.site.uploads)
         self.site.uploads.append(parts)
-        self.sent = stream_of(self.take, self.site.script(self.take, parts))
+        if self.site.on_upload is not None:
+            self.site.on_upload(self.take)
+        if self.take in self.site.failing:
+            message: str = "fake upload failed"
+            raise TtsProviderUnavailableError(message)
+        pause_fill: int = PAUSE_NOISE if self.take in self.site.loud_pauses else 0
+        self.sent = stream_of(self.take, self.site.script(self.take, parts), pause_fill=pause_fill)
         streamed: int = sum(len(json.loads(frame).get("alignment", {}).get("chars", [])) for frame in self.sent)
         return UploadedRead(
             read_id=f"read-{self.take}", char_count=streamed + 1000 * (self.take in self.site.stalls), token=TOKEN
@@ -180,6 +197,9 @@ class Page:
 
     async def check_page_speed(self, speed: float) -> None:
         del speed
+        if self.take in self.site.broken:
+            message: str = "fake page closed"
+            raise TtsProviderUnavailableError(message)
 
     def watch_stream(self, recorder: StreamRecorder, on_url: Callable[[str], None]) -> None:
         self.recorder = recorder
@@ -221,7 +241,7 @@ def _fast_and_heard(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(redo, "mono_pcm", fill_pcm)
 
 
-def record(tmp_path: Path, site: Site, mode: Redo, parts: tuple[str, ...] = PARTS) -> DocumentResult:
+def record(tmp_path: Path, site: Site, mode: Redo, cancel: Cancellation | None = None) -> DocumentResult:
     def factory(root: Path) -> ChromeSession:
         del root
         return cast("ChromeSession", Session(site))
@@ -229,8 +249,8 @@ def record(tmp_path: Path, site: Site, mode: Redo, parts: tuple[str, ...] = PART
     async def run() -> DocumentResult:
         engine = make_engine(tmp_path / "home", factory, mode)
         try:
-            request = make_request(parts, tmp_path / "out" / "doc.mp3")
-            return await engine.synthesize_document(request, cancel=Cancellation())
+            request = make_request(PARTS, tmp_path / "out" / "doc.mp3")
+            return await engine.synthesize_document(request, cancel=cancel or Cancellation())
         finally:
             await engine.close()
 
@@ -394,3 +414,66 @@ def test_stream_stalling_after_speech_keeps_it_and_reads_only_the_rest(tmp_path:
     assert site.uploads[1] == list(PARTS[2:5])
     assert fills(result.recording) == [1, 2, fill_of(1, 0), fill_of(1, 1), fill_of(1, 2)]
     assert result.incomplete == ()
+
+
+def test_page_failing_after_speech_keeps_it_and_reads_only_the_rest(tmp_path: Path) -> None:
+    def script(take: int, parts: list[str]) -> list[str]:
+        return parts if take else parts[:3]
+
+    site = Site(script=script, stalls={0}, broken={0})
+
+    result = record(tmp_path, site, Redo.LINE)
+
+    assert site.uploads[1] == list(PARTS[3:5])
+    assert fills(result.recording) == [1, 2, 3, fill_of(1, 0), fill_of(1, 1)]
+    assert result.incomplete == ()
+
+
+def test_redo_ending_in_an_error_leaves_its_parts_incomplete_and_keeps_the_recording(tmp_path: Path) -> None:
+    site = Site(script=drop_words(2, "trzy "), failing={1})
+
+    result = record(tmp_path, site, Redo.LINE)
+
+    assert len(site.uploads) == 2
+    assert result.incomplete == ("part-2",)
+    assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+
+
+def test_redo_without_a_pause_to_cut_in_is_left_out(tmp_path: Path) -> None:
+    site = Site(script=drop_words(2, "trzy "), loud_pauses={0})
+
+    result = record(tmp_path, site, Redo.LINE)
+
+    assert len(site.uploads) == 2
+    assert result.incomplete == ("part-2",)
+    assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+
+
+def test_redo_that_cannot_be_decoded_keeps_the_recording(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(recording: Path) -> array[int]:
+        message: str = f"cannot decode {recording.name}"
+        raise OSError(message)
+
+    monkeypatch.setattr(redo, "mono_pcm", broken)
+    site = Site(script=drop_words(2, "trzy "))
+
+    result = record(tmp_path, site, Redo.LINE)
+
+    assert result.incomplete == ("part-2",)
+    assert result.recording.read_bytes() == (tmp_path / "out" / "doc.take1.mp3").read_bytes()
+
+
+def test_cancel_during_a_redo_stops_and_keeps_every_take(tmp_path: Path) -> None:
+    cancel = Cancellation()
+
+    def cancel_redo(take: int) -> None:
+        if take:
+            cancel.cancel()
+
+    site = Site(script=drop_words(2, "trzy "), on_upload=cancel_redo)
+
+    with pytest.raises(TtsCancelledError):
+        record(tmp_path, site, Redo.LINE, cancel)
+
+    assert fills(tmp_path / "out" / "doc.take1.mp3") == [1, 2, 3, 4, 5]
+    assert not (tmp_path / "out" / "doc.mp3").exists()

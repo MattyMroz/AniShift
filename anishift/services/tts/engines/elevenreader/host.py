@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
-from anishift.platform.binaries import Binary, require_binary
+from anishift.platform.binaries import Binary, BinaryNotFoundError, require_binary
 from anishift.platform.child_processes import independent_child_flags
 from anishift.platform.installed import find_installed
 from anishift.platform.private_dir import PrivateDirectoryError, restrict_directory
@@ -47,6 +47,16 @@ from anishift.services.tts.types import (
 )
 from anishift.utils.logger import get_logger
 from anishift.utils.mp3_frames import FrameHeader, cut_before_ms, frames_duration_ms, iter_frames, splice_times
+from anishift.utils.pauses import (
+    ENVELOPE_RATE,
+    FRAME_MS,
+    NOISE_DBFS,
+    LineSpan,
+    best_pause,
+    frame_levels,
+    server_frame_times,
+    silent_cut,
+)
 
 from .constants import MAX_PARALLEL_DOCUMENTS, PROVIDER_MODEL_ID, UNAVAILABLE_RETRY_S, VOICES
 from .types import Redo
@@ -65,9 +75,12 @@ __all__ = [
     "ACCOUNT_BLOCKED_HINT",
     "CHROME_MISSING_HINT",
     "CLEANUP_WARNING",
+    "ENVELOPE_RATE",
     "FALLBACK_HINT",
+    "FRAME_MS",
     "INPUT_HINT",
     "NAME",
+    "NOISE_DBFS",
     "PART_HINT",
     "PROFILE_BUSY_HINT",
     "PROFILE_HINT",
@@ -90,6 +103,7 @@ __all__ = [
     "ErrorCode",
     "ErrorContext",
     "FrameHeader",
+    "LineSpan",
     "PartTiming",
     "PrivateDirectoryError",
     "ProcessLock",
@@ -105,12 +119,14 @@ __all__ = [
     "TtsTimeoutError",
     "TtsVoiceError",
     "atomic_json_snapshot",
+    "best_pause",
     "busy_error",
     "check_request",
     "cut_before_ms",
     "document_result",
     "engine_config",
     "find_installed",
+    "frame_levels",
     "frames_duration_ms",
     "get_logger",
     "independent_child_flags",
@@ -118,6 +134,8 @@ __all__ = [
     "keeps_tags",
     "mono_pcm",
     "restrict_directory",
+    "server_frame_times",
+    "silent_cut",
     "splice_times",
 ]
 
@@ -180,9 +198,6 @@ CLEANUP_WARNING: Final[str] = (
 
 _DECODE_TIMEOUT_S: Final[float] = 300.0
 """Longest decode of one take; the same limit as the clip splitter's whole-recording decode in the runtime."""
-
-_PCM_RATE: Final[int] = 16_000
-"""Sample rate of the decoded take, the one the engine's pause rule is tuned on."""
 
 type DocumentResult = EngineDocumentResult
 """Result type of one document in the TTS service."""
@@ -355,10 +370,14 @@ def busy_error() -> ChromeBusyError:
 
 
 def mono_pcm(recording: Path) -> array[int]:
-    """Return the MP3 *recording* decoded by FFmpeg to mono signed 16-bit PCM at 16 kHz."""
+    """Return the MP3 *recording* decoded by FFmpeg to mono PCM S16 at ``ENVELOPE_RATE``; any failure is OSError."""
+    try:
+        ffmpeg: str = str(require_binary(Binary.FFMPEG))
+    except BinaryNotFoundError as error:
+        raise OSError(errno.ENOENT, "FFmpeg is not installed") from error
     command: list[str] = [
-        str(require_binary(Binary.FFMPEG)), "-v", "error", "-f", "mp3", "-i", str(recording), "-ac", "1",
-        "-ar", str(_PCM_RATE), "-f", "s16le", "pipe:1",
+        ffmpeg, "-v", "error", "-f", "mp3", "-i", str(recording), "-ac", "1",
+        "-ar", str(ENVELOPE_RATE), "-f", "s16le", "pipe:1",
     ]  # fmt: skip
     try:
         decoded: subprocess.CompletedProcess[bytes] = subprocess.run(  # noqa: S603 - fixed arguments, no shell

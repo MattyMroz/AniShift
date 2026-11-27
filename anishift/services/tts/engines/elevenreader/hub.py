@@ -79,6 +79,7 @@ class ReaderAttempt:
     started: Callable[[], None]
     cancel: CancellationToken
     entered_at: float
+    deadline_at: float
 
 
 class ReaderHub:
@@ -198,7 +199,9 @@ class ReaderHub:
                     await finish_shielded(clean_account(page, self._account, restore=False))
                     self._save()
                 return await read(
-                    ReaderAttempt(page, uploads, self._account, self._save, started, cancel, entered_at),
+                    ReaderAttempt(
+                        page, uploads, self._account, self._save, started, cancel, entered_at, entered_at + deadline_s
+                    ),
                 )
         except _SUSPECT_ERRORS:
             self._suspect = True

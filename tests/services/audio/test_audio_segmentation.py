@@ -11,21 +11,21 @@ from conftest import alignment_chunks, requires_binaries
 
 from anishift.paths import quality_dir
 from anishift.platform.binaries import Binary, require_binary
-from anishift.services.audio.levels import frame_levels
-from anishift.services.audio.normalize import EDGE_TRIM_DBFS
-from anishift.services.audio.segmentation import (
-    ENVELOPE_RATE,
-    CutDecision,
-    LineSpan,
-    clip_ranges,
-    cut_points,
-    server_frame_times,
-)
 from anishift.services.tts import DocumentPart
 from anishift.services.tts.engines.elevenreader.redo import part_spans
 from anishift.services.tts.engines.elevenreader.types import AlignmentChunk
 from anishift.text.boundaries import ends_sentence
 from anishift.utils.mp3_frames import iter_frames, splice_times
+from anishift.utils.pauses import (
+    ENVELOPE_RATE,
+    SILENT_DBFS,
+    CutDecision,
+    LineSpan,
+    clip_ranges,
+    cut_points,
+    frame_levels,
+    server_frame_times,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -72,7 +72,7 @@ def _recording_cuts(work: Path, voice: str) -> tuple[list[CutDecision], list[flo
 
 
 def _heard_at(levels: list[float], times: list[float], at_ms: float) -> bool:
-    return levels[max(bisect_right(times, at_ms) - 1, 0)] > EDGE_TRIM_DBFS
+    return levels[max(bisect_right(times, at_ms) - 1, 0)] > SILENT_DBFS
 
 
 def _assert_prototype_cuts_or_silent(

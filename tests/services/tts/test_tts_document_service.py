@@ -411,7 +411,8 @@ def test_document_batch_line_still_missing_words_after_redo_fails_alone_without_
     assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED, SynthesisStatus.SYNTHESIZED]
     assert result.requests[1].error_code == "TTS_INPUT_INVALID"
     assert engine.documents == [("line-0", "line-1", "line-2")]
-    assert [[span.request_id for span in spans] for spans in splitter.calls] == [["line-0", "line-2"]]
+    assert [[span.request_id for span in spans] for spans in splitter.calls] == [["line-0", "line-1", "line-2"]]
+    assert result.requests[1].speech_clip is None
     assert result.status is SpeechBatchStatus.PARTIAL
 
 

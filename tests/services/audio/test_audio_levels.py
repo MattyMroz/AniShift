@@ -5,7 +5,8 @@ from array import array
 
 import pytest
 
-from anishift.services.audio.levels import frame_levels, speech_bounds
+from anishift.services.audio.levels import speech_bounds
+from anishift.utils.pauses import frame_levels
 
 
 def _tone(amplitude: int, count: int, sample_rate: int) -> array[int]:

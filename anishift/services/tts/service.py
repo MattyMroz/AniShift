@@ -439,12 +439,14 @@ class _DocumentAttempt:
                 destination=self._reserve(self._expectation.format),
             )
             for line, timing in zip(self._lines, result.parts, strict=True)
-            if timing.spoken and timing.request_id not in incomplete
+            if timing.spoken
         )
         if spans:
             await self._split(result.recording, spans)
         receipts: dict[str, ValidatedClipReceipt] = {}
         for span in spans:
+            if span.request_id in incomplete:
+                continue
             receipt: ValidatedClipReceipt | None = await asyncio.to_thread(
                 self._repository.validate_temporary_clip,
                 span.destination,

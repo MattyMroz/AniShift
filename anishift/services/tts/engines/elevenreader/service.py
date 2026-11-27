@@ -33,7 +33,6 @@ from .host import (
     EngineSurface,
     ErrorCode,
     ErrorContext,
-    TtsAuthError,
     TtsCancelledError,
     TtsClipValidationError,
     TtsError,
@@ -90,7 +89,10 @@ _DOCUMENT_NAME: Final[str] = f"{NAME}.txt"
 """Name of the uploaded file; the library titles the document by its first sentence instead."""
 
 _TAKE_SUFFIX: Final[str] = ".take"
-"""Infix of a take file: ``<recording stem>.take<n>.mp3``, so no attempt overwrites another."""
+"""Infix of a take file: ``<name>.take<n>.mp3``, so no attempt overwrites another."""
+
+_MP3: Final[str] = ".mp3"
+"""Suffix of every recording; a recording's name ends at it."""
 
 _STREAM_SUFFIX: Final[str] = ".stream.txt"
 """Suffix of the text the server streamed, written next to every recording under the recording's stem."""
@@ -141,12 +143,10 @@ class ElevenReaderTtsEngine(EngineSurface):
         reported: DocumentSynthesisRequest = _reported_here(request)
         main: Take = await self._take(reported, request.parts, voice, cancel, progress=reported.progress)
         reading: Reading = _read(main, texts, offset=0)
-        chunks: tuple[AlignmentChunk, ...] = main.chunks
         redone: list[Redone] = await self._redo(request, voice, reading, cancel) if reading.missing else []
-        if redone:
-            chunks, _ = await asyncio.to_thread(splice, main, reading, redone, request.recording, len(request.parts))
-        else:
-            await asyncio.to_thread(_copy_new, main.recording, request.recording)
+        chunks: tuple[AlignmentChunk, ...] = await asyncio.to_thread(
+            _joined, main, reading, redone, request.recording, len(request.parts)
+        )
         final: Take = Take(request.recording, chunks)
         _write_stream_text(final)
         joined: Reading = read_parts(final.text, texts)
@@ -239,8 +239,8 @@ class ElevenReaderTtsEngine(EngineSurface):
                 take: Take = await self._take(request, parts, voice, cancel, progress=None)
             except TtsCancelledError:
                 raise
-            except TtsError as error:
-                logger.warning("ElevenReader redo failed", first=first, last=last, code=error.context.code.value)
+            except (TtsError, OSError) as error:
+                logger.warning("ElevenReader redo failed", first=first, last=last, error_class=type(error).__name__)
                 continue
             if _read(take, [part.text for part in parts], offset=first).missing:
                 logger.warning("ElevenReader redo still lacks words and is not joined", first=first, last=last)
@@ -355,7 +355,11 @@ class ElevenReaderTtsEngine(EngineSurface):
                 played_at: float = time.monotonic()
                 await _stream_opened(page, recorder, stream_voices, played_at, cancel)
                 attempt.started()
-                await self._record(page, recorder, char_count, progress, cancel, read_id=read_id, played_at=played_at)
+                await self._record(attempt, recorder, char_count, progress, read_id=read_id, played_at=played_at)
+            except (TtsError, OSError) as error:
+                if not _keeps(recorder, char_count, error):
+                    raise
+                _broken_off(recorder, type(error).__name__)
             finally:
                 page.unwatch_stream()
                 recorder.stop()
@@ -367,15 +371,16 @@ class ElevenReaderTtsEngine(EngineSurface):
 
     async def _record(  # noqa: PLR0913 - one recording loop needs its tab, stream, length, progress, read and Play moment
         self,
-        page: ReaderPage,
+        attempt: ReaderAttempt,
         recorder: StreamRecorder,
         char_count: int | None,
         progress: Callable[[int, int], Awaitable[None]] | None,
-        cancel: CancellationToken,
         *,
         read_id: str,
         played_at: float,
     ) -> None:
+        page: ReaderPage = attempt.page
+        cancel: CancellationToken = attempt.cancel
         now: float = time.monotonic()
         last_progress: float = now
         last_speed_check: float = now
@@ -383,9 +388,11 @@ class ElevenReaderTtsEngine(EngineSurface):
         plays: int = 1
         while True:
             await unless_cancelled(asyncio.sleep(POLL_S), cancel)
-            if _broke_off(page, recorder, char_count):
-                return
+            _check(page, recorder, char_count)
             now = time.monotonic()
+            if now >= attempt.deadline_at - POLL_S:
+                reason: str = "ElevenReader document reached the end of its deadline"
+                raise timeout_error(reason)
             if now - last_speed_check >= SPEED_CHECK_S:
                 last_speed_check = now
                 await unless_cancelled(page.check_page_speed(PAGE_SPEED), cancel)
@@ -393,7 +400,7 @@ class ElevenReaderTtsEngine(EngineSurface):
                 if now - played_at < START_TIMEOUT_S:
                     continue
                 if plays >= PLAY_ATTEMPTS:
-                    reason: str = "ElevenReader sent no audio after Play"
+                    reason = "ElevenReader sent no audio after Play"
                     raise timeout_error(reason)
                 logger.warning("ElevenReader sent no audio; the document is opened again", attempt=plays + 1)
                 await unless_cancelled(page.open_document(read_id), cancel)
@@ -408,9 +415,6 @@ class ElevenReaderTtsEngine(EngineSurface):
             if await self._finished(page, recorder, char_count, cancel) and now - last_progress >= END_IDLE_S:
                 return
             if now - last_progress >= STALL_S:
-                if char_count is not None:
-                    _broken_off(recorder, "stalled")
-                    return
                 reason = "ElevenReader recording stalled"
                 raise timeout_error(reason)
 
@@ -447,11 +451,29 @@ def _read(take: Take, texts: Sequence[str], *, offset: int) -> Reading:
 
 
 def _next_take(recording: Path) -> Path:
-    """Return the first take file next to *recording* that does not exist yet."""
+    """Return the first ``<name>.take<n>.mp3`` next to *recording* that does not exist yet."""
     number: int = 1
-    while (take := recording.with_name(f"{recording.stem}{_TAKE_SUFFIX}{number}{recording.suffix}")).exists():
+    while (take := recording.with_name(f"{_head(recording)}{_TAKE_SUFFIX}{number}{_MP3}")).exists():
         number += 1
     return take
+
+
+def _head(recording: Path) -> str:
+    """Return the file name of *recording* without ``.mp3`` and whatever follows it."""
+    return recording.name.partition(_MP3)[0] or recording.stem
+
+
+def _joined(main: Take, reading: Reading, redone: list[Redone], output: Path, count: int) -> tuple[AlignmentChunk, ...]:
+    """Write *main* with the redone blocks cut in to *output*, or *main* alone when they cannot be joined."""
+    if redone:
+        try:
+            chunks, _ = splice(main, reading, redone, output, count)
+        except OSError as error:
+            logger.warning("ElevenReader redo is not joined; the recording stays", error_class=type(error).__name__)
+        else:
+            return chunks
+    _copy_new(main.recording, output)
+    return main.chunks
 
 
 def _require_new(recording: Path) -> None:
@@ -468,41 +490,38 @@ def _copy_new(source: Path, destination: Path) -> None:
 
 def _write_stream_text(take: Take) -> None:
     """Write the text the server streamed next to the recording; a failure only reaches the log."""
-    target: Path = take.recording.with_name(f"{take.recording.stem}{_STREAM_SUFFIX}")
+    target: Path = take.recording.with_name(f"{_head(take.recording)}{_STREAM_SUFFIX}")
     try:
         target.write_text(take.text, encoding="utf-8")
     except OSError as error:
         logger.warning("ElevenReader streamed text could not be written", error_class=type(error).__name__)
 
 
-def _broke_off(page: ReaderPage, recorder: StreamRecorder, char_count: int | None) -> bool:
-    """Raise what fails the attempt; return True when an uploaded document's stream broke off after speech came."""
-    keeps: bool = char_count is not None and recorder.audio_bytes > 0
-    try:
-        page.raise_if_refused()
-    except TtsAuthError:
-        if not keeps:
-            raise
-        return _broken_off(recorder, "refused")
+def _check(page: ReaderPage, recorder: StreamRecorder, char_count: int | None) -> None:
+    """Raise what ends the attempt: a refused browser, a failed write, a resumed download or Eleven v2."""
+    page.raise_if_refused()
     if recorder.write_error is not None:
         raise _write_error(recorder.write_error)
     if char_count is None and recorder.start_position:
         raise _resumed_error(recorder.start_position)
-    if recorder.listening_speed in (None, READING_SPEED):
+    if recorder.listening_speed not in (None, READING_SPEED):
+        message: str = "ElevenReader streamed with Eleven v2 instead of v4"
+        raise unavailable_error(message)
+
+
+def _keeps(recorder: StreamRecorder, char_count: int | None, error: TtsError | OSError) -> bool:
+    """Tell whether a failed take of an uploaded document keeps the speech that came instead of failing."""
+    if isinstance(error, TtsCancelledError) or char_count is None or not recorder.audio_bytes:
         return False
-    if keeps and recorder.off_speed_after_speech:
-        return _broken_off(recorder, "eleven_v2")
-    message: str = "ElevenReader streamed with Eleven v2 instead of v4"
-    raise unavailable_error(message)
+    return recorder.listening_speed in (None, READING_SPEED) or recorder.off_speed_after_speech
 
 
-def _broken_off(recorder: StreamRecorder, reason: str) -> bool:
+def _broken_off(recorder: StreamRecorder, reason: str) -> None:
     logger.warning(
         "ElevenReader stream broke off; the recording keeps what came and the missing parts are read again",
         reason=reason,
         chars=recorder.chars,
     )
-    return True
 
 
 def _reported_here(request: DocumentSynthesisRequest) -> DocumentSynthesisRequest:

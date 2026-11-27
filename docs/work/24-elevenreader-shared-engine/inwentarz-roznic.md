@@ -60,12 +60,22 @@ Wynik: jeden silnik o identycznych plikach w obu repozytoriach; wszystko, co zal
 - Teksty dla użytkownika: E po angielsku z komendami `edp`, A po polsku z drogą w panelu i `FALLBACK_HINT`.
 - `ChromeBusyError`: E trwały (drugi `edp` na tym samym katalogu domowym), A przejściowy (panel, okno logowania).
 - Dekodowanie MP3 do PCM: E przez `edp.speech.mp3_pcm`, A przez FFmpeg z `platform.binaries`, bo domena TTS AniShift
-  nie może importować `services.audio` (test `test_tts_domain_does_not_import_pipeline_or_other_domains`). Dlatego
-  reguła pauzy (`pauses.py`) jest w silniku jako kopia reguły cięcia klipów z tymi samymi stałymi.
+  nie może importować `services.audio` (test `test_tts_domain_does_not_import_pipeline_or_other_domains`).
+- Reguła pauzy (poziomy ramek, czasy ramek na osi serwera, `best_pause`, `silent_cut`) leży w przenośnym
+  `anishift/utils/pauses.py`, kopiowanym 1:1 do `edp/utils/`; korzystają z niej klipy AniShift, `edp/speech.py` i silnik
+  (przez `host.py`). `services/audio/segmentation.py` i `frame_levels` z `levels.py` zniknęły.
 - Konfiguracja: E buduje `ElevenReaderConfig` sam (`Redo.PARAGRAPH`), A z `TtsConfig` (`Redo.LINE`).
+
+## Po recenzji
+
+- Gdy wgrany dokument dał już dźwięk, każdy błąd próby poza anulowaniem (Playwright, zapis, App Check, v2 po dźwięku,
+  zastój, termin próby takt przed końcem) kończy ją z tym, co przyszło; błąd dekodowania lub brak pauzy przy
+  sklejaniu zostawia nagranie bez wklejenia, a części trafiają do `incomplete`. Silnik nie rzuca wtedy błędu, więc
+  ani `_retrying` edp, ani scheduler AniShift nie nagrywają całości od nowa.
+- AniShift: linia `incomplete` jest w `spans` przy cięciu (oddziela ją od sąsiadów), ale nie dostaje klipu.
+- Pliki prób mają nazwę `<nazwa>.take<n>.mp3` w obu programach.
 
 ## Sprawy otwarte
 
-- Termin próby (`deadline_s`) po dźwięku nadal kończy próbę błędem przejściowym, a wywołujący ponawia cały dokument.
-  Przy limitach 12 h (E) i 1 h (A) nie występuje dla dzisiejszych długości; zmiana wymaga decyzji.
-- Błąd zapisu nagrania (`OSError`, np. pełny dysk) pozostaje błędem przejściowym próby.
+- AniShift: gdy `accept_result` zawiedzie (cięcie lub walidacja klipów FFmpeg), scheduler ponawia dokument i nagrywa
+  go od nowa; pliki prób silnika zostają na dysku. Zmiana wymaga decyzji o semantyce schedulera.

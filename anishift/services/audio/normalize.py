@@ -15,8 +15,9 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import CommandRunner, PcmTarget, normalize_command
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import AudioCancelledError, AudioDecodeError
-from anishift.services.audio.levels import FRAME_MS, frame_levels, speech_bounds
+from anishift.services.audio.levels import speech_bounds
 from anishift.services.audio.types import NormalizedClip, TimedClip
+from anishift.utils.pauses import FRAME_MS, frame_levels
 
 __all__ = [
     "EDGE_TRIM_CLICK_MS",

@@ -10,15 +10,16 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
 
 - `host.py`: jedyne miejsce zależne od programu. Daje błędy i `ErrorContext`, teksty podpowiedzi (`*_HINT`,
   `CLEANUP_WARNING`), `NAME` (nazwa pliku dokumentu, katalogów tymczasowych i wątku), anulowanie, `ProcessLock`,
-  `restrict_directory`, `find_installed`, zapis `session.json`, cięcie ramek MP3, `mono_pcm` (MP3 → mono PCM 16 kHz),
+  `restrict_directory`, `find_installed`, zapis `session.json`, cięcie ramek MP3, regułę pauzy z przenośnego
+  `utils/pauses.py` (`frame_levels`, `server_frame_times`, `best_pause`, `silent_cut`), `mono_pcm` (MP3 → mono PCM
+  16 kHz; każdy błąd dekodowania jako `OSError`),
   typy dokumentu (`DocumentPart`, `DocumentSynthesisRequest`, `PartTiming`, `DocumentResult` i `document_result`),
   `engine_config` (z czego powstaje `ElevenReaderConfig`), `check_request`, `keeps_tags` oraz `EngineSurface`, klasę
   bazową silnika z tym, czego program wymaga od silnika poza wspólnymi metodami.
 - `config.py`, `constants.py`, `types.py`, `service.py` (silnik, `document_text`) i `api_backend.py` (karta
   Playwright: `ReaderPage`, konto, sesja, logowanie, wylogowanie, mapowanie błędów dostawcy).
 - `redo.py`: porównanie słów (`read_parts`), czasy części (`timings`, `part_spans`), bloki dogrywania
-  (`redo_blocks`) i sklejanie (`splice`). `pauses.py`: poziomy ramek 10 ms i najlepsza pauza między dwoma odcinkami
-  mowy (te same stałe co reguła cięcia klipów).
+  (`redo_blocks`) i sklejanie (`splice`).
 - `browser.py` (proces Chrome i CDP: `ChromeSession(root, headless=…)`, `open_window`), `hub.py` (`ReaderHub`: jedna
   przeglądarka profilu w procesie, karta na nagranie, wspólne sprzątanie konta), `recorder.py` (czyste ramki WebSocket
   → MP3 i czasy znaków, testowane bez przeglądarki).
@@ -38,21 +39,26 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
   łączą się w jeden. Każdy blok nagrywa się raz; dogranie z brakującym słowem albo błędem nie jest wklejane i nie ma
   kolejnych ponowień, a jego części są w wyniku jako `incomplete`. Nigdy nie nagrywa się całego dokumentu od nowa po
   odebraniu dźwięku.
-- Sklejanie (`splice`) tnie w ciszy wykrytej w dźwięku (`pauses.best_pause` między częścią przed i po szwie, środek
-  pauzy), a nie według czasów serwera. Dogranie zaczyna się tyle przed pierwszą głośną ramką (`NOISE_DBFS`), ile pauzy
+- Sklejanie (`splice`) tnie w ciszy wykrytej w dźwięku (`best_pause` między częścią przed i po szwie, w niej
+  `silent_cut`), a nie według czasów serwera. Błąd dekodowania albo brak pauzy zostawia nagranie bez wklejenia, a
+  części bloku trafiają do `incomplete`. Dogranie zaczyna się tyle przed pierwszą głośną ramką (`NOISE_DBFS`), ile pauzy
   ucięto po stronie nagrania głównego, i kończy tyle po ostatniej; blok na początku albo końcu dokumentu bierze
   dogranie od jego początku albo do końca. Brak pauzy przy szwie: blok nie jest wklejany. Tekst i czasy znaków
   wynikowego nagrania powstają z odcinków obu nagrań przesuniętych na nową oś.
 
 ## Pliki nagrań
 
-- Każda próba ma własny plik `<stem>.take<n><suffix>` obok `request.recording` (`open("xb")`), także pobranie
-  (`download_document`); silnik niczego nie kasuje. Wynik trafia do `request.recording`, który nie może zawierać
-  danych (pusty plik zastępczy jest dozwolony), więc żadne nagranie nie jest nadpisywane.
-- Obok każdej próby i wyniku zawsze leży `<stem>.stream.txt` z tekstem, który przysłał serwer.
-- Strumień urwany po dźwięku (zastój `STALL_S`, odmowa App Check, prośba strony o inną prędkość) kończy próbę z tym,
-  co przyszło; brakujące części idą do dogrania. Bez dźwięku te same zdarzenia są błędem próby. Rejestrator przestaje
-  zapisywać, gdy strona poprosi o inną prędkość po dźwięku (`off_speed_after_speech`).
+- Każda próba ma własny plik `<nazwa>.take<n>.mp3` obok `request.recording` (nazwa to nazwa nagrania do `.mp3`,
+  `open("xb")`), także pobranie (`download_document`); silnik niczego nie kasuje. Wynik trafia do
+  `request.recording`, który nie może zawierać danych (pusty plik zastępczy jest dozwolony), więc żadne nagranie nie
+  jest nadpisywane.
+- Obok każdej próby i wyniku zawsze leży `<nazwa>.stream.txt` z tekstem, który przysłał serwer.
+- Gdy wgrany dokument dał już dźwięk, każdy błąd próby poza anulowaniem (zastój `STALL_S`, odmowa App Check, błąd
+  Playwright, błąd zapisu, prośba strony o inną prędkość, `deadline_s` o jeden takt `POLL_S` przed końcem) kończy ją
+  z tym, co przyszło, a brakujące części idą do dogrania; silnik nie zgłasza wtedy błędu, więc wywołujący nie nagrywa
+  całości od nowa. Bez dźwięku te same zdarzenia są błędem próby. Strumień, który od początku był Eleven v2, zawsze
+  jest błędem. Rejestrator przestaje zapisywać, gdy strona poprosi o inną prędkość po dźwięku
+  (`off_speed_after_speech`).
 
 ## Gospodarz (`hub.py`)
 
@@ -117,8 +123,9 @@ niczego spoza katalogu poza biblioteką standardową i Playwright; zmiana w nich
   przyszedł dźwięk) i pętla dołączania do CDP to czynności jednej próby; ponowienia próby robi wywołujący.
 - Firebase App Check potrafi odrzucić profil (`APP_CHECK_REFUSAL` w konsoli); `raise_if_refused` kończy próbę trwałym
   `TtsAuthError` przed dźwiękiem, a po dźwięku kończy ją z tym, co przyszło.
-- `request.deadline_s` (`within_deadline`) jest jedynym górnym limitem próby; po nim próba kończy się
-  `TtsTimeoutError` (przejściowy), także po dźwięku.
+- `request.deadline_s` (`within_deadline`) jest jedynym górnym limitem próby; pętla nagrywania kończy próbę takt
+  przed nim (`ReaderAttempt.deadline_at`), więc po dźwięku zostaje to, co przyszło. Bez dźwięku albo gdy limit minie
+  w trakcie kroku strony, próba kończy się `TtsTimeoutError` (przejściowy).
 - Token, `read_id` i adres WebSocketu nie trafiają do logów, wyjątków ani plików.
 - Część pusta po neutralizacji, równa `LINE_SEPARATOR` albo z `<break` to `TtsInputError` z `validate_part`.
 - `request.tags` (gdy `keeps_tags`) przepuszcza nawiasy kwadratowe do serwera jako znaczniki v4.

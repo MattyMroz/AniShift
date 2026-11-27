@@ -33,18 +33,19 @@ sidecara audio przez FFmpeg.
   ma ścieżki „neutralny WAV bez przetwarzania”: wynikiem normalizacji jest zawsze
   surowy PCM. Zmiana każdej z tych stałych wchodzi do `normalization_fingerprint`
   (sekcja `edge_trim`). `normalize.py`, `levels.py`
-- `levels.py` jest jedynym źródłem poziomów RMS w ramkach `FRAME_MS` (trim i cięcie
-  nagrania); obliczenia przez stdlib (`array`, `math.sumprod`), bez numpy. `levels.py`
-- Cięcie nagrania dokumentu na kwestie to czyste funkcje bez plików i FFmpeg: czasy
+- `anishift/utils/pauses.py` jest jedynym źródłem poziomów RMS w ramkach `FRAME_MS` (trim i cięcie
+  nagrania) i reguły cięcia; obliczenia przez stdlib (`array`, `math.sumprod`), bez numpy. `levels.py`
+  ma tylko `speech_bounds`.
+- Cięcie nagrania dokumentu na kwestie (`anishift/utils/pauses.py`) to czyste funkcje bez plików i FFmpeg: czasy
   ramek idą na oś serwera (`server_frame_times`, długość ramki MP3 z pierwszego
   nagłówka), a `cut_points` daje jedną `CutDecision` na granicę. Granica bez
   dość długiej ciszy nie scala klipów: tnie w kotwicy ograniczonej do okna i jest
   `uncertain`. Stałe są 1:1 z prototypu i przechodzą test zgodności na nagraniach
   z `quality_dir()`; zmiana progu lub okna wymaga ponownego testu. Jedyne odejście
   od prototypu: gdy środek wybranej pauzy (poniżej `NOISE_DBFS`) jest jeszcze
-  słyszalny (powyżej `EDGE_TRIM_DBFS`, wybrzmienie słowa albo wybuch spółgłoski),
-  cięcie pada w środku najdłuższej ciszy tej pauzy, bo inaczej koniec słowa
-  zaczynałby następny klip. `segmentation.py`
+  słyszalny (powyżej `SILENT_DBFS`, −45 dBFS jak `EDGE_TRIM_DBFS`, wybrzmienie słowa albo wybuch spółgłoski),
+  cięcie pada w środku najdłuższej ciszy tej pauzy (`silent_cut`), bo inaczej koniec słowa
+  zaczynałby następny klip. Ta sama reguła tnie dogrania silnika ElevenReader.
 - Brak klipów spoken zwraca `skipped_no_spoken`; nie twórz pustego narratora ani
   kopii oryginalnego audio. `service.py`
 - `scope_id` jest jednym bezpiecznym segmentem ścieżki i nie może być nazwą
